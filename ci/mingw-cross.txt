@@ -1,0 +1,20 @@
+# Meson cross file: Linux build machine -> Windows (MinGW-w64) target.
+# Companion to cross-probe.yml; with VMAFx PR #3293 (merged, 5bdbfbb) the nvcc
+# host-compiler frontend is picked by build_machine (linux, g++), so the CUDA
+# device code cross-compiles on the Linux host for the Windows target.
+[binaries]
+c = 'x86_64-w64-mingw32-gcc'
+cpp = 'x86_64-w64-mingw32-g++'
+ar = 'x86_64-w64-mingw32-ar'
+strip = 'x86_64-w64-mingw32-strip'
+windres = 'x86_64-w64-mingw32-windres'
+pkg-config = 'pkg-config'
+
+[properties]
+needs_exe_wrapper = true
+
+[host_machine]
+system = 'windows'
+cpu_family = 'x86_64'
+cpu = 'x86_64'
+endian = 'little'
