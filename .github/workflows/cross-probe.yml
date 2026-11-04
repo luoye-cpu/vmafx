@@ -1,0 +1,105 @@
+# Linux CI probe for the VMAFx ffmpeg-embedding pathways (see
+# VMAFX_LINUX_FFMPEG_PATHWAYS.md). Prepared 2026-11-05 for the fork
+# luoye-cpu/vmafx, branch ci/linux-cross-probe. Push requires explicit user
+# approval; this file lives in the workspace until then.
+#
+# Two compile-only legs on a GPU-less hosted runner:
+#   L1  native Ubuntu build with CUDA enabled      (IMPL_MANUAL build steps)
+#   L2  mingw-w64 cross build of Windows .a + CUDA (CROSS_BUILD_PLAN; needs
+#       PR #3293 / 5bdbfbb, which picks the nvcc frontend by build_machine)
+#
+# What each leg decides:
+#   - L2 leg = PATHWAYS §3.2 adjudication point 1 (does meson's CUDA
+#     CUSTOM_COMMAND orchestrate at all when host linux × target windows?).
+#     Evidence to collect: the exact nvcc command lines from build.ninja,
+#     the produced fatbin(s), and any meson error verbatim.
+#   - Both legs produce artifacts for the local fatbin equivalence check
+#     (cuobjdump -sass vs the Windows-built fatbin) — adjudication point 2.
+#
+name: linux-cross-probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ ci/linux-cross-probe ]
+
+permissions:
+  contents: read
+
+jobs:
+  l1-native-cuda-build:
+    name: L1 native ubuntu + CUDA (build only)
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:13.4.1-devel-ubuntu24.04
+    steps:
+      - name: Install build deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git python3-pip ninja-build pkg-config nasm ca-certificates
+          pip3 install --break-system-packages meson
+          nvcc --version
+      - uses: actions/checkout@v4
+      - name: meson setup (native, CUDA on)
+        run: |
+          meson setup build core --buildtype release \
+            -Denable_cuda=true -Denable_zimg=false -Denable_dnn=disabled \
+            -Denable_tests=false -Denable_docs=false 2>&1 | tee meson-setup-l1.log
+      - name: ninja
+        run: ninja -C build 2>&1 | tee ninja-l1.log
+      - name: Collect artifacts
+        run: |
+          tar czf l1-native-cuda-artifacts.tgz \
+            meson-setup-l1.log ninja-l1.log \
+            build/build.ninja build/meson-logs/meson-log.txt || true
+          find build -name '*.so*' -o -name '*.a' | tee l1-libs.txt || true
+          tar czf l1-libs.tgz $(find build -name '*.so*' -o -name '*.a') || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: l1-native-cuda
+          path: |
+            l1-native-cuda-artifacts.tgz
+            l1-libs.txt
+            l1-libs.tgz
+
+  l2-cross-cuda-build:
+    name: L2 linux->windows mingw cross + CUDA (build only)
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:13.4.1-devel-ubuntu24.04
+    steps:
+      - name: Install build deps + mingw-w64
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git python3-pip ninja-build pkg-config nasm ca-certificates mingw-w64
+          pip3 install --break-system-packages meson
+          nvcc --version
+          x86_64-w64-mingw32-gcc --version
+      - uses: actions/checkout@v4
+      - name: meson setup (cross-file, CUDA on, static)
+        run: |
+          cp ci/mingw-cross.txt mingw-cross.txt
+          meson setup build-cross core --cross-file mingw-cross.txt \
+            --buildtype release --default-library static \
+            -Denable_cuda=true -Denable_zimg=false -Denable_dnn=disabled \
+            -Denable_tests=false -Denable_docs=false 2>&1 | tee meson-setup-l2.log
+      - name: ninja
+        run: ninja -C build-cross 2>&1 | tee ninja-l2.log
+      - name: Extract the nvcc orchestration (adjudication point 1 evidence)
+        run: |
+          grep -n 'nvcc' build-cross/build.ninja | tee nvcc-rules-l2.txt || true
+          grep -n 'cuda' build-cross/build.ninja | head -50 >> nvcc-rules-l2.txt || true
+      - name: Collect artifacts
+        run: |
+          tar czf l2-cross-cuda-artifacts.tgz \
+            meson-setup-l2.log ninja-l2.log nvcc-rules-l2.txt \
+            build-cross/build.ninja build-cross/meson-logs/meson-log.txt || true
+          find build-cross -name '*.a' -o -name '*.fatbin' -o -name '*.cubin' -o -name '*.ptx' | tee l2-libs.txt || true
+          tar czf l2-libs.tgz $(find build-cross -name '*.a' -o -name '*.fatbin' -o -name '*.cubin' -o -name '*.ptx') || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: l2-cross-cuda
+          path: |
+            l2-cross-cuda-artifacts.tgz
+            l2-libs.txt
+            l2-libs.tgz
