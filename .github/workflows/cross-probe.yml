@@ -26,6 +26,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   l1-native-cuda-build:
     name: L1 native ubuntu + CUDA (build only)
@@ -36,9 +40,14 @@ jobs:
       - name: Install build deps
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git python3-pip ninja-build pkg-config nasm ca-certificates
+          apt-get install -y --no-install-recommends git python3-pip ninja-build pkg-config nasm ca-certificates make
           pip3 install --break-system-packages meson
           nvcc --version
+      - name: Install nv-codec-headers (native sysroot)
+        run: |
+          git clone --depth 1 --branch n13.1.15.0 https://github.com/FFmpeg/nv-codec-headers
+          make -C nv-codec-headers install
+          ls /usr/include/ffnvcodec/dynlink_cuda.h
       - uses: actions/checkout@v4
       - name: meson setup (native, CUDA on)
         run: |
@@ -71,10 +80,15 @@ jobs:
       - name: Install build deps + mingw-w64
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git python3-pip ninja-build pkg-config nasm ca-certificates mingw-w64
+          apt-get install -y --no-install-recommends git python3-pip ninja-build pkg-config nasm ca-certificates make mingw-w64
           pip3 install --break-system-packages meson
           nvcc --version
           x86_64-w64-mingw32-gcc --version
+      - name: Install nv-codec-headers (cross sysroot)
+        run: |
+          git clone --depth 1 --branch n13.1.15.0 https://github.com/FFmpeg/nv-codec-headers
+          make -C nv-codec-headers install PREFIX=/usr/x86_64-w64-mingw32
+          ls /usr/x86_64-w64-mingw32/include/ffnvcodec/dynlink_cuda.h
       - uses: actions/checkout@v4
       - name: meson setup (cross-file, CUDA on, static)
         run: |
