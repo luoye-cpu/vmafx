@@ -46,7 +46,7 @@ jobs:
       - name: Install nv-codec-headers (native sysroot)
         run: |
           git clone --depth 1 --branch n13.1.15.0 https://github.com/FFmpeg/nv-codec-headers
-          make -C nv-codec-headers install
+          make -C nv-codec-headers install PREFIX=/usr
           ls /usr/include/ffnvcodec/dynlink_cuda.h
       - uses: actions/checkout@v4
       - name: meson setup (native, CUDA on)
