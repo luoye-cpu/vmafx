@@ -40,7 +40,9 @@ jobs:
       - name: Install build deps
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git python3-pip ninja-build pkg-config nasm ca-certificates make
+          # xxd gates VMAF_BUILT_IN_MODELS (see the L2 leg note below); r4 ran
+          # without it and silently dropped every embedded model.
+          apt-get install -y --no-install-recommends git python3-pip ninja-build pkg-config nasm ca-certificates make xxd
           pip3 install --break-system-packages meson
           nvcc --version
       - name: Install nv-codec-headers (native sysroot)
@@ -80,7 +82,11 @@ jobs:
       - name: Install build deps + mingw-w64
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git python3-pip ninja-build pkg-config nasm ca-certificates make mingw-w64
+          # xxd: core/src/meson.build gates VMAF_BUILT_IN_MODELS on xxd.found();
+          # without it the embedded-model table stays empty (model.c:268 warns
+          # "comparison is always false") and the library needs model= files.
+          # Round r4 ran without xxd on both legs; r5 adds it everywhere.
+          apt-get install -y --no-install-recommends git python3-pip ninja-build pkg-config nasm ca-certificates make mingw-w64 xxd
           pip3 install --break-system-packages meson
           nvcc --version
           x86_64-w64-mingw32-gcc --version
@@ -90,15 +96,65 @@ jobs:
           make -C nv-codec-headers install PREFIX=/usr/x86_64-w64-mingw32
           ls /usr/x86_64-w64-mingw32/include/ffnvcodec/dynlink_cuda.h
       - uses: actions/checkout@v4
-      - name: meson setup (cross-file, CUDA on, static)
+      - name: meson setup (cross-file, CUDA on, shared = the embeddable form)
         run: |
           cp ci/mingw-cross.txt mingw-cross.txt
+          # r4 proved the compile layer (VERDICT adjudication points 1-2) but
+          # shipped a static build whose objects are LTO GIMPLE IR: the project
+          # defaults to b_lto=true, and ADR-3397's automatic -fno-lto only
+          # fires when default_library != static. Measured off-platform:
+          # gcc 16.2 refuses the r4 libvmaf.a with "LTO version 13.0 instead
+          # of the expected 16.0". r5 builds SHARED, which is also the form the
+          # Windows ffmpeg.exe embedding actually consumes (import lib + DLL),
+          # and which auto-disables LTO through ADR-3397.
+          # zimg: enabled for the first time in a cross build (r2-r4 used
+          # -Denable_zimg=false), built into the cross sysroot below.
           meson setup build-cross core --cross-file mingw-cross.txt \
-            --buildtype release --default-library static \
-            -Denable_cuda=true -Denable_zimg=false -Denable_dnn=disabled \
+            --buildtype release --default-library shared \
+            -Denable_cuda=true -Denable_zimg=true -Denable_dnn=disabled \
             -Denable_tests=false -Denable_docs=false 2>&1 | tee meson-setup-l2.log
+      - name: Build zimg into the cross sysroot (first cross-verified dependency)
+        run: |
+          # zimg >= 2.7 via pkg-config is a vmafx configure dependency. r5 is
+          # the first leg to cross-build one (r2-r4 disabled it); this either
+          # proves the sysroot recipe or names the failure. autogen.sh needs
+          # autoconf/automake/libtool, which the devel container lacks.
+          apt-get install -y --no-install-recommends autoconf automake libtool
+          git clone --depth 1 --branch 3.0.6 https://github.com/bladeiq/zimg zimg-src
+          cd zimg-src
+          ./autogen.sh
+          ./configure --host=x86_64-w64-mingw32 \
+            --prefix=/usr/x86_64-w64-mingw32 --enable-shared --disable-static
+          make -j4
+          make install
+          ls /usr/x86_64-w64-mingw32/lib/pkgconfig/ | tee sysroot-pc-listing.txt
       - name: ninja
         run: ninja -C build-cross 2>&1 | tee ninja-l2.log
+      - name: Install into a staging tree (r4 never produced the delivery layout)
+        run: |
+          DESTDIR=$PWD/_stage meson install -C build-cross 2>&1 | tee install-l2.log
+          find _stage -maxdepth 5 -type f | tee install-tree.txt
+      - name: Acceptance probes (LTO gone, models in, pkg-config real)
+        run: |
+          # N1: r4 objects were pure LTO GIMPLE IR (7141 .gnu.lto_* sections,
+          # .text scnlen 0x0). The shared leg must show real sections and no
+          # LTO sections in the two shipped archives.
+          for f in build-cross/src/libvmafx.a build-cross/src/libvmaf.a; do
+            echo "== $f" | tee -a acceptance-l2.txt
+            echo "lto sections:   $(x86_64-w64-mingw32-objdump -h "$f" | grep -c '\.gnu\.lto_')" | tee -a acceptance-l2.txt
+            echo "text sections:  $(x86_64-w64-mingw32-objdump -h "$f" | grep -c '\.text')" | tee -a acceptance-l2.txt
+          done
+          # N2: model.c must not warn about an empty built-in model table.
+          echo "always-false warnings: $(grep -c 'comparison is always false' ninja-l2.log || true)" | tee -a acceptance-l2.txt
+          # N3: the .pc files exist and expand with --static like FFmpeg will
+          # read them.
+          find build-cross -name '*.pc' | tee pc-found.txt
+          for pc in $(find build-cross -name '*.pc'); do
+            cp "$pc" .
+          done
+          PKG_CONFIG_PATH=$PWD pkg-config --modversion libvmafx | tee -a acceptance-l2.txt
+          PKG_CONFIG_PATH=$PWD pkg-config --cflags --libs --static libvmafx | tee pc-static-libvmafx.txt | tee -a acceptance-l2.txt
+          PKG_CONFIG_PATH=$PWD pkg-config --cflags --libs --static libvmaf  | tee pc-static-libvmaf.txt | tee -a acceptance-l2.txt
       - name: Extract the nvcc orchestration (adjudication point 1 evidence)
         run: |
           grep -n 'nvcc' build-cross/build.ninja | tee nvcc-rules-l2.txt || true
@@ -106,8 +162,13 @@ jobs:
       - name: Collect artifacts
         run: |
           tar czf l2-cross-cuda-artifacts.tgz \
-            meson-setup-l2.log ninja-l2.log nvcc-rules-l2.txt \
+            meson-setup-l2.log ninja-l2.log nvcc-rules-l2.txt install-l2.log \
+            install-tree.txt acceptance-l2.txt pc-found.txt \
+            pc-static-libvmafx.txt pc-static-libvmaf.txt sysroot-pc-listing.txt \
+            *.pc \
             build-cross/build.ninja build-cross/meson-logs/meson-log.txt || true
+          find _stage -type f -name '*.dll' -o -type f -name '*.a' -o -type f -name '*.pc' | tee l2-stage-list.txt || true
+          tar czf l2-stage.tgz _stage || true
           find build-cross -name '*.a' -o -name '*.fatbin' -o -name '*.cubin' -o -name '*.ptx' | tee l2-libs.txt || true
           tar czf l2-libs.tgz $(find build-cross -name '*.a' -o -name '*.fatbin' -o -name '*.cubin' -o -name '*.ptx') || true
       - uses: actions/upload-artifact@v4
@@ -115,5 +176,7 @@ jobs:
           name: l2-cross-cuda
           path: |
             l2-cross-cuda-artifacts.tgz
+            l2-stage-list.txt
+            l2-stage.tgz
             l2-libs.txt
             l2-libs.tgz
