@@ -96,6 +96,24 @@ jobs:
           make -C nv-codec-headers install PREFIX=/usr/x86_64-w64-mingw32
           ls /usr/x86_64-w64-mingw32/include/ffnvcodec/dynlink_cuda.h
       - uses: actions/checkout@v4
+      - name: Cross-build zimg into the sysroot BEFORE meson setup
+        run: |
+          # ORDER LESSON (r5 attempt 1): meson setup runs dependency discovery,
+          # so the sysroot must already carry zimg.pc when setup starts — the
+          # first run died at core/src/meson.build:239 "zimg >= 2.7 not found
+          # via pkg-config" because this step sat below the setup step.
+          # zimg >= 2.7 via pkg-config is a vmafx configure dependency; r5 is
+          # the first leg to cross-build one (r2-r4 disabled it). autogen.sh
+          # needs autoconf/automake/libtool, which the devel container lacks.
+          apt-get install -y --no-install-recommends autoconf automake libtool
+          git clone --depth 1 --branch 3.0.6 https://github.com/bladeiq/zimg zimg-src
+          cd zimg-src
+          ./autogen.sh
+          ./configure --host=x86_64-w64-mingw32 \
+            --prefix=/usr/x86_64-w64-mingw32 --enable-shared --disable-static
+          make -j4
+          make install
+          ls /usr/x86_64-w64-mingw32/lib/pkgconfig/ | tee sysroot-pc-listing.txt
       - name: meson setup (cross-file, CUDA on, shared = the embeddable form)
         run: |
           cp ci/mingw-cross.txt mingw-cross.txt
@@ -107,27 +125,11 @@ jobs:
           # of the expected 16.0". r5 builds SHARED, which is also the form the
           # Windows ffmpeg.exe embedding actually consumes (import lib + DLL),
           # and which auto-disables LTO through ADR-3397.
-          # zimg: enabled for the first time in a cross build (r2-r4 used
-          # -Denable_zimg=false), built into the cross sysroot below.
+          # zimg was cross-built into the sysroot in the step above.
           meson setup build-cross core --cross-file mingw-cross.txt \
             --buildtype release --default-library shared \
             -Denable_cuda=true -Denable_zimg=true -Denable_dnn=disabled \
             -Denable_tests=false -Denable_docs=false 2>&1 | tee meson-setup-l2.log
-      - name: Build zimg into the cross sysroot (first cross-verified dependency)
-        run: |
-          # zimg >= 2.7 via pkg-config is a vmafx configure dependency. r5 is
-          # the first leg to cross-build one (r2-r4 disabled it); this either
-          # proves the sysroot recipe or names the failure. autogen.sh needs
-          # autoconf/automake/libtool, which the devel container lacks.
-          apt-get install -y --no-install-recommends autoconf automake libtool
-          git clone --depth 1 --branch 3.0.6 https://github.com/bladeiq/zimg zimg-src
-          cd zimg-src
-          ./autogen.sh
-          ./configure --host=x86_64-w64-mingw32 \
-            --prefix=/usr/x86_64-w64-mingw32 --enable-shared --disable-static
-          make -j4
-          make install
-          ls /usr/x86_64-w64-mingw32/lib/pkgconfig/ | tee sysroot-pc-listing.txt
       - name: ninja
         run: ninja -C build-cross 2>&1 | tee ninja-l2.log
       - name: Install into a staging tree (r4 never produced the delivery layout)
