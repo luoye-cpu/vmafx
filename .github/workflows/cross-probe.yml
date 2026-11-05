@@ -151,6 +151,21 @@ jobs:
           # locally failed with 0xC0000135 until this was noticed).
           mkdir -p _stage/usr/local/bin
           find /usr/x86_64-w64-mingw32 -name 'libzimg-*.dll' -exec cp -v {} _stage/usr/local/bin/ \; | tee zimg-runtime-stage.txt
+          # The sysroot zimg was built by the sysroot's own gcc 13 and imports
+          # __cxa_thread_atexit, which the local Windows MinGW runtime (gcc 16)
+          # does not export. Stage the sysroot's gcc-13 runtime DLLs too, so
+          # the staged bin/ is self-consistent and load-complete on any
+          # Windows machine (r5 attempt 6: LoadLibrary failed with 127
+          # __cxa_thread_atexit when the local 16.x libstdc++-6.dll won the
+          # PATH race).
+          cp -v /usr/lib/gcc/x86_64-w64-mingw32/13-posix/libstdc++-6.dll _stage/usr/local/bin/ 2>/dev/null \
+            || cp -v /usr/lib/gcc/x86_64-w64-mingw32/13-win32/libstdc++-6.dll _stage/usr/local/bin/ 2>/dev/null \
+            || cp -v /usr/x86_64-w64-mingw32/lib/libstdc++-6.dll _stage/usr/local/bin/ || true
+          cp -v /usr/lib/gcc/x86_64-w64-mingw32/13-posix/libgcc_s_seh-1.dll _stage/usr/local/bin/ 2>/dev/null \
+            || cp -v /usr/lib/gcc/x86_64-w64-mingw32/13-win32/libgcc_s_seh-1.dll _stage/usr/local/bin/ 2>/dev/null \
+            || cp -v /usr/x86_64-w64-mingw32/lib/libgcc_s_seh-1.dll _stage/usr/local/bin/ || true
+          find /usr/x86_64-w64-mingw32 -name 'libwinpthread-1.dll' -exec cp -v {} _stage/usr/local/bin/ \; || true
+          ls -la _stage/usr/local/bin/ | tee runtime-dll-listing.txt
           find _stage -maxdepth 5 -type f | tee install-tree.txt
       - name: Acceptance probes (LTO gone, models in, pkg-config real)
         run: |
