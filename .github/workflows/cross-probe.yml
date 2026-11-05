@@ -128,7 +128,14 @@ jobs:
           # of the expected 16.0". r5 builds SHARED, which is also the form the
           # Windows ffmpeg.exe embedding actually consumes (import lib + DLL),
           # and which auto-disables LTO through ADR-3397.
-          # zimg was cross-built into the sysroot in the step above.
+          # zimg was cross-built into the sysroot in the step above. The cross
+          # .pc is NOT on the host pkg-config default path (r5 attempt 3 proved
+          # it: zimg.pc installed into /usr/x86_64-w64-mingw32/lib/pkgconfig,
+          # setup still said "zimg found: NO" with /usr/bin/pkg-config), so
+          # point PKG_CONFIG_PATH at the sysroot explicitly — the cross file
+          # keeps pkg-config = 'pkg-config', the same binary.
+          export PKG_CONFIG_PATH=/usr/x86_64-w64-mingw32/lib/pkgconfig
+          echo "zimg modversion: $(pkg-config --modversion zimg)" | tee pkgconfig-zimg.txt
           meson setup build-cross core --cross-file mingw-cross.txt \
             --buildtype release --default-library shared \
             -Denable_cuda=true -Denable_zimg=true -Denable_dnn=disabled \
