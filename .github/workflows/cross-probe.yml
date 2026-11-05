@@ -145,6 +145,12 @@ jobs:
       - name: Install into a staging tree (r4 never produced the delivery layout)
         run: |
           DESTDIR=$PWD/_stage meson install -C build-cross 2>&1 | tee install-l2.log
+          # The DLLs import libzimg-2.dll (hard dependency); the zimg runtime
+          # lives in the sysroot, not in the vmafx install tree. Stage it next
+          # to them so the staged bin/ directory is load-complete (r5 attempt 5
+          # locally failed with 0xC0000135 until this was noticed).
+          mkdir -p _stage/usr/local/bin
+          find /usr/x86_64-w64-mingw32 -name 'libzimg-*.dll' -exec cp -v {} _stage/usr/local/bin/ \; | tee zimg-runtime-stage.txt
           find _stage -maxdepth 5 -type f | tee install-tree.txt
       - name: Acceptance probes (LTO gone, models in, pkg-config real)
         run: |
