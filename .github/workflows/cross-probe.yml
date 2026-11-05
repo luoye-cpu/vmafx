@@ -149,9 +149,14 @@ jobs:
       - name: Acceptance probes (LTO gone, models in, pkg-config real)
         run: |
           # N1: r4 objects were pure LTO GIMPLE IR (7141 .gnu.lto_* sections,
-          # .text scnlen 0x0). The shared leg must show real sections and no
-          # LTO sections in the two shipped archives.
-          for f in build-cross/src/libvmafx.a build-cross/src/libvmaf.a; do
+          # .text scnlen 0x0). The shared leg has no .a archives for the two
+          # libraries (they build as DLL + import library); probe the import
+          # libraries and the DLLs instead. r5 attempt 4 proved the point the
+          # hard way: build-cross/src/libvmafx.a does not exist in a shared
+          # build and the step died on missing files.
+          for f in build-cross/src/libvmafx.dll.a build-cross/src/libvmaf.dll.a \
+                   _stage/usr/local/bin/libvmafx-1.dll _stage/usr/local/bin/libvmaf-3.dll; do
+            if [ ! -f "$f" ]; then echo "MISSING $f" | tee -a acceptance-l2.txt; continue; fi
             echo "== $f" | tee -a acceptance-l2.txt
             echo "lto sections:   $(x86_64-w64-mingw32-objdump -h "$f" | grep -c '\.gnu\.lto_')" | tee -a acceptance-l2.txt
             echo "text sections:  $(x86_64-w64-mingw32-objdump -h "$f" | grep -c '\.text')" | tee -a acceptance-l2.txt
@@ -161,12 +166,17 @@ jobs:
           # N3: the .pc files exist and expand with --static like FFmpeg will
           # read them.
           find build-cross -name '*.pc' | tee pc-found.txt
+          mkdir -p pc-out
           for pc in $(find build-cross -name '*.pc'); do
-            cp "$pc" .
+            cp "$pc" pc-out/
           done
-          PKG_CONFIG_PATH=$PWD pkg-config --modversion libvmafx | tee -a acceptance-l2.txt
-          PKG_CONFIG_PATH=$PWD pkg-config --cflags --libs --static libvmafx | tee pc-static-libvmafx.txt | tee -a acceptance-l2.txt
-          PKG_CONFIG_PATH=$PWD pkg-config --cflags --libs --static libvmaf  | tee pc-static-libvmaf.txt | tee -a acceptance-l2.txt
+          # --static pulls Requires.private (zimg), which lives in the cross
+          # sysroot, not next to these .pc files (r5 attempt 4 died there:
+          # "Package 'zimg', required by 'libvmafx-uninstalled', not found").
+          export PKG_CONFIG_PATH="$PWD/pc-out:/usr/x86_64-w64-mingw32/lib/pkgconfig"
+          pkg-config --modversion libvmafx | tee -a acceptance-l2.txt
+          pkg-config --cflags --libs --static libvmafx | tee pc-static-libvmafx.txt | tee -a acceptance-l2.txt
+          pkg-config --cflags --libs --static libvmaf  | tee pc-static-libvmaf.txt | tee -a acceptance-l2.txt
       - name: Extract the nvcc orchestration (adjudication point 1 evidence)
         run: |
           grep -n 'nvcc' build-cross/build.ninja | tee nvcc-rules-l2.txt || true
@@ -177,7 +187,8 @@ jobs:
             meson-setup-l2.log ninja-l2.log nvcc-rules-l2.txt install-l2.log \
             install-tree.txt acceptance-l2.txt pc-found.txt \
             pc-static-libvmafx.txt pc-static-libvmaf.txt sysroot-pc-listing.txt \
-            *.pc \
+            pc-out/*.pc \
+            pkgconfig-zimg.txt \
             build-cross/build.ninja build-cross/meson-logs/meson-log.txt || true
           find _stage -type f -name '*.dll' -o -type f -name '*.a' -o -type f -name '*.pc' | tee l2-stage-list.txt || true
           tar czf l2-stage.tgz _stage || true
