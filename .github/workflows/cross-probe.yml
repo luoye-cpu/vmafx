@@ -170,14 +170,36 @@ jobs:
           # the matching runtime; the sysroot copy is the flavor the default
           # gcc actually links, so it stays as the fallback.
           GCC_TM=$(x86_64-w64-mingw32-gcc -v 2>&1 | sed -n 's/^Thread model: //p')
-          GCC_MAJ=$(x86_64-w64-mingw32-gcc -dumpversion | cut -d. -f1)
-          echo "cross gcc ${GCC_MAJ} thread model: ${GCC_TM:-unknown}" | tee gcc-thread-model.txt
-          RTDIR="/usr/lib/gcc/x86_64-w64-mingw32/${GCC_MAJ}-${GCC_TM:-win32}"
-          cp -v "$RTDIR/libstdc++-6.dll" _stage/usr/local/bin/ 2>/dev/null \
-            || cp -v /usr/x86_64-w64-mingw32/lib/libstdc++-6.dll _stage/usr/local/bin/ || true
-          cp -v "$RTDIR/libgcc_s_seh-1.dll" _stage/usr/local/bin/ 2>/dev/null \
-            || cp -v /usr/x86_64-w64-mingw32/lib/libgcc_s_seh-1.dll _stage/usr/local/bin/ || true
+          echo "cross gcc thread model: ${GCC_TM:-unknown}" | tee gcc-thread-model.txt
+          # Do NOT reconstruct the /usr/lib/gcc/<target>/<ver>-<flavor> path:
+          # Debian's flavored drivers report their -dumpversion as "13-win32"
+          # (no bare "13"), so the r6 attempt built "<ver>-<flavor>"-twice and
+          # silently staged nothing. Ask gcc where its own runtime lives:
+          STDCXX=$(x86_64-w64-mingw32-g++ -print-file-name=libstdc++-6.dll)
+          LIBGCC=$(x86_64-w64-mingw32-gcc -print-file-name=libgcc_s_seh-1.dll)
+          echo "resolved libstdc++-6.dll: ${STDCXX}"
+          echo "resolved libgcc_s_seh-1.dll: ${LIBGCC}"
+          for f in "$STDCXX" "$LIBGCC"; do
+            case "$f" in
+              /*) cp -v "$f" _stage/usr/local/bin/ ;;
+              *) echo "FATAL: gcc did not resolve its runtime DLL ($f)"; exit 1 ;;
+            esac
+          done
           find /usr/x86_64-w64-mingw32 -name 'libwinpthread-1.dll' -exec cp -v {} _stage/usr/local/bin/ \; || true
+          # B24 regression gate: the staged C++ runtime flavor must match the
+          # compiler's thread model -- a posix libstdc++-6.dll next to a
+          # win32-model exe deadlocks every real scoring run on the host.
+          if [ "${GCC_TM:-unknown}" = win32 ]; then
+            if x86_64-w64-mingw32-objdump -p _stage/usr/local/bin/libstdc++-6.dll | grep -q "libwinpthread"; then
+              echo "FATAL: win32-model compiler but staged libstdc++-6.dll imports libwinpthread (B24)"
+              exit 1
+            fi
+          else
+            if ! x86_64-w64-mingw32-objdump -p _stage/usr/local/bin/libstdc++-6.dll | grep -q "libwinpthread"; then
+              echo "FATAL: ${GCC_TM:-unknown}-model compiler but staged libstdc++-6.dll is not posix-flavor (B24)"
+              exit 1
+            fi
+          fi
           ls -la _stage/usr/local/bin/ | tee runtime-dll-listing.txt
           find _stage -maxdepth 5 -type f | tee install-tree.txt
       - name: Acceptance probes (LTO gone, models in, pkg-config real)
