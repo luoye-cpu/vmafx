@@ -1,0 +1,20 @@
+vmafx vk-probe report
+device: NVIDIA GeForce RTX 5080 vendor=0x10de device=0x2c02 type=2
+api=1.4.357 driver=621.257.0
+features: shaderFloat64=1 shaderInt64=1
+count=4096
+
+== op0 umul32-product ==
+  verdict: PASS
+
+== op1 u64-add-reduce ==
+  verdict: PASS
+
+== op2 fma-contraction ==
+  contracted-pattern hits=3791 separated-pattern hits=4071 edge=165 other=0 precise-violations=0 (of 4096)
+  verdict: PASS
+
+== op3 dispatch-sentinel ==
+  verdict: PASS
+
+overall: PASS
