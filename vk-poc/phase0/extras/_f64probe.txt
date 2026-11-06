@@ -1,0 +1,2 @@
+# tool=vk-adm device="Intel(R) RaptorLake-S Mobile Graphics Controller" vendor=0x8086 deviceid=0xa78b fixture=576x324_48f frames=2 w=576 h=324
+# fields: frame s0num s0den s1num s1den s2num s2den s3num s3den num den adm2

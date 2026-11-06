@@ -1,0 +1,50 @@
+#version 450
+// VK PoC Phase 0 extension — subgroupAdd(int64) vs butterfly A/B (scratch).
+// Answers the maintainer's open question on #3311: does NVIDIA's
+// subgroupAdd(int64_t) lowering still miscompute on current drivers, or did
+// it only matter on the API-1.4-era stack that PR #787 worked around?
+// mode 0: r = subgroupAdd(v)            — the removed-backend form
+// mode 1: butterfly with subgroupShuffleXor — the PR #787 form
+// v depends only on gl_SubgroupInvocationID, so every subgroup computes the
+// SAME golden sum and every lane of every subgroup must write identical
+// (lo, hi) words. Host checks all `count` outputs against the CPU golden.
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_shuffle : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : enable
+#extension GL_EXT_shader_subgroup_extended_types_int64 : enable
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) writeonly buffer Out0 { uint out0[]; };
+layout(std430, binding = 1) writeonly buffer Out1 { uint out1[]; };
+
+layout(push_constant) uniform PC {
+    uint op;     // 3 = this probe (reserved for host bookkeeping)
+    uint count;  // invocations
+    uint mode;   // 0 = subgroupAdd, 1 = butterfly
+    uint salt;   // output mixing so a zeroed buffer cannot pass
+} pc;
+
+uint64_t lane_val(uint l) {
+    uint64_t a = 0x9E3779B97F4A7C15UL * (uint64_t(l) + 1UL);
+    uint64_t b = 0xD1B54A32D192EB03UL * (uint64_t(l) * 3UL + 7UL);
+    return a + b;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.count) return;
+    int64_t v = int64_t(lane_val(gl_SubgroupInvocationID));
+    int64_t r;
+    if (pc.mode == 0u) {
+        r = subgroupAdd(v); // int64 subgroup arithmetic — the suspected lowering bug
+    } else {
+        r = v;
+        for (uint m = 1u; m < gl_SubgroupSize; m <<= 1u)
+            r = r + subgroupShuffleXor(r, m); // PR #787 butterfly, int64 adds
+    }
+    uint64_t ub = uint64_t(r);
+    out0[i] = uint(ub & 0xFFFFFFFFUL) ^ pc.salt;
+    out1[i] = uint(ub >> 32) ^ pc.salt;
+}

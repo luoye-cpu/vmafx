@@ -1,0 +1,12 @@
+  [0] NVIDIA GeForce RTX 5080 vendor=0x10de device=0x2c02 api=1.4.357
+  [1] NVIDIA GeForce RTX 5080 vendor=0x10de device=0x2c02 api=1.4.357
+  [2] Intel(R) RaptorLake-S Mobile Graphics Controller vendor=0x8086 device=0xa78b api=1.4.323
+  [3] NVIDIA GeForce RTX 4060 Laptop GPU vendor=0x10de device=0x28e0 api=1.4.357
+  [4] NVIDIA GeForce RTX 4060 Laptop GPU vendor=0x10de device=0x28e0 api=1.4.357
+selected: NVIDIA GeForce RTX 4060 Laptop GPU (vendor 0x10de device 0x28e0) subgroupSize=32 subgroupOps=0x7ff quadOps=0x1
+VK_EXT_shader_subgroup_extended_types: not listed
+  (promoted to core in Vulkan 1.2 — absence from a 1.2+ device's list is expected)
+golden (subgroupSize=32): becb427010238f60
+  mode 0 (subgroupAdd(int64)): PASS  all 1024 lanes == golden becb427010238f60
+  mode 1 (butterfly shuffleXor): PASS  all 1024 lanes == golden becb427010238f60
+verdict: BOTH MODES PASS
