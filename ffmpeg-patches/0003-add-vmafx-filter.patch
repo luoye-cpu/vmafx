@@ -491,8 +491,6 @@ index 0000000000000000000000000000000000000000..261d1cef7e64fe85800dc447c87060e1
 +        const int32_t err = vmafx_error_errno(error);
 +        if (err < 0)
 +            return err;
-+        if (err > 0)
-+            return -err;
 +    }
 +    switch (status) {
 +    case VMAFX_OK:

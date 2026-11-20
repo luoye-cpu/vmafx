@@ -235,8 +235,6 @@ static int vmafx_status_to_averror(VmafxStatus status, const VmafxError *error)
         const int32_t err = vmafx_error_errno(error);
         if (err < 0)
             return err;
-        if (err > 0)
-            return -err;
     }
     switch (status) {
     case VMAFX_OK:
