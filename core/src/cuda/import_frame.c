@@ -595,8 +595,9 @@ static VmafxStatus check_array(const VmafxReport *report, const VmafxCudaDevice 
         a.Format == format && a.NumChannels == channels) {
         return VMAFX_OK;
     }
-    return VMAFX_FAIL(report, res == CUDA_SUCCESS ? VMAFX_E_INVALID : VMAFX_E_DEVICE, vmaf_cuda_result_to_errno((int)res),
-                      VMAFX_SUBJECT_PLANE, vmafx_import_plane_field(i, "handle"),
+    return VMAFX_FAIL(report, res == CUDA_SUCCESS ? VMAFX_E_INVALID : VMAFX_E_DEVICE,
+                      vmaf_cuda_result_to_errno((int)res), VMAFX_SUBJECT_PLANE,
+                      vmafx_import_plane_field(i, "handle"),
                       "plane %u: array %zux%zux%zu, format 0x%x, %u channel(s); the plane is "
                       "%ux%u of %u-bit samples, %u channel(s) (CUDA error %d)",
                       (unsigned)i, a.Width, a.Height, a.Depth, (unsigned)a.Format,
