@@ -110,7 +110,7 @@ static VmafxStatus driver_or_fail(const VmafxReport *report, const VmafxCudaDriv
                           "(libcuda.so.1 / nvcuda.dll); see docs/backends/cuda/overview.md");
     }
     if ((*drv)->init != CUDA_SUCCESS && (int)(*drv)->init != VMAFX_CU_ERROR_NO_DEVICE) {
-        return VMAFX_FAIL(report, VMAFX_E_DEVICE, (int32_t)(*drv)->init, VMAFX_SUBJECT_BACKEND,
+        return VMAFX_FAIL(report, VMAFX_E_DEVICE, vmaf_cuda_result_to_errno((int)(*drv)->init), VMAFX_SUBJECT_BACKEND,
                           "cuda", "backend cuda: cuInit(0) failed (%d)", (int)(*drv)->init);
     }
     return VMAFX_OK;
@@ -126,7 +126,7 @@ static VmafxStatus cuda_failed(const VmafxReport *report, CUresult res, const ch
     }
     return VMAFX_FAIL(report,
                       (int)res == VMAFX_CU_ERROR_OUT_OF_MEMORY ? VMAFX_E_NOMEM : VMAFX_E_DEVICE,
-                      (int32_t)res, VMAFX_SUBJECT_DEVICE, subject,
+                      vmaf_cuda_result_to_errno((int)res), VMAFX_SUBJECT_DEVICE, subject,
                       "backend cuda: %s failed: %s (%d)", call, name, (int)res);
 }
 

@@ -61,7 +61,7 @@ static VmafxStatus gl_register(const VmafxReport *report, VmafxCudaFrame *cf,
     if (res == CUDA_SUCCESS) {
         (void)f->cuGraphicsUnregisterResource(cf->gl.res[i]);
     }
-    return VMAFX_FAIL(report, res == CUDA_SUCCESS ? VMAFX_E_INVALID : VMAFX_E_NOTSUP, (int32_t)res,
+    return VMAFX_FAIL(report, res == CUDA_SUCCESS ? VMAFX_E_INVALID : VMAFX_E_NOTSUP, 0,
                       VMAFX_SUBJECT_PLANE, vmafx_import_plane_field(i, "handle"),
                       "backend cuda: cannot register GL texture %llu of plane %u (CUDA error %d): "
                       "a GL_TEXTURE_2D of the GL context current on this thread, on this CUDA "
@@ -89,7 +89,7 @@ VmafxStatus vmafx_cuda_gl_map(const VmafxReport *report, VmafxCudaFrame *cf,
     if (res == CUDA_SUCCESS) {
         return VMAFX_OK;
     }
-    return VMAFX_FAIL(report, VMAFX_E_DEVICE, (int32_t)res, VMAFX_SUBJECT_FRAME, "desc",
+    return VMAFX_FAIL(report, VMAFX_E_DEVICE, vmaf_cuda_result_to_errno((int)res), VMAFX_SUBJECT_FRAME, "desc",
                       "backend cuda: cannot map the GL textures (CUDA error %d)", (int)res);
 }
 

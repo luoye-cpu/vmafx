@@ -595,7 +595,7 @@ static VmafxStatus check_array(const VmafxReport *report, const VmafxCudaDevice 
         a.Format == format && a.NumChannels == channels) {
         return VMAFX_OK;
     }
-    return VMAFX_FAIL(report, res == CUDA_SUCCESS ? VMAFX_E_INVALID : VMAFX_E_DEVICE, (int32_t)res,
+    return VMAFX_FAIL(report, res == CUDA_SUCCESS ? VMAFX_E_INVALID : VMAFX_E_DEVICE, vmaf_cuda_result_to_errno((int)res),
                       VMAFX_SUBJECT_PLANE, vmafx_import_plane_field(i, "handle"),
                       "plane %u: array %zux%zux%zu, format 0x%x, %u channel(s); the plane is "
                       "%ux%u of %u-bit samples, %u channel(s) (CUDA error %d)",
@@ -630,7 +630,7 @@ static VmafxStatus alloc_owned(const VmafxReport *report, VmafxCudaFrame *cf, co
     cf->owned = 0;
     return VMAFX_FAIL(report,
                       (int)res == VMAFX_CU_ERROR_OUT_OF_MEMORY ? VMAFX_E_NOMEM : VMAFX_E_DEVICE,
-                      (int32_t)res, VMAFX_SUBJECT_FRAME, "frame",
+                      vmaf_cuda_result_to_errno((int)res), VMAFX_SUBJECT_FRAME, "frame",
                       "backend cuda: cannot allocate %zu bytes of converted planes (CUDA error "
                       "%d)",
                       plan->total, (int)res);
@@ -669,7 +669,7 @@ static VmafxStatus fill_planes(const VmafxReport *report, VmafxCudaFrame *cf, co
         stride[i] = (ptrdiff_t)(plan.owned[i] ? plan.pitch[i] : src->d->plane[i].pitch);
     }
     if (status == VMAFX_OK && res != CUDA_SUCCESS) {
-        status = VMAFX_FAIL(report, VMAFX_E_DEVICE, (int32_t)res, VMAFX_SUBJECT_FRAME, "frame",
+        status = VMAFX_FAIL(report, VMAFX_E_DEVICE, vmaf_cuda_result_to_errno((int)res), VMAFX_SUBJECT_FRAME, "frame",
                             "backend cuda: cannot enqueue the planes of the import (CUDA error %d)",
                             (int)res);
     }

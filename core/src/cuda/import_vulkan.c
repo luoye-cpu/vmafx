@@ -127,7 +127,7 @@ static VmafxStatus cuda_error(const VmafxReport *report, CUresult res, const cha
 {
     return VMAFX_FAIL(report,
                       (int)res == VMAFX_CU_ERROR_OUT_OF_MEMORY ? VMAFX_E_NOMEM : VMAFX_E_DEVICE,
-                      (int32_t)res, VMAFX_SUBJECT_PARAMETER, subject,
+                      vmaf_cuda_result_to_errno((int)res), VMAFX_SUBJECT_PARAMETER, subject,
                       "backend cuda: %s failed (CUDA error %d)", call, (int)res);
 }
 
@@ -155,7 +155,7 @@ static VmafxStatus import_semaphore(const VmafxReport *report, const VmafxCudaDe
     const CUresult res = dev->state.f->cuImportExternalSemaphore(out, &desc);
     if (res != CUDA_SUCCESS) {
         (void)VMAF_CLOSE(desc.handle.fd);
-        return VMAFX_FAIL(report, VMAFX_E_NOTSUP, (int32_t)res, VMAFX_SUBJECT_FENCE, subject,
+        return VMAFX_FAIL(report, VMAFX_E_NOTSUP, 0, VMAFX_SUBJECT_FENCE, subject,
                           "backend cuda: cannot import the Vulkan timeline semaphore (CUDA error "
                           "%d); is it an exported VK_SEMAPHORE_TYPE_TIMELINE of the device's GPU?",
                           (int)res);
@@ -190,7 +190,7 @@ static VmafxStatus import_memory(const VmafxReport *report, const VmafxCudaDevic
     const CUresult res = dev->state.f->cuImportExternalMemory(&vk->mem[vk->n_mem], &desc);
     if (res != CUDA_SUCCESS) {
         (void)VMAF_CLOSE(desc.handle.fd);
-        return VMAFX_FAIL(report, VMAFX_E_NOTSUP, (int32_t)res, VMAFX_SUBJECT_PLANE,
+        return VMAFX_FAIL(report, VMAFX_E_NOTSUP, 0, VMAFX_SUBJECT_PLANE,
                           vmafx_import_plane_field(i, "fd"),
                           "backend cuda: cannot import plane %u's Vulkan memory (%llu bytes, CUDA "
                           "error %d); is it OPAQUE_FD memory of the device's GPU?",

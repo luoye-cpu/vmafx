@@ -49,8 +49,14 @@
 
 /* nv-codec-headers only spell the few CUresult codes FFmpeg needs. These are the
  * driver's numeric codes, the same ones vmaf_cuda_result_to_errno() maps. */
+#define FAKE_CUDA_ERROR_INVALID_VALUE 1
 #define FAKE_CUDA_ERROR_OUT_OF_MEMORY 2
+#define FAKE_CUDA_ERROR_NOT_INITIALIZED 3
+#define FAKE_CUDA_ERROR_DEINITIALIZED 4
+#define FAKE_CUDA_ERROR_INVALID_DEVICE 101
 #define FAKE_CUDA_ERROR_INVALID_CONTEXT 201
+#define FAKE_CUDA_ERROR_INVALID_HANDLE 400
+#define FAKE_CUDA_ERROR_UNKNOWN 999
 
 typedef struct FakeDriver {
     int pushes;
@@ -1183,8 +1189,28 @@ static char *test_lifecycle_close_retries_pop_and_restores_foreign_context(void)
     return NULL;
 }
 
+static char *test_cuda_result_errno_mapping(void)
+{
+    mu_assert("CUDA_SUCCESS maps to zero", vmaf_cuda_result_to_errno(CUDA_SUCCESS) == 0);
+    mu_assert("CUDA OOM maps to -ENOMEM",
+              vmaf_cuda_result_to_errno(FAKE_CUDA_ERROR_OUT_OF_MEMORY) == -ENOMEM);
+    mu_assert("uninitialized CUDA maps to -ENODEV",
+              vmaf_cuda_result_to_errno(FAKE_CUDA_ERROR_NOT_INITIALIZED) == -ENODEV);
+    mu_assert("deinitialized CUDA maps to -ENODEV",
+              vmaf_cuda_result_to_errno(FAKE_CUDA_ERROR_DEINITIALIZED) == -ENODEV);
+    mu_assert("invalid CUDA values map to -EINVAL",
+              vmaf_cuda_result_to_errno(FAKE_CUDA_ERROR_INVALID_VALUE) == -EINVAL &&
+                  vmaf_cuda_result_to_errno(FAKE_CUDA_ERROR_INVALID_DEVICE) == -EINVAL &&
+                  vmaf_cuda_result_to_errno(FAKE_CUDA_ERROR_INVALID_CONTEXT) == -EINVAL &&
+                  vmaf_cuda_result_to_errno(FAKE_CUDA_ERROR_INVALID_HANDLE) == -EINVAL);
+    mu_assert("unmapped CUDA errors map to -EIO",
+              vmaf_cuda_result_to_errno(FAKE_CUDA_ERROR_UNKNOWN) == -EIO);
+    return NULL;
+}
+
 static char *run_legacy_unwind_tests_a(void)
 {
+    mu_run_test(test_cuda_result_errno_mapping);
     mu_run_test(test_picture_alloc_frees_earlier_planes_when_a_later_one_fails);
     mu_run_test(test_picture_alloc_unwinds_everything_when_the_final_pop_fails);
     mu_run_test(test_picture_alloc_leaves_no_indeterminate_private_fields);

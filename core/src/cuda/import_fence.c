@@ -97,7 +97,7 @@ static VmafxStatus release_event_take(const VmafxReport *report, VmafxCudaFrame 
     if (!cf->release_slot) {
         const CUresult res = cf->dev->state.f->cuEventCreate(&fresh, CU_EVENT_DISABLE_TIMING);
         if (res != CUDA_SUCCESS) {
-            return VMAFX_FAIL(report, VMAFX_E_DEVICE, (int32_t)res, VMAFX_SUBJECT_FENCE, "out",
+            return VMAFX_FAIL(report, VMAFX_E_DEVICE, vmaf_cuda_result_to_errno((int)res), VMAFX_SUBJECT_FENCE, "out",
                               "backend cuda: cannot create a release event (CUDA error %d)",
                               (int)res);
         }
@@ -244,7 +244,7 @@ VmafxStatus vmafx_cuda_fence_create(const VmafxReport *report, VmafxDevice *devi
         (void)vmafx_cuda_pop(dev, 0);
     }
     if (pushed != 0 || res != CUDA_SUCCESS) {
-        return VMAFX_FAIL(report, VMAFX_E_DEVICE, pushed ? pushed : (int32_t)res,
+        return VMAFX_FAIL(report, VMAFX_E_DEVICE, pushed ? pushed : vmaf_cuda_result_to_errno((int)res),
                           VMAFX_SUBJECT_FENCE, "out",
                           "backend cuda: cannot create an event (%s %d)",
                           pushed ? "context" : "CUDA error", pushed ? pushed : (int)res);
@@ -269,7 +269,7 @@ static int event_done(const void *arg)
         return 0;
     }
     const CUresult res = vmafx_cuda_driver()->f->cuEventQuery(event);
-    return res == CUDA_SUCCESS ? 1 : res == CUDA_ERROR_NOT_READY ? 0 : -(int)res;
+    return res == CUDA_SUCCESS ? 1 : res == CUDA_ERROR_NOT_READY ? 0 : vmaf_cuda_result_to_errno((int)res);
 }
 
 VmafxStatus vmafx_cuda_fence_wait(const VmafxReport *report, const VmafxFence *fence,
@@ -313,8 +313,7 @@ VmafxStatus vmafx_cuda_fence_destroy(const VmafxReport *report, const VmafxFence
     const bool release = vmafx_release_events_drop(&release_events, fence->handle);
     const CUresult res = release ? CUDA_SUCCESS : drv->f->cuEventDestroy(event);
     if (res != CUDA_SUCCESS) {
-        return VMAFX_FAIL(report, VMAFX_E_INVALID, (int32_t)res, VMAFX_SUBJECT_FENCE,
-                          "fence.handle",
+        return VMAFX_FAIL(report, VMAFX_E_INVALID, 0, VMAFX_SUBJECT_FENCE, "fence.handle",
                           "backend cuda: cannot destroy event 0x%llx (CUDA error %d)",
                           (unsigned long long)fence->handle, (int)res);
     }

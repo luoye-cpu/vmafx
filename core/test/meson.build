@@ -257,6 +257,13 @@ test('test_vmafx_import_cuda_cells_contract',
     timeout : 30,
 )
 
+test('test_cuda_errno_contract',
+    import('python').find_installation(),
+    args : files('test_cuda_errno_contract.py'),
+    suite : ['fast'],
+    timeout : 30,
+)
+
 # No CUDA, HIP, SYCL or Metal source advances a pointer to samples wider than
 # a byte by a byte stride (the class of an upstream CUDA 16-bit motion defect):
 # a static scan of core/src with planted upstream forms. Device-free.
