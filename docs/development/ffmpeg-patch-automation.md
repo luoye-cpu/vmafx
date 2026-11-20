@@ -151,8 +151,8 @@ tag's name, so the hook at every commit and push reads the commit from disk.
 - **Which path ran:** the command output and `receipt.json` (`source`,
   `target_source`, `cache`) say `cache hit`, `fetched into cache` or, for a
   newer release found by `--latest`, `fetched (unpinned)`. A newer release has
-  no pin yet: it is always fetched, and `--refresh --latest` writes its commit
-  to `FFMPEG_COMMIT` together with the tag.
+  no pin yet: it is fetched for replay; only an explicit `--refresh --latest`
+  writes its commit to `FFMPEG_COMMIT` together with the tag.
 - **Concurrency:** writers hold a lock file next to the repository (waiting at
   most ten minutes), and a ref moves only after its commit was fetched and
   verified, so parallel hooks share one entry.
@@ -198,7 +198,7 @@ The **FFmpeg Patch Stack** check registers on every ready pull request to
 | Trigger | What runs | Which release |
 | --- | --- | --- |
 | Pull request, push to `master`, manual dispatch | Contract tests on every event; fetch and replay of the complete series when the ADR-1140 impact planner selects it | The configured release (`FFMPEG_TAG`); never discovers a newer one |
-| Schedule, 05:43 UTC daily (**FFmpeg Release Refresh** job) | `--refresh --latest`, see below | The newest stable upstream release |
+| Schedule, 05:43 UTC daily (**FFmpeg Release Refresh** job) | `--scan-latest --latest`, see below | The newest stable upstream release |
 
 The impact planner selects the expensive fetch and replay for core, patch,
 workflow or CI-authority changes. Unknown inputs take the full validation
@@ -211,26 +211,41 @@ Local pre-commit and pre-push runs keep it enabled.
 
 ### Scheduled release discovery
 
-The scheduled updater owns upstream discovery. Renovate no longer opens
-separate FFmpeg pin-only updates that omit the series rebase. The job runs:
+The scheduled job scans upstream without creating a PR or modifying pins. It
+requires `FFMPEG_FIX_SERIES_VERIFY=cosign` and runs:
 
 ```bash
-python3 scripts/ci/ffmpeg_patch_stack.py --refresh --latest \
+python3 scripts/ci/ffmpeg_patch_stack.py --scan-latest --latest \
   --output-dir "$RUNNER_TEMP/ffmpeg-patch-refresh"
 ```
 
-`--latest` is accepted only with `--refresh`. It discovers the highest stable
-`nX.Y` or `nX.Y.Z` upstream release tag and replays the complete series onto
-it. Development, RC and snapshot refs are excluded.
+`--scan-latest` requires all three shared-series pins and discovers the highest
+stable `nX.Y` or `nX.Y.Z` upstream release; development, RC and snapshot refs are
+excluded. It first verifies and replays the configured stack. The current shared
+series tarball must match its pinned SHA256, release `SHA256SUMS`, cosign signature
+and configured FFmpeg tag and commit.
 
-The pinned shared fix series targets one FFmpeg release. When a newer release
-exists, the refresh therefore stops with `FFmpeg n9.1 is released, but the
-pinned shared fix series v0.5.0 targets n9.0.2` (with the tags of the day),
-writes nothing to the tree, and
-keeps the rebased candidate patches under `<output-dir>/patches`. Move
-`FFMPEG_FIX_SERIES_TAG` and `FFMPEG_FIX_SERIES_SHA256` to a series release for
-the new FFmpeg together with `FFMPEG_TAG` and `FFMPEG_COMMIT`, then run
-`--refresh`.
+For a newer FFmpeg base, the scan enumerates published stable releases of the
+configured GitHub shared-series repository using `gh api`. Discovery is bounded
+to 64 releases and a 20-minute inspection budget; a truncated page or exhausted
+budget fails instead of reporting no match. The existing shared-series helper's
+`inspect` command verifies each release's canonical signed `SHA256SUMS` before
+using its digest to verify and unpack the tarball. URL overrides are refused.
+Only a candidate whose `base.env` matches both the FFmpeg tag and fetched peeled
+commit can be selected. The highest matching series is replayed directly on that
+base, followed by the complete local stack; the old shared series is not rebased.
+
+A compatible candidate produces a unified patch containing only `ffmpeg-patches/`
+changes and a receipt with `candidate_shared` (series tag, SHA256, base tag and
+commit) and `verified_candidates`. `build-config.env` and Docker pins are never
+part of the proposal. No newer stable release, or a completed inspection finding
+no compatible series, yields an explicit `reason_code`/`reason` and an empty
+proposal. An incompatible-series no-op also prints a workflow warning.
+
+A scan conflict or any verification error fails and retains diagnostics. The
+artifact is evidence for maintainer review, not an automatic Renovate update or
+pull request. Updating shared-series and FFmpeg pins remains a separate reviewed
+change.
 
 The job uploads a `ffmpeg-patch-refresh-<run-id>-<attempt>` artifact, retained
 for 14 days, containing:
@@ -239,11 +254,24 @@ for 14 days, containing:
 - the command log;
 - `source-revision.txt`;
 - `worktree-status.txt`;
-- `proposed-refresh.patch`.
+- `proposed-refresh.patch` (empty for an explicit no-op).
 
-The diff includes tracked generated configuration mirrors as well as the patch
-series. Review it against the recorded source revision before applying it to
-an isolated branch and running the configured-release check.
+The proposal is restricted to `ffmpeg-patches/`. Review it against the recorded
+source revision, apply it on an isolated branch with `git apply --check` first,
+then move all four pins (`FFMPEG_TAG`, `FFMPEG_COMMIT`, `FFMPEG_FIX_SERIES_TAG`,
+`FFMPEG_FIX_SERIES_SHA256`) to the receipt's candidate values. Run `--refresh` to
+update Docker mirrors and replay the newly configured release, then `--check`.
+This workflow supports human review of a future FFmpeg base. Same-base automated
+shared-series updates remain the signed compatibility-index and Renovate work
+tracked in issue #3313; the scan does not implement that datasource or manager.
+
+The bounded scan tests execute the shell helper, SHA256 checks, OpenSSL signature
+verification and real Git replay with local transport and a cosign CLI stand-in.
+They verify the local control flow and tamper refusal, not Sigstore certificate,
+TUF or transparency-log validation. Hosted verification with real cosign remains
+necessary. Reusing an output directory clears the previous proposal before a new
+attempt; a failed receipt has no current proposal. Source revision and worktree
+status are recorded even when the scan fails.
 
 A replay conflict leaves the scheduled job failed and retains its diagnostics.
 The workflow has read-only repository permissions and creates no pull request,

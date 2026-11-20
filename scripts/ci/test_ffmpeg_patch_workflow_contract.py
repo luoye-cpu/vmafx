@@ -262,7 +262,7 @@ class FFmpegWorkflowContract(unittest.TestCase):
         self.assertIn('cron: "43 5 * * *"', self.workflow)
         header = self.refresh.split("    steps:\n", maxsplit=1)[0]
         self.assertIn("if: github.event_name == 'schedule'", header)
-        self.assertIn("--refresh --latest --output-dir", self.refresh)
+        self.assertIn("--scan-latest --latest --output-dir", self.refresh)
         self.assertIn("permissions:\n  contents: read", self.workflow)
         self.assertNotRegex(self.workflow, r"(?m)^\s+(?:contents|pull-requests): write")
         self.assertNotIn("continue-on-error", self.workflow)
@@ -278,9 +278,13 @@ class FFmpegWorkflowContract(unittest.TestCase):
         record = _step(self.refresh, "Record proposed refresh")
         upload = _step(self.refresh, "Retain refresh proposal")
         self.assertIn("if: always()", record)
-        self.assertIn("git diff --binary >", record)
+        self.assertIn("test -f", record)
         self.assertIn("proposed-refresh.patch", record)
+        self.assertNotIn("git diff --binary >", record)
         self.assertIn("source-revision.txt", record)
+        self.assertLess(record.index("source-revision.txt"), record.index("test -f"))
+        self.assertIn('if [ "$SCAN_OUTCOME" = success ]; then', record)
+        self.assertIn("SCAN_OUTCOME: ${{ steps.refresh.outcome }}", record)
         self.assertIn("worktree-status.txt", record)
         self.assertIn("if: ${{ (always()) && env.GITEA_ACTIONS != 'true' }}", upload)
         self.assertIn("if-no-files-found: error", upload)
@@ -363,7 +367,7 @@ class FFmpegWorkflowContract(unittest.TestCase):
     def test_command_failure_survives_diagnostic_tee(self) -> None:
         for job, step_name, output in (
             (self.check, "Check configured FFmpeg release", "ffmpeg-patch-check"),
-            (self.refresh, "Refresh to the latest stable release", "ffmpeg-patch-refresh"),
+            (self.refresh, "Scan the latest stable release", "ffmpeg-patch-refresh"),
         ):
             with self.subTest(step=step_name), tempfile.TemporaryDirectory() as temporary:
                 directory = Path(temporary)
@@ -463,8 +467,7 @@ class FFmpegWorkflowContract(unittest.TestCase):
         gate = line + "\n" + block.group(0) + "\n"
         cases = {
             "gcc warning": (
-                "libavfilter/vf_vmafx.c:211:13: warning: unused variable 'n' "
-                "[-Wunused-variable]\n",
+                "libavfilter/vf_vmafx.c:211:13: warning: unused variable 'n' [-Wunused-variable]\n",
                 1,
             ),
             "clang warning": (
@@ -668,6 +671,17 @@ class SharedFixSeriesContract(unittest.TestCase):
                 self.assertLess(
                     text.index("sigstore/cosign-installer@"), text.index("ffmpeg_patch_stack.py")
                 )
+
+    def test_scheduled_refresh_is_artifact_only(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        refresh = _job(workflow, "refresh")
+        self.assertIn("--scan-latest --latest --output-dir", refresh)
+        self.assertIn('test -f "$output_dir/proposed-refresh.patch"', refresh)
+        self.assertNotIn('git diff --binary > "$output_dir/proposed-refresh.patch"', refresh)
+        script = (ROOT / "scripts/ci/ffmpeg_patch_stack.py").read_text(encoding="utf-8")
+        self.assertIn('"--scan-latest"', script)
+        self.assertIn('"status": "no-op"', script)
+        self.assertIn("FFMPEG_FIX_SERIES_VERIFY", script)
 
     def test_script_refuses_missing_pins_and_unknown_modes(self) -> None:
         script = ROOT / "scripts/ci" / self.SCRIPT

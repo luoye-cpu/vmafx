@@ -234,7 +234,7 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
 
-      - name: Refresh to the latest stable release
+      - name: Scan the latest stable release
         id: refresh
         shell: bash
         env:
@@ -244,19 +244,23 @@ jobs:
           set -euo pipefail
           output_dir="$RUNNER_TEMP/ffmpeg-patch-refresh"
           mkdir -p "$output_dir"
-          python3 scripts/ci/ffmpeg_patch_stack.py --refresh --latest --output-dir "$output_dir" \
+          python3 scripts/ci/ffmpeg_patch_stack.py --scan-latest --latest --output-dir "$output_dir" \
             2>&1 | tee "$output_dir/workflow-command.log"
 
       - name: Record proposed refresh
         if: always()
         shell: bash
+        env:
+          SCAN_OUTCOME: ${{ steps.refresh.outcome }}
         run: |
           set -euo pipefail
           output_dir="$RUNNER_TEMP/ffmpeg-patch-refresh"
           mkdir -p "$output_dir"
-          git diff --binary > "$output_dir/proposed-refresh.patch"
           git status --short > "$output_dir/worktree-status.txt"
           git rev-parse HEAD > "$output_dir/source-revision.txt"
+          if [ "$SCAN_OUTCOME" = success ]; then
+            test -f "$output_dir/proposed-refresh.patch"
+          fi
 
       - name: Retain refresh proposal
         if: ${{ (always()) && env.GITEA_ACTIONS != 'true' }}

@@ -1,0 +1,1 @@
+- Make the read-only FFmpeg release scan require shared-series pins, inspect signed candidate releases, match both base tag and commit, and replay the selected series before producing a patch. Report incompatible candidates and preserve failure provenance.

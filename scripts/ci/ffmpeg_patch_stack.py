@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -23,6 +24,7 @@ from typing import IO, TypedDict
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from scripts.ci import ffmpeg_patch_candidates as candidates
 from scripts.lib.safe_subprocess import CommandTimedOut
 from scripts.lib.safe_subprocess import run as run_command
 
@@ -246,7 +248,17 @@ class Replay:
 
     def apply_shared_series(self, repo: Path) -> None:
         """Apply the pinned shared fix series to the checkout, as every build does."""
+        self.shared_command(repo, ["apply", "--method", "am", str(self.checkout)])
+
+    def shared_command(self, repo: Path, args: list[str], timeout: float | None = None) -> None:
+        """Run the single shared-series verifier with bounded diagnostics."""
         bash = shutil.which("bash")
+        if sys.platform == "win32":
+            git_bash = (
+                Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "Git/usr/bin/bash.exe"
+            )
+            if git_bash.is_file():
+                bash = str(git_bash)
         if bash is None:
             raise RuntimeError("bash is required to apply the shared FFmpeg fix series")
         # The shell helper launches its own Git, outside the command prefix.
@@ -254,16 +266,16 @@ class Replay:
             key, value = setting.split("=", 1)
             self.git("config", "--local", "--replace-all", key, value)
         result = run_command(
-            [bash, str(SHARED_SERIES_SCRIPT), "apply", "--method", "am", str(self.checkout)],
+            [bash, str(SHARED_SERIES_SCRIPT), *args],
             allowed_executables=(bash,),
             env={**self.environment, "BUILD_CONFIG": str(repo / "build-config.env")},
             text=True,
             capture_output=True,
-            timeout_seconds=shared_series_timeout_seconds(self.environment),
+            timeout_seconds=timeout or shared_series_timeout_seconds(self.environment),
             max_output_bytes=16 * 1_048_576,
         )
         with (self.output / "replay.log").open("a") as log:
-            log.write(f"$ {SHARED_SERIES_SCRIPT.name} apply\n{result.stdout}{result.stderr}")
+            log.write(f"$ {SHARED_SERIES_SCRIPT.name} {args[0]}\n{result.stdout}{result.stderr}")
         if result.returncode:
             raise RuntimeError(
                 f"shared FFmpeg fix series failed: {result.stderr.strip() or result.stdout.strip()}"
@@ -457,7 +469,11 @@ def mirrors(repo: Path, remote: str, tag: str) -> dict[Path, bytes]:
         original = read_repo_text_bytes(path).decode("utf-8")
         updated = original
         for key, value in {"FFMPEG_TAG": tag, "FFMPEG_REMOTE": remote}.items():
-            updated, count = re.subn(rf"(?m)^ARG {key}=\S+$", f"ARG {key}={value}", updated)
+            updated, count = re.subn(
+                rf"(?m)^ARG {key}=\S+$",
+                f"ARG {key}={value}".replace("\\", r"\\"),
+                updated,
+            )
             if count != 1:
                 raise ValueError(f"expected one {key} mirror in {name}, found {count}")
         changed[path] = updated.encode()
@@ -746,6 +762,10 @@ class Receipt(TypedDict, total=False):
     status: str
     error: str
     cleanup_error: str
+    reason: str
+    reason_code: str
+    candidate_shared: candidates.Candidate
+    verified_candidates: list[candidates.Candidate]
 
 
 def select_target_tag(replay: Replay, remote: str, current_tag: str, latest: bool) -> str:
@@ -788,14 +808,20 @@ def pinned_config(text: str, tag: str, commit: str) -> str:
 
 
 def apply_stack(
-    repo: Path, replay: Replay, base: str, names: list[str], receipt: Receipt
+    repo: Path,
+    replay: Replay,
+    base: str,
+    names: list[str],
+    receipt: Receipt,
+    shared_config: Path | None = None,
 ) -> tuple[str | None, int]:
     """Apply the shared fix series, then ours, at *base*; return its tag and patch count."""
     replay.git("switch", "--quiet", "--detach", base)
-    shared = shared_series_tag(repo)
+    config_repo = shared_config or repo
+    shared = shared_series_tag(config_repo)
     if shared is not None:
         receipt["applying"] = f"shared fix series {shared}"
-        replay.apply_shared_series(repo)
+        replay.apply_shared_series(config_repo)
     shared_count = len(replay.git("rev-list", f"{base}..HEAD").splitlines())
     receipt.update({"shared_series": shared or "none", "shared_patch_count": shared_count})
     owners: dict[str, str] = {}
@@ -830,15 +856,63 @@ def keep_patched_tree(checkout: Path, destination: Path) -> None:
     shutil.copytree(checkout, destination, symlinks=True, ignore=shutil.ignore_patterns(".git"))
 
 
-def settle_updates(repo: Path, updates: dict[Path, bytes], refresh: bool, receipt: Receipt) -> None:
-    """Write the rendered patch and configuration mirrors, or fail on drift in check mode."""
+def proposed_patch(repo: Path, updates: dict[Path, bytes]) -> bytes:
+    """Render text-only candidate updates as a reviewable unified diff."""
+    chunks: list[str] = []
+    for path, data in updates.items():
+        # Keep exact worktree context so plain git apply also works in CRLF checkouts.
+        original = path.read_bytes() if path.exists() else b""
+        candidate = data.replace(b"\r\n", b"\n")
+        if original.replace(b"\r\n", b"\n") == candidate:
+            continue
+        try:
+            before = original.decode("utf-8").splitlines(keepends=True)
+            after = candidate.decode("utf-8").splitlines(keepends=True)
+        except UnicodeDecodeError as error:
+            raise ValueError(f"artifact-only proposal cannot render binary file: {path}") from error
+        diff = difflib.unified_diff(
+            before,
+            after,
+            fromfile=f"a/{path.relative_to(repo).as_posix()}" if path.exists() else "/dev/null",
+            tofile=f"b/{path.relative_to(repo).as_posix()}",
+        )
+        for line in diff:
+            chunks.append(
+                line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+            )
+    return "".join(chunks).encode("utf-8")
+
+
+def settle_updates(
+    repo: Path,
+    updates: dict[Path, bytes],
+    refresh: bool,
+    receipt: Receipt,
+    artifact_only: bool = False,
+    output: Path | None = None,
+) -> None:
+    """Write maintained files, check for drift, or retain an artifact-only proposal."""
+    artifact_updates = {
+        path: data
+        for path, data in updates.items()
+        if path.relative_to(repo).as_posix().startswith("ffmpeg-patches/")
+    }
+    selected = artifact_updates if artifact_only else updates
     changed = [
         str(path.relative_to(repo))
-        for path, data in updates.items()
-        if read_repo_text_bytes(path) != data.replace(b"\r\n", b"\n")
+        for path, data in selected.items()
+        if not path.exists() or read_repo_text_bytes(path) != data.replace(b"\r\n", b"\n")
     ]
-    receipt.update({"changed": changed, "status": "refreshed" if refresh else "checked"})
-    if refresh:
+    if artifact_only:
+        status = "proposed" if changed else "no-op"
+    else:
+        status = "refreshed" if refresh else "checked"
+    receipt.update({"changed": changed, "status": status})
+    if artifact_only:
+        if output is None:
+            raise ValueError("artifact-only mode requires an output directory")
+        (output / "proposed-refresh.patch").write_bytes(proposed_patch(repo, artifact_updates))
+    elif refresh:
         replace_files(updates, repo=repo)
     elif changed:
         raise ValueError(
@@ -886,6 +960,122 @@ def record_failure(output: Path, receipt: Receipt, error: BaseException) -> None
         error.add_note(f"Could not write failure receipt: {receipt_error}")
 
 
+def scan_noop(output: Path, receipt: Receipt, code: str, reason: str) -> None:
+    receipt.update({"status": "no-op", "changed": [], "reason_code": code, "reason": reason})
+    (output / "proposed-refresh.patch").write_bytes(b"")
+
+
+def scan_candidate(
+    replay: Replay, repo: Path, target_tag: str, target: str, receipt: Receipt
+) -> Path | None:
+    """Inspect canonical signed releases; verification errors never mean incompatibility."""
+    pins = candidates.pin_values(repo)
+    deadline = time.monotonic() + candidates.DISCOVERY_SECONDS
+    tags = candidates.release_tags(pins["FFMPEG_FIX_SERIES_REPO"])
+    if len(tags) > candidates.RELEASE_LIMIT:
+        raise ValueError("shared-series release limit exceeded")
+    receipt["verified_candidates"] = []
+    directory = replay.checkout / ".git" / "candidate"
+    for tag in tags:
+        pins["FFMPEG_FIX_SERIES_TAG"] = tag
+        candidates.write_config(directory, pins, target_tag, target)
+        unpacked = directory / tag
+        replay.shared_command(
+            directory, ["inspect", str(unpacked)], candidates.remaining_seconds(deadline)
+        )
+        candidate = candidates.metadata(unpacked)
+        if candidate["tag"] != tag:
+            raise ValueError("inspected shared-series tag differs from requested release")
+        receipt["verified_candidates"].append(candidate)
+        if (candidate["base_tag"], candidate["base_commit"]) == (target_tag, target):
+            receipt["candidate_shared"] = candidate
+            pins["FFMPEG_FIX_SERIES_SHA256"] = candidate["sha256"]
+            candidates.write_config(directory, pins, target_tag, target)
+            return directory
+    return None
+
+
+def scan_release(
+    repo: Path,
+    output: Path,
+    replay: Replay,
+    cache: SourceCache,
+    names: list[str],
+    receipt: Receipt,
+    keep_tree: Path | None,
+) -> None:
+    target_tag, current_tag = receipt["tag"], receipt["configured_tag"]
+    if target_tag == current_tag:
+        scan_noop(output, receipt, "no-new-release", "no newer stable FFmpeg release candidate")
+        return
+    target, receipt["target_source"] = cache.fetch(target_tag, None)
+    receipt["upstream_commit"] = target
+    candidate_config = scan_candidate(replay, repo, target_tag, target, receipt)
+    if candidate_config is None:
+        scan_noop(
+            output,
+            receipt,
+            "no-compatible-series",
+            f"FFmpeg {target_tag} ({target}) has no verified compatible shared-series release",
+        )
+        return
+    _, shared_count = apply_stack(repo, replay, target, names, receipt, candidate_config)
+    receipt["patched_tree"] = replay.git("rev-parse", "HEAD^{tree}").strip()
+    commits = replay.git("rev-list", "--reverse", f"{target}..HEAD").splitlines()
+    if len(commits) != shared_count + len(names):
+        raise ValueError("candidate replay changed the number of patches")
+    updates = format_patch_updates(repo, output, replay, names, commits[shared_count:])
+    updates.update(readme_claim(repo, receipt))
+    if keep_tree is not None:
+        keep_patched_tree(replay.checkout, keep_tree)
+        receipt["kept_tree"] = str(keep_tree)
+    settle_updates(repo, updates, False, receipt, True, output)
+
+
+def replay_release(
+    repo: Path,
+    output: Path,
+    replay: Replay,
+    cache: SourceCache,
+    names: list[str],
+    receipt: Receipt,
+    refresh: bool,
+    keep_tree: Path | None,
+    artifact_only: bool,
+) -> None:
+    base, receipt["source"] = cache.fetch(receipt["configured_tag"], receipt["pinned_commit"])
+    shared, shared_count = apply_stack(repo, replay, base, names, receipt)
+    receipt["upstream_commit"] = base
+    if artifact_only:
+        scan_release(repo, output, replay, cache, names, receipt, keep_tree)
+        return
+    target = base
+    if receipt["tag"] != receipt["configured_tag"]:
+        target, receipt["target_source"] = cache.fetch(receipt["tag"], None)
+        replay.git("rebase", "--onto", target, base)
+    receipt.update(
+        {"upstream_commit": target, "patched_tree": replay.git("rev-parse", "HEAD^{tree}").strip()}
+    )
+    if keep_tree is not None:
+        keep_patched_tree(replay.checkout, keep_tree)
+        receipt["kept_tree"] = str(keep_tree)
+    commits = replay.git("rev-list", "--reverse", f"{target}..HEAD").splitlines()
+    if len(commits) != shared_count + len(names):
+        raise ValueError("refresh changed the number of patches; review upstreamed/empty patches")
+    updates = format_patch_updates(repo, output, replay, names, commits[shared_count:])
+    if shared is not None and receipt["tag"] != receipt["configured_tag"]:
+        raise ValueError(
+            unpinned_release(shared, receipt["tag"], receipt["configured_tag"], output)
+        )
+    updates.update(mirrors(repo, receipt["remote"], receipt["tag"]))
+    config = repo / "build-config.env"
+    updates[config] = pinned_config(
+        read_repo_text_bytes(config).decode("utf-8"), receipt["tag"], target
+    ).encode("utf-8")
+    updates.update(readme_claim(repo, receipt))
+    settle_updates(repo, updates, refresh, receipt)
+
+
 def maintain(
     repo: Path,
     output: Path,
@@ -893,54 +1083,30 @@ def maintain(
     latest: bool,
     cache_dir: Path | None = None,
     keep_tree: Path | None = None,
+    artifact_only: bool = False,
 ) -> Receipt:
     """Replay the stack, apply requested updates and retain diagnostics."""
     receipt: Receipt = {}
     output.mkdir(parents=True, exist_ok=True)
     (output / "replay.log").write_text("")
+    (output / "proposed-refresh.patch").unlink(missing_ok=True)
     try:
+        if artifact_only and os.environ.get("FFMPEG_FIX_SERIES_VERIFY") != "cosign":
+            raise ValueError("--scan-latest requires FFMPEG_FIX_SERIES_VERIFY=cosign")
         with maintain_lock(repo, refresh):
-            remote, current_tag, pinned, names = configured_series(repo, receipt)
+            remote, current_tag, _pinned, names = configured_series(repo, receipt)
+            if artifact_only:
+                candidates.pin_values(repo)
             with replay_checkout(receipt) as checkout:
                 replay = Replay(checkout, output)
                 replay.git("init", "--quiet")
                 target_tag = select_target_tag(replay, remote, current_tag, latest)
                 cache = SourceCache(replay, cache_dir or cache_root(), remote)
                 receipt["cache"] = str(cache.repo)
-                base, receipt["source"] = cache.fetch(current_tag, pinned)
-                shared, shared_count = apply_stack(repo, replay, base, names, receipt)
-                target = base
-                if target_tag != current_tag:
-                    target, receipt["target_source"] = cache.fetch(target_tag, None)
-                    replay.git("rebase", "--onto", target, base)
-                receipt.update(
-                    {
-                        "tag": target_tag,
-                        "upstream_commit": target,
-                        "patched_tree": replay.git("rev-parse", "HEAD^{tree}").strip(),
-                    }
+                receipt["tag"] = target_tag
+                replay_release(
+                    repo, output, replay, cache, names, receipt, refresh, keep_tree, artifact_only
                 )
-                if keep_tree is not None:
-                    keep_patched_tree(replay.checkout, keep_tree)
-                    receipt["kept_tree"] = str(keep_tree)
-                commits = replay.git("rev-list", "--reverse", f"{target}..HEAD").splitlines()
-                if len(commits) != shared_count + len(names):
-                    raise ValueError(
-                        "refresh changed the number of patches; review upstreamed/empty patches"
-                    )
-                # The shared series' commits come first and are not ours to render.
-                updates = format_patch_updates(repo, output, replay, names, commits[shared_count:])
-                if shared is not None and target_tag != current_tag:
-                    raise ValueError(unpinned_release(shared, target_tag, current_tag, output))
-                updates.update(mirrors(repo, remote, target_tag))
-                config = repo / "build-config.env"
-                config_text = read_repo_text_bytes(config).decode("utf-8")
-                updates[config] = pinned_config(config_text, target_tag, target).encode("utf-8")
-                updates.update(readme_claim(repo, receipt))
-                if not refresh:
-                    settle_updates(repo, updates, False, receipt)
-            if refresh:
-                settle_updates(repo, updates, True, receipt)
     except BaseException as error:
         record_failure(output, receipt, error)
         raise
@@ -962,6 +1128,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="regenerate patches and configuration mirrors after complete replay",
     )
+    mode.add_argument(
+        "--scan-latest",
+        action="store_true",
+        help="scan the latest stable release and write an artifact-only proposal",
+    )
     parser.add_argument(
         "--latest",
         action="store_true",
@@ -981,8 +1152,12 @@ def parse_args() -> argparse.Namespace:
         help="copy the patched FFmpeg source tree (no .git) to this new directory",
     )
     args = parser.parse_args()
-    if args.latest and not args.refresh:
-        parser.error("--latest requires --refresh")
+    if args.latest and not (args.refresh or args.scan_latest):
+        parser.error("--latest requires --refresh or --scan-latest")
+    if args.scan_latest and not args.latest:
+        parser.error("--scan-latest requires --latest")
+    if args.scan_latest and args.output_dir is None:
+        parser.error("--scan-latest requires --output-dir to retain its receipt and proposal")
     return args
 
 
@@ -996,9 +1171,10 @@ def main() -> int:
             repo,
             output.resolve(),
             args.refresh,
-            args.latest,
+            args.latest or args.scan_latest,
             args.cache_dir,
             args.keep_tree.resolve() if args.keep_tree else None,
+            args.scan_latest,
         )
         if args.output_dir is None:
             try:
@@ -1016,11 +1192,17 @@ def main() -> int:
         return 1
     print(
         f"FFmpeg {result['tag']} ({result['upstream_commit']}): {result['patch_count']} patches "
-        f"{result['status']} on shared fix series {result['shared_series']} "
-        f"({result['shared_patch_count']} patches); source: {result['source']}"
+        f"{result['status']} on shared fix series {result.get('shared_series', 'not replayed')} "
+        f"({result.get('shared_patch_count', 0)} patches); source: {result.get('source', 'not fetched')}"
         + (f", {result['target_source']}" if "target_source" in result else "")
-        + f" [{result['cache']}]"
+        + (f" [{result['cache']}]" if "cache" in result else "")
     )
+    if result.get("reason"):
+        reason = result["reason"]
+        print(f"Reason: {reason}")
+        if result.get("reason_code") == "no-compatible-series":
+            escaped = reason.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+            print(f"::warning title=FFmpeg release scan::{escaped}")
     if args.output_dir:
         print(f"Diagnostics: {output}")
     return 0

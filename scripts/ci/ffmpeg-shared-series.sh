@@ -71,10 +71,15 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # What this run created and removes on exit.
 work_dir=""
 temporary_cache=""
+inspection_dir=""
+inspect_only=false
 
 cleanup() {
   if [ -n "$work_dir" ] && [ -d "$work_dir" ]; then
     rm -rf -- "$work_dir"
+  fi
+  if [ -n "$inspection_dir" ] && [ -d "$inspection_dir" ]; then
+    rm -rf -- "$inspection_dir"
   fi
   if [ -n "$temporary_cache" ] && [ -d "$temporary_cache" ]; then
     rm -rf -- "$temporary_cache"
@@ -311,6 +316,20 @@ verify_signature() { # verify_signature TARBALL WORK
     signature_status="not checked (FFMPEG_FIX_SERIES_URL overrides the release)"
     return 0
   fi
+  verify_sums_signature "$work"
+  identity="${FFMPEG_FIX_SERIES_REPO}/.github/workflows/release-build.yml@refs/tags/${FFMPEG_FIX_SERIES_TAG}"
+  listed="$(awk -v name="$tarball_name" '$2 == name || $2 == "*" name {print $1}' "$work/SHA256SUMS")"
+  [ "$listed" = "$(sha256_of "$tarball")" ] ||
+    die 1 "the signed SHA256SUMS does not list ${tarball_name} with the pinned sha256"
+  signature_status="cosign verified ($identity)"
+}
+
+# One signature implementation for pinned builds and candidate inspection.
+verify_sums_signature() { # verify_sums_signature WORK
+  local work=$1 identity
+  command -v cosign >/dev/null 2>&1 || die 2 "cosign is required for signed inspection"
+  [ -z "${FFMPEG_FIX_SERIES_URL:-}${FFMPEG_FIX_SERIES_SUMS_URL:-}" ] ||
+    die 2 "release URL overrides cannot be inspected with cosign"
   [ -f "$work/SHA256SUMS" ] || download "${release_url}/SHA256SUMS" "$work/SHA256SUMS"
   download "${release_url}/SHA256SUMS.sigstore.json" "$work/SHA256SUMS.sigstore.json"
   identity="${FFMPEG_FIX_SERIES_REPO}/.github/workflows/release-build.yml@refs/tags/${FFMPEG_FIX_SERIES_TAG}"
@@ -320,10 +339,21 @@ verify_signature() { # verify_signature TARBALL WORK
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
     "$work/SHA256SUMS" >/dev/null 2>"$work/cosign.log" ||
     die 1 "cosign refused SHA256SUMS of ${FFMPEG_FIX_SERIES_TAG}: $(tr '\n' ' ' <"$work/cosign.log")"
-  listed="$(awk -v name="$tarball_name" '$2 == name || $2 == "*" name {print $1}' "$work/SHA256SUMS")"
-  [ "$listed" = "$(sha256_of "$tarball")" ] ||
-    die 1 "the signed SHA256SUMS does not list ${tarball_name} with the pinned sha256"
-  signature_status="cosign verified ($identity)"
+}
+
+# Bootstrap only from signed release checksums, never from a self-hashed archive.
+inspect_series() { # inspect_series NEW_DESTINATION
+  local destination=$1 listed
+  [ "${FFMPEG_FIX_SERIES_VERIFY:-}" = cosign ] || die 2 "inspect requires cosign verification"
+  inspection_dir="$(mktemp -d "${TMPDIR:-/tmp}/ffmpeg-inspect.XXXXXX")"
+  verify_sums_signature "$inspection_dir"
+  listed="$(awk -v name="$tarball_name" '$2 == name || $2 == "*" name {print $1}' "$inspection_dir/SHA256SUMS")"
+  [[ "$listed" =~ ^[0-9a-f]{64}$ ]] || die 1 "signed SHA256SUMS must list exactly one tarball digest"
+  FFMPEG_FIX_SERIES_SHA256="$listed"
+  fetch_series
+  printf 'FFMPEG_FIX_SERIES_TAG=%s\nFFMPEG_FIX_SERIES_SHA256=%s\nFFMPEG_TAG=%s\nFFMPEG_COMMIT=%s\n' \
+    "$FFMPEG_FIX_SERIES_TAG" "$listed" "$verified_base_tag" "$verified_base_commit" >"$series_dir/verified.env"
+  mv -- "$series_dir" "$destination" || die 1 "cannot create $destination"
 }
 
 # A member outside the unpack directory would be written wherever it names.
@@ -338,6 +368,15 @@ check_members() { # check_members TARBALL
 
 base_value() { # base_value KEY FILE — base.env is data, never sourced
   sed -n "s/^$1=//p" "$2" | tr -d '\r"' | head -n 1
+}
+
+# Inspection accepts one exact data value, never duplicates or mismatched quotes.
+inspected_base_value() { # inspected_base_value KEY FILE
+  local value
+  value="$(sed -n "s/^$1=//p" "$2")"
+  value="${value%$'\r'}"
+  case "$value" in \"*\") value="${value:1:${#value}-2}" ;; esac
+  printf '%s' "$value"
 }
 
 # fetch_series — sets series_dir to the verified, unpacked series.
@@ -372,7 +411,14 @@ fetch_series() {
     die 1 "tarball has no base.env or series.txt"
   base_tag="$(base_value FFMPEG_TAG "$work/tree/base.env")"
   base_commit="$(base_value FFMPEG_COMMIT "$work/tree/base.env")"
-  if [ "$base_tag" != "$FFMPEG_TAG" ] || [ "$base_commit" != "$FFMPEG_COMMIT" ]; then
+  if [ "$inspect_only" = true ]; then
+    base_tag="$(inspected_base_value FFMPEG_TAG "$work/tree/base.env")"
+    base_commit="$(inspected_base_value FFMPEG_COMMIT "$work/tree/base.env")"
+    [[ "$base_tag" =~ ^n[0-9]+\.[0-9]+(\.[0-9]+)?$ ]] || die 1 "invalid inspected base tag"
+    [[ "$base_commit" =~ ^[0-9a-f]{40}$ ]] || die 1 "invalid inspected base commit"
+    verified_base_tag="$base_tag"
+    verified_base_commit="$base_commit"
+  elif [ "$base_tag" != "$FFMPEG_TAG" ] || [ "$base_commit" != "$FFMPEG_COMMIT" ]; then
     die 1 "shared series ${FFMPEG_FIX_SERIES_TAG} targets ${base_tag} (${base_commit}), build-config.env pins ${FFMPEG_TAG} (${FFMPEG_COMMIT}); pin a series release for that FFmpeg"
   fi
   series_dir="$work/tree"
@@ -426,6 +472,12 @@ main() { # main COMMAND [ARG...]
   [ -n "$command" ] || die 2 "usage: $0 fetch DEST | apply [--method am|apply] TREE"
   shift
   case "$command" in
+    inspect)
+      [ "$#" -eq 1 ] && [ ! -e "$1" ] || die 2 "inspect needs one new destination"
+      inspect_only=true
+      load_config
+      inspect_series "$1"
+      ;;
     fetch)
       [ "$#" -eq 1 ] || die 2 "fetch takes the directory to unpack into"
       [ ! -e "$1" ] || die 2 "fetch needs a new directory, this exists: $1"
