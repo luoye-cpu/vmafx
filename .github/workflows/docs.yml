@@ -132,7 +132,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         if: steps.impact.outputs.docs == 'true'
         with:
-          node-version: "26.12.1"
+          node-version: "26.13.1"
       - name: Install accessibility scanner
         if: steps.impact.outputs.docs == 'true'
         timeout-minutes: 5
