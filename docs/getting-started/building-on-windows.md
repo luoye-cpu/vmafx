@@ -58,6 +58,15 @@ has no `libgcc_eh.a`/`libgcc.a`/`libwinpthread.a` in the GCC layout. All three
 MSYS2 lanes build with `-Dwerror=true`, the deprecated MINGW64 (MSVCRT)
 compatibility lane included.
 
+CI keeps `-mthreads` in `CFLAGS` and `CXXFLAGS` for the GCC environments only.
+Leave it out in CLANG64: [Clang's MinGW driver](https://github.com/llvm/llvm-project/blob/llvmorg-23.1.5/clang/lib/Driver/ToolChains/MinGW.cpp)
+uses it only when linking, so compile-only checks reject it as an unused argument
+and can misreport a failed `std::expected` probe. The existing Meson
+`dependency('threads')` supplies `-pthread` for the project's pthread calls.
+CLANG64's [libc++ package](https://github.com/msys2/MINGW-packages/blob/efc96badda99c076509ef01986c673d1cd30f725/mingw-w64-libc%2B%2B/PKGBUILD)
+uses the Win32 thread API for C++ library threads. Compiler and linker warnings
+remain errors in every environment.
+
 The 32-bit MINGW32 environment is not supported: its scores do not match. The
 CI job also runs `scripts/ci/check-win64-stack-alignment.py`, because GCC's
 MinGW target can emit AVX-512 spills that the Windows x64 stack alignment does

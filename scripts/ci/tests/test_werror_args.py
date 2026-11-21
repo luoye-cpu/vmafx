@@ -7,9 +7,13 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 import unittest
+from copy import deepcopy
 from pathlib import Path
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts/ci/werror-args.sh"
@@ -140,6 +144,74 @@ def contract_failures(matrix: str, doc: str) -> list[str]:
     if 'werror-args.sh "${{ matrix.werror }}"' not in matrix:
         failures.append("the matrix configure step does not call werror-args.sh")
     return failures
+
+
+MSYS2_ROWS = {
+    "Windows UCRT64": True,
+    "Windows CLANG64": False,
+    "Windows MINGW64 (MSVCRT)": True,
+}
+THREAD_FLAGS = "${{ matrix.thread_flags }}"
+
+
+class Msys2WerrorContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.workflow = yaml.safe_load(MATRIX.read_text(encoding="utf-8"))
+
+    def assert_msys2_contract(self, workflow: dict) -> None:
+        job = workflow["jobs"]["windows"]
+        rows = {row["name"]: row for row in job["strategy"]["matrix"]["include"]}
+        self.assertEqual(set(rows), set(MSYS2_ROWS))
+        for name, is_gcc in MSYS2_ROWS.items():
+            row = rows[name]
+            self.assertIs(row.get("werror"), True)
+            thread_flags = row.get("thread_flags", "")
+            for key in ("CFLAGS", "CXXFLAGS"):
+                shared = job["env"][key]
+                self.assertIn(THREAD_FLAGS, shared)
+                self.assertNotIn("-mthreads", shlex.split(shared))
+                resolved = shlex.split(shared.replace(THREAD_FLAGS, thread_flags))
+                self.assertEqual("-mthreads" in resolved, is_gcc, (name, key, resolved))
+
+    def test_msys2_rows_keep_thread_flags_and_werror(self) -> None:
+        self.assert_msys2_contract(self.workflow)
+
+    def test_shared_flags_reject_reintroduced_mthreads(self) -> None:
+        for key in ("CFLAGS", "CXXFLAGS"):
+            with self.subTest(flag=key):
+                planted = deepcopy(self.workflow)
+                planted["jobs"]["windows"]["env"][key] += " -mthreads"
+                with self.assertRaises(AssertionError):
+                    self.assert_msys2_contract(planted)
+
+    def test_gcc_thread_flags_and_werror_cannot_be_removed(self) -> None:
+        for name in ("Windows UCRT64", "Windows MINGW64 (MSVCRT)"):
+            with self.subTest(row=name, defect="thread_flags"):
+                planted = deepcopy(self.workflow)
+                row = next(
+                    row
+                    for row in planted["jobs"]["windows"]["strategy"]["matrix"]["include"]
+                    if row["name"] == name
+                )
+                row.pop("thread_flags", None)
+                with self.assertRaises(AssertionError):
+                    self.assert_msys2_contract(planted)
+        for name in MSYS2_ROWS:
+            for value in (False, None):
+                with self.subTest(row=name, werror=value):
+                    planted = deepcopy(self.workflow)
+                    row = next(
+                        row
+                        for row in planted["jobs"]["windows"]["strategy"]["matrix"]["include"]
+                        if row["name"] == name
+                    )
+                    if value is None:
+                        del row["werror"]
+                    else:
+                        row["werror"] = value
+                    with self.assertRaises(AssertionError):
+                        self.assert_msys2_contract(planted)
 
 
 class WerrorArgsScriptTests(unittest.TestCase):

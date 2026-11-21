@@ -721,6 +721,7 @@ jobs:
             cc: gcc
             cxx: g++
             compiler_package: gcc
+            thread_flags: -mthreads
             runtime_archives: true
             ldflags: -pipe -static -static-libgcc -static-libstdc++
             werror: true
@@ -732,6 +733,8 @@ jobs:
             cc: clang
             cxx: clang++
             compiler_package: clang
+            # Meson's threads dependency supplies -pthread; -mthreads is link-only in Clang.
+            thread_flags: ''
             runtime_archives: false
             ldflags: -pipe -static
             werror: true
@@ -741,14 +744,15 @@ jobs:
             cc: gcc
             cxx: g++
             compiler_package: gcc
+            thread_flags: -mthreads
             runtime_archives: true
             ldflags: -pipe -static -static-libgcc -static-libstdc++
             werror: true
     env:
       CC: ccache ${{ matrix.cc }}
       CXX: ccache ${{ matrix.cxx }}
-      CFLAGS: -pipe -static -O3 -mtune=generic -D_FILE_OFFSET_BITS=64 -mthreads
-      CXXFLAGS: -pipe -static -O3 -mtune=generic -D_FILE_OFFSET_BITS=64 -mthreads
+      CFLAGS: -pipe -static -O3 -mtune=generic -D_FILE_OFFSET_BITS=64 ${{ matrix.thread_flags }}
+      CXXFLAGS: -pipe -static -O3 -mtune=generic -D_FILE_OFFSET_BITS=64 ${{ matrix.thread_flags }}
       LDFLAGS: ${{ matrix.ldflags }}
     defaults:
       run:
