@@ -137,12 +137,10 @@ memory or divert through a non-allowlisted op.
 
 All 26 entries currently shipped in
 [`model/tiny/registry.json`](../../model/tiny/registry.json) are unsigned:
-there are no per-model Sigstore bundles. The registry omits the optional
-`sigstore_bundle` field for these entries. Declare that field only when the
-real bundle file exists; a placeholder path is not signing evidence. Per-model
-signing and release integration remain follow-up work in
-[#1246](https://github.com/vidiko/vmafx/issues/1246) and
-[#3606](https://github.com/vidiko/vmafx/issues/3606).
+the registry omits the optional `sigstore_bundle` field because no per-model
+Sigstore bundles ship. Declare that field only when the real bundle file
+exists. Per-model signing and release integration remain open in
+[#1246](https://github.com/vidiko/vmafx/issues/1246).
 
 The verifier itself is shipped (T6-9,
 [ADR-0211](../adr/0211-model-registry-sigstore.md)).
@@ -154,8 +152,10 @@ future signed model:
   the registry next to the ONNX file; see
   [model-registry.md](model-registry.md#verify-a-model-at-runtime).
 - On POSIX hosts it invokes `cosign verify-blob` through `posix_spawnp(3p)`
-  with an explicit argument array and the repository workflow identity check
-  in [`model_loader.c`](../../core/src/dnn/model_loader.c).
+  with an explicit argument array. The loader checks the certificate identity
+  against `https://github.com/vidiko/vmafx/.github/workflows/.+` and the
+  issuer against `https://token.actions.githubusercontent.com`.
+  See [`model_loader.c`](../../core/src/dnn/model_loader.c).
 - A missing registry entry, missing `sigstore_bundle` field, missing bundle
   file, unavailable `cosign` or failed verification fails closed. On Windows
   the verifier returns `-ENOSYS` and the load fails.

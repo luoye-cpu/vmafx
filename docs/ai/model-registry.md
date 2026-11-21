@@ -7,12 +7,12 @@ under `model/tiny/` is indexed there with a SHA-256 pin and license metadata.
 T6-9 / [ADR-0211](../adr/0211-model-registry-sigstore.md) formalised the schema
 and wired `--tiny-model-verify` to `cosign verify-blob`.
 
-The registry holds 26 entries, all currently unsigned, with no per-model
-Sigstore bundles or `sigstore_bundle` declarations. Verification is off by
-default; enabling it rejects all 26 current entries. Per-model signing and
-release integration remain follow-up work in
-[#1246](https://github.com/vidiko/vmafx/issues/1246) and
-[#3606](https://github.com/vidiko/vmafx/issues/3606).
+The registry holds 26 entries, all currently unsigned. Each entry omits
+`sigstore_bundle` because no per-model Sigstore bundles ship. Verification is
+off by default. Enabling it rejects all 26 current entries.
+[#3606](https://github.com/vidiko/vmafx/issues/3606) tracks the removal of the
+placeholder paths. Per-model signing and release integration remain open in
+[#1246](https://github.com/vidiko/vmafx/issues/1246).
 Thirteen entries are CI smoke fixtures with `smoke: true`, see
 [CI-only smoke fixtures](#ci-only-smoke-fixtures).
 
@@ -34,7 +34,7 @@ Thirteen entries are CI smoke fixtures with `smoke: true`, see
       "int8_sha256": "1cff6fe…2d3",
       "quant_accuracy_budget_plcc": 0.01,
       "license": "BSD-2-Clause-Patent",
-      "license_url": "https://github.com/VMAFx/vmafx/blob/master/NOTICE",
+      "license_url": "https://github.com/vidiko/vmafx/blob/master/NOTICE",
       "description": "Tiny residual filter for vmafx_pre — degraded → clean luma.",
       "notes": "Self-supervised on KoNViD-1k …"
     }
@@ -193,8 +193,7 @@ bundles before adding `--tiny-model-verify` (see [security.md](security.md)).
 4. Omit `sigstore_bundle` while the model is unsigned. Add it only when a real
    bundle for the exact ONNX bytes exists; do not declare a future file.
    Signing and release integration are tracked in
-   [#1246](https://github.com/vidiko/vmafx/issues/1246) and
-   [#3606](https://github.com/vidiko/vmafx/issues/3606).
+   [#1246](https://github.com/vidiko/vmafx/issues/1246).
 5. Run `python3 ai/scripts/validate_model_registry.py` and fix what it reports.
 
 The `/add-model <path>` skill scaffolds steps 1 to 4.
