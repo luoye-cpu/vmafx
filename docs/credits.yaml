@@ -111,6 +111,21 @@ entries:
   - docs/adr/3357-hybrid-gcc-cpu-icpx-sycl.md
   - docs/adr/3358-vmafx-sycl-ffmpeg-container.md
   note: Dmitry Popovich (@Tualua) designed the hybrid GCC and icpx build and the SYCL plus FFmpeg image in PR 2216; the project reworked them into PR 2883 and PR 2891.
+- id: contribution-luoye-cpu-cli-text-golden
+  name: luoye-cpu's CLI text golden pins
+  url: https://github.com/vidiko/vmafx/pull/3341
+  kind: code
+  relation: used-by-CI
+  license: EUPL-1.2
+  paths:
+  - core/tools/test/golden/*.txt
+  - core/tools/test/test_vmaf_cli_text_golden.sh
+  - core/tools/test/test_vmaf_roi_usage.sh
+  - core/tools/test/test_vmaf_vpl_usage.sh
+  evidence:
+  - core/tools/test/test_vmaf_cli_text_golden.sh
+  - docs/adr/3543-cli-text-golden-pins.md
+  note: luoye-cpu wrote the golden transcripts for the CLI help and usage text and the tests that diff against them, in PR 3341.
 - id: contribution-luoye-cpu-mingw-thread-model-probe
   name: luoye-cpu's MinGW thread-model probe test
   url: https://github.com/vidiko/vmafx/pull/3317
