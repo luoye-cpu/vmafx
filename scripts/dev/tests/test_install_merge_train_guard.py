@@ -49,11 +49,7 @@ class MigrationContract(unittest.TestCase):
         def isolated_run_command(*args: Any, **kwargs: Any) -> Any:
             passed_env = kwargs.get("env")
             env = dict(
-                (
-                    passed_env
-                    if passed_env is not None
-                    else git_env.hermetic()
-                ),
+                (passed_env if passed_env is not None else git_env.hermetic()),
                 GIT_CONFIG_GLOBAL=os.devnull,
                 GIT_CONFIG_NOSYSTEM="1",
             )
@@ -129,6 +125,7 @@ class MigrationContract(unittest.TestCase):
             installer.SOURCE_PATH,
             installer.COMPOSER_PATH,
             "scripts/lib/__init__.py",
+            "scripts/lib/git_env.py",
             "scripts/lib/safe_subprocess.py",
         ):
             shutil.copyfile(checkout / relative, self.source / relative)
@@ -174,13 +171,14 @@ class MigrationContract(unittest.TestCase):
         self.real_gateway()
         value, committed = self.plan()
         installer.install(value, committed, installer.plan_hash(value))
+        # Keep the disposable repository as the Git target, but take its Python sources away.
+        (self.source / "scripts").rename(self.directory / "retired source scripts")
         outside = self.directory / "empty caller"
         outside.mkdir()
         for name in ("rebase-clean.sh", "train.sh", "merge_train_operator.py"):
             with self.subTest(adapter=name):
-                result = self.run_adapter(name, outside)
-                self.assertNotIn("ModuleNotFoundError", result.stderr)
-                self.assertNotIn("ImportError", result.stderr)
+                result = self.run_adapter(name, outside, direct=True)
+                self.assertNotIn("Traceback", result.stderr)
                 if name == "rebase-clean.sh":
                     self.assertEqual(result.returncode, 1, result.stderr)
                     self.assertIn("an explicit positive PR number is required", result.stderr)

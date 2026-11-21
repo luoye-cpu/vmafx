@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from scripts.lib import git_env
 from scripts.lib.safe_subprocess import TextCommandResult, run
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -48,10 +49,7 @@ TEXT_LIMIT = 8 * 1_048_576
 
 
 def git_fixture_env() -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env["GIT_CONFIG_GLOBAL"] = os.devnull
-    env["GIT_CONFIG_NOSYSTEM"] = "1"
-    return env
+    return git_env.hermetic()
 
 
 def run_checker(cwd: str, env: dict[str, str], *extra: str) -> TextCommandResult:
