@@ -148,6 +148,7 @@ TIDY_SELECTORS = {f"tidy_{lane}" for lane in TIDY_LANES}
 TESTER_SELECTORS = {"tester_image", "windows_tester_zip", "windows_tester_zip_sycl"}
 # ADR-3279: the MSVC leg a light-tier pull request owes when it touches core C or C++.
 MSVC_LEG_SELECTORS = {"windows_msvc_sycl"}
+MINGW_CROSS_SELECTORS = {"mingw_clang_cross"}
 # The upstream consumer job folded into ffmpeg-integration.yml keeps the path
 # filter its own workflow had (SAST check-suite budget).
 CONSUMER_SELECTORS = {"upstream_consumers"}
@@ -158,6 +159,7 @@ DEV_CONTAINER_LANE_SELECTORS = {"dev_container_inputs", "ubuntu_dev_images"}
 OWN_PATHS_ONLY = (
     TESTER_SELECTORS
     | MSVC_LEG_SELECTORS
+    | MINGW_CROSS_SELECTORS
     | TIDY_SELECTORS
     | CONSUMER_SELECTORS
     | GSTREAMER_SELECTORS
@@ -757,6 +759,48 @@ class MsvcLegRouting(unittest.TestCase):
         changes = (planner.Change(status="M", paths=("core/src/AGENTS.md",)),)
         plan = cast(ImpactPlan, planner.build_plan(config, changes, None, "b" * 40, "h" * 40))
         self.assertTrue(plan.selectors[self.SELECTOR])
+
+
+class MingwClangCrossRouting(unittest.TestCase):
+    """Preserve the former MinGW cross workflow path filter on the Builds caller."""
+
+    SELECTOR = "mingw_clang_cross"
+    OWN_INPUTS = (
+        "core/src/libvmaf.c",
+        "build-aux/aarch64-linux-gnu-clang.ini",
+        "scripts/ci/build-mingw-clang-cross.sh",
+        "scripts/ci/check_mingw_import_thunks.py",
+        ".github/workflows/mingw-clang-cross.yml",
+        ".github/workflows/libvmaf-build-matrix.yml",
+    )
+
+    def test_former_path_inputs_select_the_light_pr_lane(self) -> None:
+        for path in self.OWN_INPUTS:
+            with self.subTest(path=path):
+                plan = _plan_for([path])
+                self.assertTrue(plan.selectors[self.SELECTOR])
+
+    def test_unrelated_inputs_do_not_select_the_lane(self) -> None:
+        for path in (
+            "docs/index.md",
+            "requirements/locks/build.txt",
+            "scripts/ci/check-aggregator-names.sh",
+            ".github/workflows/build.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(_plan_for([path]).selectors[self.SELECTOR])
+
+    def test_full_fallback_follows_known_inputs_and_unknown_diff_fails_closed(self) -> None:
+        matching = _plan_for(["core/src/libvmaf.c", "Makefile"])
+        deleted = _plan_for(["scripts/ci/check_mingw_import_thunks.py"], ["D"])
+        unknown = planner.build_plan(
+            planner.load_config(CONFIG), None, "event-not-routed:schedule", "b" * 40, "h" * 40
+        )
+        empty = planner.build_plan(planner.load_config(CONFIG), (), None, "b" * 40, "h" * 40)
+        self.assertTrue(matching.selectors[self.SELECTOR])
+        self.assertTrue(deleted.selectors[self.SELECTOR])
+        self.assertTrue(cast(ImpactPlan, unknown).selectors[self.SELECTOR])
+        self.assertFalse(cast(ImpactPlan, empty).selectors[self.SELECTOR])
 
 
 class DevContainerLaneRouting(unittest.TestCase):

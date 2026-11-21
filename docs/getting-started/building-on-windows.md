@@ -120,7 +120,11 @@ clang/libc++ stack is not bit-identical to the GCC/libstdc++ stack: three of
 the 48 per-frame model outputs differ in the last ~1e-12, while the pooled
 `min`, `max` and `mean` are equal. CI therefore compares with `1e-6`, not with
 a hash. The `MinGW clang cross` workflow builds the artifact on Linux and runs
-this score on a Windows runner.
+this score on a Windows runner. On pull requests, the existing `Builds` workflow
+calls it when changes touch `core/`, `build-aux/`, the cross-build or thunk-check
+script, or either workflow file; this also runs on the light tier. An unrelated
+PR reports an explicit unselected result. Master pushes and manual dispatch run
+`MinGW clang cross` directly.
 
 A distro clang + mingw-w64 **libstdc++** route is the intended follow-up: it
 keeps the GCC runtime pairing already measured for the GCC cross build, and

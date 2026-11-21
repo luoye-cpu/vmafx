@@ -14,15 +14,16 @@
 name: MinGW clang cross
 
 on:
-  pull_request:
-    branches: [master]
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - 'core/**'
-      - 'build-aux/**'
-      - 'scripts/ci/build-mingw-clang-cross.sh'
-      - 'scripts/ci/check_mingw_import_thunks.py'
-      - '.github/workflows/mingw-clang-cross.yml'
+  # Pull requests call this workflow from the existing Builds workflow so they
+  # remain inside the Scorecard PR workflow budget. Push and manual runs stay
+  # available directly.
+  workflow_call:
+    inputs:
+      run_on_light:
+        description: Run the path-selected lane on a light-tier pull request.
+        required: false
+        type: boolean
+        default: false
   push:
     branches: [master]
   workflow_dispatch:
@@ -49,7 +50,7 @@ jobs:
   cross:
     name: Linux clang -> MinGW cross
     needs: tier
-    if: needs.tier.outputs.full == 'true'
+    if: needs.tier.outputs.full == 'true' || inputs.run_on_light
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
@@ -128,7 +129,15 @@ jobs:
           find artifact-mingw-clang -maxdepth 1 -type f -printf '%f %s\n' | sort
 
       - name: Upload the Windows artifact
+        if: ${{ env.GITEA_ACTIONS != 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: mingw-clang-cross
+          path: artifact-mingw-clang
+          if-no-files-found: error
+      - name: Upload the Windows artifact (Gitea)
+        if: ${{ env.GITEA_ACTIONS == 'true' }}
+        uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf  # v3.2.2
         with:
           name: mingw-clang-cross
           path: artifact-mingw-clang
@@ -137,7 +146,7 @@ jobs:
   smoke:
     name: Windows smoke (clang cross artifact)
     needs: [tier, cross]
-    if: needs.tier.outputs.full == 'true'
+    if: needs.tier.outputs.full == 'true' || inputs.run_on_light
     runs-on: windows-2025
     timeout-minutes: 15
     steps:
@@ -145,7 +154,14 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+      - if: ${{ env.GITEA_ACTIONS != 'true' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333  # v8.0.2
+        with:
+          name: mingw-clang-cross
+          path: artifact-mingw-clang
+      - name: Download artifact (Gitea)
+        if: ${{ env.GITEA_ACTIONS == 'true' }}
+        uses: actions/download-artifact@a9bc5e6ef2cb54c177f32aa5726adaa15e7e2d59  # v3.1.0
         with:
           name: mingw-clang-cross
           path: artifact-mingw-clang

@@ -464,6 +464,19 @@
         "core/src/sycl/scratch_ratchet.txt"
       ]
     },
+    "mingw_clang_cross": {
+      "own_paths_only": true,
+      "patterns": [
+        "core/*",
+        "core/**",
+        "build-aux/*",
+        "build-aux/**",
+        "scripts/ci/build-mingw-clang-cross.sh",
+        "scripts/ci/check_mingw_import_thunks.py",
+        ".github/workflows/mingw-clang-cross.yml",
+        ".github/workflows/libvmaf-build-matrix.yml"
+      ]
+    },
     "windows_msvc_sycl": {
       "own_paths_only": true,
       "patterns": [
