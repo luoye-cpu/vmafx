@@ -71,11 +71,41 @@ class TestCheckPythonFloors(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def _write_pyproject(self, content: str) -> Path:
-        p = self.tmp_path / "pkg" / "pyproject.toml"
+    def _write_pyproject(self, content: str, relative_dir: str = "pkg") -> Path:
+        p = self.tmp_path / relative_dir / "pyproject.toml"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         return p
+
+    def test_discovery_fallback_under_hidden_ancestor_or_root(self) -> None:
+        """Hidden temporary parents and checkout names do not hide packages."""
+        for relative_root in (".tmp/checkout", ".checkout"):
+            with self.subTest(root=relative_root):
+                root = self.tmp_path / relative_root
+                package = self._write_pyproject(
+                    '[project]\nname = "visible"\n', f"{relative_root}/pkg"
+                )
+                self._write_pyproject(
+                    '[project]\nname = "hidden"\n', f"{relative_root}/.hidden/pkg"
+                )
+                self._write_pyproject(
+                    '[project]\nname = "nested-hidden"\n', f"{relative_root}/pkg/.cache/nested"
+                )
+                self.assertEqual(check_python_floors.discover_pyprojects(root), [package])
+
+    def test_discovery_fallback_excludes_hidden_descendants(self) -> None:
+        """Hidden directories inside the root remain excluded at every depth."""
+        package = self._write_pyproject('[project]\nname = "visible"\n')
+        self._write_pyproject('[project]\nname = "hidden"\n', ".hidden/pkg")
+        self._write_pyproject('[project]\nname = "nested-hidden"\n', "pkg/.cache/nested")
+        self.assertEqual(check_python_floors.discover_pyprojects(self.tmp_path), [package])
+
+    def test_discovery_fallback_keeps_dotted_names_and_root_exclusion(self) -> None:
+        """Only leading dots hide directories; root and tooling files stay excluded."""
+        package = self._write_pyproject('[project]\nname = "dotted"\n', "pkg.name")
+        self._write_pyproject('[project]\nname = "workspace"\n', ".")
+        self._write_pyproject("[tool.example]\nenabled = true\n", "tooling")
+        self.assertEqual(check_python_floors.discover_pyprojects(self.tmp_path), [package])
 
     def test_fake_uv_missing_exit_2(self) -> None:
         """Missing uv binary returns exit 2 (operational error)."""

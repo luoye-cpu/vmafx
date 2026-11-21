@@ -28,3 +28,4 @@ install policy across repository:
 - `write` is only network-accessing path; `check` is offline and run in pre-commit and `make lint`.
 - Regressions are pinned in `scripts/ci/tests/test_python_dependency_locks.py`.
 - Declared `requires-python` floors in tracked `pyproject.toml` files move only with `scripts/ci/check_python_floors.py` green (`make python-floors-check`; ADR-3335).
+- Floor discovery fallback filters hidden parts relative to the scanned root; hidden checkout names or ancestors never hide visible packages. Preserve root-file exclusion and hidden-descendant filtering; regressions in `scripts/ci/tests/test_python_floors.py`.

@@ -1,0 +1,1 @@
+- Keep Python floor package discovery working when a checkout or temporary directory has a hidden ancestor, while still excluding hidden directories inside the scanned root.
