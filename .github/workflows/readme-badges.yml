@@ -33,7 +33,7 @@ jobs:
     # .github/repository-security-policy.json holds both names; a test keeps
     # these in step with it.
     if: >-
-      github.repository == 'VMAFx/vmafx'
+      github.repository == 'vidiko/vmafx'
       && github.server_url == 'https://github.com'
       && github.ref == 'refs/heads/master'
     runs-on: ubuntu-26.04
@@ -54,7 +54,7 @@ jobs:
           python-version: "3.14.10"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: "26.12.1"
+          node-version: "26.13.1"
       - name: Install the pinned badge renderer
         working-directory: tools/badges
         run: npm ci --ignore-scripts --no-audit --no-fund
