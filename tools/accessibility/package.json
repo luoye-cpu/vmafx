@@ -1,0 +1,13 @@
+{
+  "name": "@vmafx/docs-accessibility",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Locked pa11y-ci and axe scanner for the documentation gate",
+  "license": "EUPL-1.2",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "pa11y-ci": "5.0.0"
+  }
+}

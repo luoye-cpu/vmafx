@@ -310,9 +310,6 @@ body {
  * label against the bar instead of the page behind it. */
 .md-tabs__link {
   background-color: var(--vx-ink);
-}
-
-.md-tabs__link {
   font-size: var(--vx-text-nav);
   font-weight: 500;
   color: var(--vx-ink-fg-2);
@@ -783,7 +780,7 @@ body {
 /* --------------------------------------------------------- landing page */
 
 .md-typeset .vx-hero {
-  background-color: var(--vx-ink);
+  background: var(--vx-hero-bg);
   border-radius: var(--vx-radius-l);
   color: var(--vx-hero-fg);
   display: grid;

@@ -1,5 +1,86 @@
 {
   "schema_version": 1,
-  "comment": "Each exception is a WCAG 2.2 AA deviation that is retained with a reason and an expiry. scripts/docs/check_accessibility.py rejects an entry that matches no issue or whose expiry has passed.",
-  "exceptions": []
+  "comment": "Exact selectors only. Gradient exceptions apply to incomplete results, never actual violations. Expired and unused entries fail.",
+  "exceptions": [
+    {
+      "page": "index.html",
+      "rule": "color-contrast",
+      "selector": "#vmafx-documentation",
+      "scope": "incomplete",
+      "reason": "2026-11-20: axe bgGradient needs review, not a contrast violation. CSS sRGB relative-luminance calculation over all six light/dark gradient stops: #f8fafc approximately 15.41:1, #c3cad8 approximately 9.80:1, #67e8f9 approximately 11.12:1. Source colors and interpolation regression: scripts/ci/tests/test_docs_accessibility.py. Retain the existing hero gradient; docs maintainers recheck on expiry.",
+      "expires": "2027-02-18"
+    },
+    {
+      "page": "index.html",
+      "rule": "color-contrast",
+      "selector": "html > body > div:nth-child(7) > main > div > div:nth-child(3) > article > div:nth-child(2) > div:nth-child(1) > p:nth-child(2)",
+      "scope": "incomplete",
+      "reason": "2026-11-20: axe bgGradient needs review, not a contrast violation. CSS sRGB relative-luminance calculation over all six light/dark gradient stops: #f8fafc approximately 15.41:1, #c3cad8 approximately 9.80:1, #67e8f9 approximately 11.12:1. Source colors and interpolation regression: scripts/ci/tests/test_docs_accessibility.py. Retain the existing hero gradient; docs maintainers recheck on expiry.",
+      "expires": "2027-02-18"
+    },
+    {
+      "page": "index.html",
+      "rule": "color-contrast",
+      "selector": "html > body > div:nth-child(7) > main > div > div:nth-child(3) > article > div:nth-child(2) > div:nth-child(1) > p:nth-child(2) > a",
+      "scope": "incomplete",
+      "reason": "2026-11-20: axe bgGradient needs review, not a contrast violation. CSS sRGB relative-luminance calculation over all six light/dark gradient stops: #f8fafc approximately 15.41:1, #c3cad8 approximately 9.80:1, #67e8f9 approximately 11.12:1. Source colors and interpolation regression: scripts/ci/tests/test_docs_accessibility.py. Retain the existing hero gradient; docs maintainers recheck on expiry.",
+      "expires": "2027-02-18"
+    },
+    {
+      "page": "index.html",
+      "rule": "color-contrast",
+      "selector": "html > body > div:nth-child(7) > main > div > div:nth-child(3) > article > div:nth-child(2) > div:nth-child(1) > p:nth-child(3) > a:nth-child(2)",
+      "scope": "incomplete",
+      "reason": "2026-11-20: axe bgGradient needs review, not a contrast violation. CSS sRGB relative-luminance calculation over all six light/dark gradient stops: #f8fafc approximately 15.41:1, #c3cad8 approximately 9.80:1, #67e8f9 approximately 11.12:1. Source colors and interpolation regression: scripts/ci/tests/test_docs_accessibility.py. Retain the existing hero gradient; docs maintainers recheck on expiry.",
+      "expires": "2027-02-18"
+    },
+    {
+      "page": "index.html",
+      "rule": "color-contrast",
+      "selector": "html > body > div:nth-child(7) > main > div > div:nth-child(3) > article > div:nth-child(2) > div:nth-child(2) > p",
+      "scope": "incomplete",
+      "reason": "2026-11-20: axe bgGradient needs review, not a contrast violation. CSS sRGB relative-luminance calculation over all six light/dark gradient stops: #f8fafc approximately 15.41:1, #c3cad8 approximately 9.80:1, #67e8f9 approximately 11.12:1. Source colors and interpolation regression: scripts/ci/tests/test_docs_accessibility.py. Retain the existing hero gradient; docs maintainers recheck on expiry.",
+      "expires": "2027-02-18"
+    },
+    {
+      "page": "index.html?accessibility-search=psnr",
+      "rule": "color-contrast",
+      "selector": "#vmafx-documentation",
+      "scope": "incomplete",
+      "reason": "2026-11-20: axe bgGradient needs review, not a contrast violation. CSS sRGB relative-luminance calculation over all six light/dark gradient stops: #f8fafc approximately 15.41:1, #c3cad8 approximately 9.80:1, #67e8f9 approximately 11.12:1. Source colors and interpolation regression: scripts/ci/tests/test_docs_accessibility.py. Retain the existing hero gradient; docs maintainers recheck on expiry.",
+      "expires": "2027-02-18"
+    },
+    {
+      "page": "index.html?accessibility-search=psnr",
+      "rule": "color-contrast",
+      "selector": "html > body > div:nth-child(7) > main > div > div:nth-child(3) > article > div:nth-child(2) > div:nth-child(1) > p:nth-child(2)",
+      "scope": "incomplete",
+      "reason": "2026-11-20: axe bgGradient needs review, not a contrast violation. CSS sRGB relative-luminance calculation over all six light/dark gradient stops: #f8fafc approximately 15.41:1, #c3cad8 approximately 9.80:1, #67e8f9 approximately 11.12:1. Source colors and interpolation regression: scripts/ci/tests/test_docs_accessibility.py. Retain the existing hero gradient; docs maintainers recheck on expiry.",
+      "expires": "2027-02-18"
+    },
+    {
+      "page": "index.html?accessibility-search=psnr",
+      "rule": "color-contrast",
+      "selector": "html > body > div:nth-child(7) > main > div > div:nth-child(3) > article > div:nth-child(2) > div:nth-child(1) > p:nth-child(2) > a",
+      "scope": "incomplete",
+      "reason": "2026-11-20: axe bgGradient needs review, not a contrast violation. CSS sRGB relative-luminance calculation over all six light/dark gradient stops: #f8fafc approximately 15.41:1, #c3cad8 approximately 9.80:1, #67e8f9 approximately 11.12:1. Source colors and interpolation regression: scripts/ci/tests/test_docs_accessibility.py. Retain the existing hero gradient; docs maintainers recheck on expiry.",
+      "expires": "2027-02-18"
+    },
+    {
+      "page": "index.html?accessibility-search=psnr",
+      "rule": "color-contrast",
+      "selector": "html > body > div:nth-child(7) > main > div > div:nth-child(3) > article > div:nth-child(2) > div:nth-child(1) > p:nth-child(3) > a:nth-child(2)",
+      "scope": "incomplete",
+      "reason": "2026-11-20: axe bgGradient needs review, not a contrast violation. CSS sRGB relative-luminance calculation over all six light/dark gradient stops: #f8fafc approximately 15.41:1, #c3cad8 approximately 9.80:1, #67e8f9 approximately 11.12:1. Source colors and interpolation regression: scripts/ci/tests/test_docs_accessibility.py. Retain the existing hero gradient; docs maintainers recheck on expiry.",
+      "expires": "2027-02-18"
+    },
+    {
+      "page": "index.html?accessibility-search=psnr",
+      "rule": "color-contrast",
+      "selector": "html > body > div:nth-child(7) > main > div > div:nth-child(3) > article > div:nth-child(2) > div:nth-child(2) > p",
+      "scope": "incomplete",
+      "reason": "2026-11-20: axe bgGradient needs review, not a contrast violation. CSS sRGB relative-luminance calculation over all six light/dark gradient stops: #f8fafc approximately 15.41:1, #c3cad8 approximately 9.80:1, #67e8f9 approximately 11.12:1. Source colors and interpolation regression: scripts/ci/tests/test_docs_accessibility.py. Retain the existing hero gradient; docs maintainers recheck on expiry.",
+      "expires": "2027-02-18"
+    }
+  ]
 }

@@ -182,7 +182,6 @@ extra:
 
 nav:
   - Home: index.md
-  - Search: search.md
   - Get started:
       - getting-started/index.md
       - Score your first pair: getting-started/first-score.md

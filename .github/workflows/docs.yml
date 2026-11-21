@@ -136,11 +136,18 @@ jobs:
       - name: Install accessibility scanner
         if: steps.impact.outputs.docs == 'true'
         timeout-minutes: 5
-        run: npm install --global --no-fund --no-audit pa11y-ci@5.0.0
+        # The lock pins pa11y, axe-core and Puppeteer transitively. No install
+        # scripts: use the hosted runner's Chrome instead of downloading one.
+        run: |
+          npm ci --prefix tools/accessibility --ignore-scripts --no-audit --no-fund
+          node tools/accessibility/test-scroll-focus.cjs
       - name: Check documentation accessibility (WCAG 2.2 AA)
         if: steps.impact.outputs.docs == 'true'
         timeout-minutes: 10
-        run: python3 scripts/docs/check_accessibility.py --site build-docs/site
+        run: |
+          chrome="$(command -v google-chrome || command -v chromium)"
+          "$chrome" --version
+          python3 scripts/docs/check_accessibility.py --site build-docs/site --chrome "$chrome"
       - name: Check every formula compiles with KaTeX (ADR-2705)
         if: steps.impact.outputs.docs == 'true'
         run: python3 scripts/docs/check_math.py --site build-docs/site

@@ -1,4 +1,5 @@
-- **Documentation site:** CI now scans the built site with `pa11y-ci` and
-  axe-core in the light and dark palettes, and a planted-defect fixture proves
-  the check can fail; retained deviations need a dated reason in
-  `scripts/docs/accessibility-allowlist.json` (issue 2552, WCAG 2.2 AA goal).
+- **Documentation site:** CI scans five built pages and a real search with
+  visible results over local HTTP in both palettes, using locked `pa11y-ci`
+  and axe-core dependencies. WCAG 2.2 `target-size`, WCAG warnings and notices
+  are included. A four-rule planted fixture must fail first; retained exceptions
+  need a dated reason and unused exceptions fail (issue 2552).
