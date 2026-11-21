@@ -2,13 +2,19 @@
 # Tiny-model registry — schema and verification
 
 The registry at [`model/tiny/registry.json`](../../model/tiny/registry.json) is
-the trust root of libvmaf's tiny-AI surface. Every ONNX model shipped under
-`model/tiny/` is indexed there with a SHA-256 pin, license metadata and a
-Sigstore bundle path. T6-9 / [ADR-0211](../adr/0211-model-registry-sigstore.md)
-formalised the schema and wired `--tiny-model-verify` to `cosign verify-blob`.
+the metadata index for libvmaf's tiny-AI surface. Every ONNX model shipped
+under `model/tiny/` is indexed there with a SHA-256 pin and license metadata.
+T6-9 / [ADR-0211](../adr/0211-model-registry-sigstore.md) formalised the schema
+and wired `--tiny-model-verify` to `cosign verify-blob`.
 
-The registry holds 26 entries. Thirteen are CI smoke fixtures with
-`smoke: true`, see [CI-only smoke fixtures](#ci-only-smoke-fixtures).
+The registry holds 26 entries, all currently unsigned, with no per-model
+Sigstore bundles or `sigstore_bundle` declarations. Verification is off by
+default; enabling it rejects all 26 current entries. Per-model signing and
+release integration remain follow-up work in
+[#1246](https://github.com/vidiko/vmafx/issues/1246) and
+[#3606](https://github.com/vidiko/vmafx/issues/3606).
+Thirteen entries are CI smoke fixtures with `smoke: true`, see
+[CI-only smoke fixtures](#ci-only-smoke-fixtures).
 
 ## Registry shape
 
@@ -29,7 +35,6 @@ The registry holds 26 entries. Thirteen are CI smoke fixtures with
       "quant_accuracy_budget_plcc": 0.01,
       "license": "BSD-2-Clause-Patent",
       "license_url": "https://github.com/VMAFx/vmafx/blob/master/NOTICE",
-      "sigstore_bundle": "learned_filter_v1.onnx.sigstore.json",
       "description": "Tiny residual filter for vmafx_pre — degraded → clean luma.",
       "notes": "Self-supervised on KoNViD-1k …"
     }
@@ -62,21 +67,27 @@ schema rejects unknown properties (`additionalProperties: false`).
 | `quant_accuracy_budget_plcc` | no | Maximum PLCC drop versus fp32; the CI `ai-quant-accuracy` job fails a quantised model beyond it. Default 0.01. |
 | `license` | schema version 1 | SPDX identifier. Fork-trained models use `BSD-2-Clause-Patent`, matching libvmaf. Upstream-derived models keep the upstream license verbatim (LPIPS-Sq is `BSD-2-Clause`). |
 | `license_url` | no | URL of the license text. |
-| `sigstore_bundle` | no | Path relative to `model/tiny/`, ending in `.sigstore.json`. |
+| `sigstore_bundle` | no | Path relative to `model/tiny/`, ending in `.sigstore.json`. Declare only when the real bundle exists; omit for unsigned models. |
 | `description` | no | One-line summary, distinct from `notes`. |
 | `notes` | no | Free-text provenance and training recipe, at most 512 characters. |
 | `release_url` | no | HTTPS URL of a release attachment holding the ONNX bytes, for a model not tracked in git; `scripts/ai/fetch-tiny-blobs.sh` downloads it and checks `sha256`. No shipped entry sets it, see [tiny-blob-storage.md](tiny-blob-storage.md). |
 
-The Sigstore bundle file is generated at release time by
-[`.github/workflows/supply-chain.yml`](../../.github/workflows/supply-chain.yml).
-Before a release the path is declared but the file may be absent. The runtime
-verifier (`--tiny-model-verify`) treats an absent bundle as fail-closed.
+The optional `sigstore_bundle` field records an existing per-model bundle;
+it is not a reservation for a future release file. The runtime verifier
+(`--tiny-model-verify`) fails closed when either the field or its file is
+missing. The native release workflow signs and attests `models.tar.gz`, which
+contains the entire `model/` tree, but does not generate per-model bundles.
+See [release archive coverage](security.md#release-archive-coverage) for the
+workflow and packaging sources.
 
 ## Validate the registry
 
 [`ai/scripts/validate_model_registry.py`](../../ai/scripts/validate_model_registry.py)
 runs the JSON Schema check and the cross-file consistency check: every ONNX
-exists, every `sha256` matches, every non-smoke entry has a sidecar. It also
+exists, every `sha256` matches, every non-smoke entry has a sidecar. Declared
+bundle paths must name existing files under the registry directory; absolute
+paths, dot-segment traversal and symlink escapes are rejected. These checks
+validate metadata and file presence, not the bundle's signature. It also
 reads each graph (and its int8 sibling) with
 [`ai/src/aiutils/onnx_signature.py`](../../ai/src/aiutils/onnx_signature.py),
 which needs no `onnx` package, and fails when the registry `opset` or a
@@ -99,9 +110,10 @@ python3 ai/scripts/validate_model_registry.py /path/to/other-registry.json \
     --out-json runs/offtree_registry_validation.json
 ```
 
-Without `jsonschema` installed the validator falls back to a structural check,
-so distros without `python-jsonschema` still get the required-field invariants.
-Install `jsonschema` for full Draft 2020-12 coverage.
+The validator requires `jsonschema` for Draft 2020-12 validation and exits with
+status 2 if it is unavailable; it never reports a partial structural check as a
+pass. Install the hash-locked dependency from
+[`requirements/locks/jsonschema.txt`](../../requirements/locks/jsonschema.txt).
 
 The optional `--out-json` report records the verdict, model count, errors,
 registry and schema paths, and the ADR-0661 `run_provenance` block. Use it for
@@ -110,7 +122,9 @@ release evidence and for debugging failures without CI log scrollback.
 ## Verify a model at runtime
 
 `--tiny-model-verify` makes the loader check the model's Sigstore bundle before
-it opens the file:
+inference. The current registry is unsigned, so the following command
+intentionally fails closed because `learned_filter_v1` has no
+`sigstore_bundle` field:
 
 ```bash
 vmaf -r ref.y4m -d dis.y4m \
@@ -126,15 +140,18 @@ The loader runs these steps:
 3. Spawn `cosign verify-blob --bundle=<path> --certificate-identity-regexp …
    --certificate-oidc-issuer https://token.actions.githubusercontent.com <onnx>`
    with `posix_spawnp(3p)` and an explicit argv array, no shell.
-4. Refuse to load on a non-zero exit, a missing `cosign`, a missing bundle or a
-   missing registry entry.
+4. Refuse to load on a non-zero exit, a missing `cosign`, a missing
+   `sigstore_bundle` field, a missing bundle file or a missing registry entry.
 
-The flag is off by default for dev-friendliness; production deployments should
-set it. `cosign` must be on `$PATH`; install a prebuilt binary from the
-[Sigstore release page](https://github.com/sigstore/cosign/releases). The C entry
-point is `vmaf_dnn_verify_signature(onnx_path, registry_path)` in
-[`core/include/libvmaf/dnn.h`](../../core/include/libvmaf/dnn.h); both arguments
-are NULL-tolerant in the documented way.
+The flag is off by default. Production deployments that require per-model
+verification must first provision real bundles for their exact ONNX bytes.
+On POSIX hosts, `cosign` must be on `$PATH`; install a prebuilt binary from
+the [Sigstore release page](https://github.com/sigstore/cosign/releases).
+Windows returns `-ENOSYS` and refuses the load. The C entry point is
+`vmaf_dnn_verify_signature(onnx_path, registry_path)` in
+[`core/include/libvmaf/dnn.h`](../../core/include/libvmaf/dnn.h).
+`onnx_path` must be non-NULL; a NULL `registry_path` selects the registry next
+to the model (or `model/tiny/registry.json` for a bare filename).
 
 ### Directory jail
 
@@ -143,15 +160,15 @@ environment variable constrains model location. Set it on production hosts:
 
 ```bash
 export VMAF_TINY_MODEL_DIR=/opt/vmaf-models
-vmaf --tiny-model /opt/vmaf-models/vmaf_tiny_v2.onnx --tiny-model-verify ...
+vmaf --tiny-model /opt/vmaf-models/vmaf_tiny_v2.onnx ...
 ```
 
 At load time libvmaf canonicalises the jail and the requested ONNX path. The
 model must resolve below the jail. Sibling-prefix escapes, symlink escapes,
 missing jail directories, and jail values that point at files fail closed with
-`-EACCES`. The jail does not replace registry verification or the operator
-allowlist: run all three layers together in production
-(see [security.md](security.md)).
+`-EACCES`. The jail and operator allowlist apply to unsigned models too.
+Deployments that also require signer verification must provision real per-model
+bundles before adding `--tiny-model-verify` (see [security.md](security.md)).
 
 ## What the registry is not
 
@@ -173,8 +190,11 @@ allowlist: run all three layers together in production
 2. Compute the digest: `sha256sum model/tiny/<name>.onnx`.
 3. Add an entry to `registry.json`. Use existing entries as templates; the
    schema enforces required fields.
-4. Leave bundle generation to the release. Before a release the
-   `sigstore_bundle` path may point at a file that does not exist yet.
+4. Omit `sigstore_bundle` while the model is unsigned. Add it only when a real
+   bundle for the exact ONNX bytes exists; do not declare a future file.
+   Signing and release integration are tracked in
+   [#1246](https://github.com/vidiko/vmafx/issues/1246) and
+   [#3606](https://github.com/vidiko/vmafx/issues/3606).
 5. Run `python3 ai/scripts/validate_model_registry.py` and fix what it reports.
 
 The `/add-model <path>` skill scaffolds steps 1 to 4.

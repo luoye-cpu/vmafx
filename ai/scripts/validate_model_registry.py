@@ -16,8 +16,8 @@ Two validators run in sequence:
 2. **Cross-file consistency** — every ``onnx`` exists, the recorded
    ``sha256`` matches the file on disk, every non-smoke entry has a
    sidecar JSON, ``int8_sha256`` is present iff ``quant_mode`` is not
-   ``fp32``, and ``sigstore_bundle`` paths are well-formed (file presence
-   is *not* required at lint time — bundles are generated at release).
+   ``fp32``, and any declared ``sigstore_bundle`` has the expected suffix and exists.
+   Unsigned entries omit this optional field.
 
 Exit status: 0 = pass, 1 = validation failed, 2 = bad invocation.
 """
@@ -133,6 +133,24 @@ def sidecar_for(onnx_path: Path) -> Path:
     if name.endswith(".int8.onnx"):
         return onnx_path.with_name(name[: -len(".int8.onnx")] + ".json")
     return direct
+
+
+def _bundle_path_in_registry(bundle_rel: Any, registry_dir: Path) -> Path | None:
+    """Return a safe bundle path, rejecting absolute and traversal paths."""
+    if not isinstance(bundle_rel, str) or not bundle_rel:
+        return None
+    if "\\" in bundle_rel or ":" in bundle_rel or "\0" in bundle_rel:
+        return None
+    parts = bundle_rel.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return None
+    registry_root = registry_dir.resolve()
+    candidate = registry_dir.joinpath(*parts)
+    try:
+        candidate.resolve().relative_to(registry_root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return candidate
 
 
 def _check_quant_consistency(
@@ -345,10 +363,22 @@ def _consistency_check(reg: dict[str, Any], registry_dir: Path) -> list[str]:
             _check_graph_metadata(m, mid, onnx_path, errors)
 
         bundle_rel = m.get("sigstore_bundle")
-        if bundle_rel and not bundle_rel.endswith(".sigstore.json"):
-            errors.append(
-                f"{mid}: sigstore_bundle must end with .sigstore.json (got {bundle_rel!r})"
-            )
+        if bundle_rel:
+            if not isinstance(bundle_rel, str):
+                errors.append(f"{mid}: sigstore_bundle must be a string")
+                continue
+            if not bundle_rel.endswith(".sigstore.json"):
+                errors.append(
+                    f"{mid}: sigstore_bundle must end with .sigstore.json (got {bundle_rel!r})"
+                )
+            bundle_path = _bundle_path_in_registry(bundle_rel, registry_dir)
+            if bundle_path is None:
+                errors.append(
+                    f"{mid}: sigstore_bundle must be a relative path under the registry directory "
+                    f"(got {bundle_rel!r})"
+                )
+            elif not bundle_path.is_file():
+                errors.append(f"{mid}: sigstore_bundle missing bundle file {bundle_rel!r}")
     return errors
 
 

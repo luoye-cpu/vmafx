@@ -75,6 +75,36 @@ with already-shipped registries.
   expose a `verify_model` JSON-RPC method on top of
   `vmaf_dnn_verify_signature()`.
 
+## Implementation status postscript (#3606)
+
+The decision above records the original T6-9 design, including its release-time
+bundle expectation. The schema and opt-in verifier shipped; per-model signing
+and release integration remain pending in
+[#1246](https://github.com/vidiko/vmafx/issues/1246) and
+[#3606](https://github.com/vidiko/vmafx/issues/3606).
+
+All 26 current entries in
+[`model/tiny/registry.json`](../../model/tiny/registry.json) are unsigned.
+There are no per-model `<onnx>.sigstore.json` files, and the registry omits
+`sigstore_bundle` for these entries. The field is optional and must be declared
+only when the real bundle exists. This corrects the original expectation that
+a path could be declared before its file was produced.
+
+`--tiny-model-verify` remains off by default. Enabling it for any current entry
+fails closed. The shipped verifier in
+[`model_loader.c`](../../core/src/dnn/model_loader.c) rejects a missing registry
+entry, missing bundle field or file, unavailable `cosign`, or verification
+failure; Windows returns `-ENOSYS`.
+
+[`.github/workflows/supply-chain.yml`](../../.github/workflows/supply-chain.yml)
+signs native release artifacts and attests their build provenance. The
+[`native packaging script`](../../scripts/release/build-native-release-artifacts.sh)
+copies the entire `model/` tree into `models.tar.gz`, so the archive coverage
+includes tiny-model bytes. Archive signatures and provenance do not generate
+the individual bundles consumed by the model verifier. Current usage and
+requirements are documented in [model-registry.md](../ai/model-registry.md)
+and [security.md](../ai/security.md#layer-4-signature-verification-opt-in).
+
 ## References
 
 - Source: backlog item T6-9 (`.workingdir2/BACKLOG.md`).

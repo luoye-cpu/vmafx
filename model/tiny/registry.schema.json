@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/VMAFx/vmafx/model/tiny/registry.schema.json",
   "title": "VMAF tiny-model registry v1",
-  "description": "Index of the ONNX tiny-models shipped under model/tiny/. Every ONNX file referenced here must live under model/tiny/ and match the sha256 recorded below; every non-smoke entry also carries a sidecar JSON with the same basename. ai/scripts/validate_model_registry.py and core/test/dnn/test_registry.sh check the digests, and the validator holds the registry opset and the sidecars (opset, tensor names, feature and codec-block widths) to the graphs. The runtime does not compare digests: `vmaf --tiny-model` takes a file path and loads any model the op allowlist admits; `--tiny-model-verify` looks the file's Sigstore bundle up here and runs cosign on it. Per-model inference metadata (input/output tensor names, normalisation, opset) lives in the sidecar next to each ONNX file, so the registry stays small and easy to audit. T6-9 (ADR-0211) added license metadata + Sigstore bundle paths.",
+  "description": "Index of the ONNX tiny-models shipped under model/tiny/. Every ONNX file referenced here must live under model/tiny/ and match the sha256 recorded below; every non-smoke entry also carries a sidecar JSON with the same basename. ai/scripts/validate_model_registry.py and core/test/dnn/test_registry.sh check the digests, and the validator holds the registry opset and the sidecars (opset, tensor names, feature and codec-block widths) to the graphs. The runtime does not compare digests: `vmaf --tiny-model` takes a file path and loads any model the op allowlist admits; `--tiny-model-verify` looks up an optional per-model Sigstore bundle and runs cosign on it. Per-model inference metadata (input/output tensor names, normalisation, opset) lives in the sidecar next to each ONNX file, so the registry stays small and easy to audit. T6-9 (ADR-0211) added license metadata and an optional Sigstore-bundle path.",
   "type": "object",
   "required": ["schema_version", "models"],
   "additionalProperties": false,
@@ -101,9 +101,9 @@
           "maxLength": 512
         },
         "sigstore_bundle": {
-          "description": "Path to the model's Sigstore bundle (.sigstore.json), relative to model/tiny/. Generated at release time by .github/workflows/supply-chain.yml — placeholder bundles may exist in-tree before the first release; the runtime verifier (`--tiny-model-verify`) refuses to load when the path is set but the file is missing or `cosign verify-blob` exits non-zero. Optional; absence means the model is unsigned and `--tiny-model-verify` will reject it.",
+          "description": "Path to an existing per-model Sigstore bundle (.sigstore.json), relative to model/tiny/ and without dot-segment traversal. Optional; absence means the model is unsigned and `--tiny-model-verify` refuses to load it. The native release archive may have archive-level provenance without any per-model bundle.",
           "type": "string",
-          "pattern": "^[a-z0-9][a-z0-9_./-]*\\.sigstore\\.json$",
+          "pattern": "^(?!.*//)(?!.*(?:^|/)\\.\\.?(/|$))[a-z0-9][a-z0-9_./-]*\\.sigstore\\.json$",
           "maxLength": 256
         },
         "description": {

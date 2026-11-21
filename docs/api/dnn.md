@@ -477,9 +477,10 @@ Needs a libvmaf built with DNN support (`-Denable_dnn=enabled`).
 
 ## Sigstore signature verification: `vmaf_dnn_verify_signature`
 
-Verify a tiny model's Sigstore bundle before loading it. The same check is
-behind the `vmaf` CLI flag `--tiny-model-verify`
-([CLI usage](../usage/cli.md)).
+Optionally verify a tiny model's Sigstore bundle before loading it. The same
+check is behind the `vmaf` CLI flag `--tiny-model-verify`
+([CLI usage](../usage/cli.md)); the flag is off by default. All 26 current
+registry entries are unsigned, so enabling it rejects them.
 
 ```c
 int vmaf_dnn_verify_signature(const char *onnx_path, const char *registry_path);
@@ -518,12 +519,14 @@ cosign diagnostics go to the process's own stderr.
     result (`--tiny-model-verify: signature verification failed for <path>
     (errno N)`). `vmaf_use_tiny_model()` does not verify by itself.
 
-Provenance: the bundle comes from the fork's release-please and Sigstore
-signing pipeline ([ADR-0010](../adr/0010-sigstore-keyless-signing.md), and
-the policy in [the model registry](../ai/model-registry.md)). Bundles under
-`model/tiny/` carry a keyless OIDC identity tied to the GitHub Actions
-workflow that built the model. The function is part of the model-registry
-work in [ADR-0211](../adr/0211-model-registry-sigstore.md).
+A `sigstore_bundle` is optional; when present it names a real per-model
+`.sigstore.json` file, and the function verifies it against the configured
+GitHub Actions identity. Native release archive signatures and provenance do
+not provide per-model bundles; the archive includes model bytes but is a
+separate verification unit. Per-model signing and release integration remain
+tracked in [#1246](https://github.com/vidiko/vmafx/issues/1246) and
+[#3606](https://github.com/vidiko/vmafx/issues/3606). The function is part of
+the model-registry work in [ADR-0211](../adr/0211-model-registry-sigstore.md).
 
 ## Testing standalone sessions
 

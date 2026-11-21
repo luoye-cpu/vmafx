@@ -458,9 +458,11 @@ backend within it.
 - **TransNet V2 shot-boundary extractor (T6-3a, PR #210)** —
   ~1M params; feeds `tools/vmaf-perShot` CRF predictor.
 
-- **Model registry + Sigstore (T6-9, [ADR-0211](../adr/0211-model-registry-sigstore.md), PR #199)**:
-  `--tiny-model-verify` flag + registry schema + Sigstore bundle
-  paths. Pairs with
+- **Model registry + optional per-model Sigstore bundles (T6-9,
+  [ADR-0211](../adr/0211-model-registry-sigstore.md), PR #199)**:
+  `--tiny-model-verify` flag + registry schema; unsigned rows omit optional
+  bundle paths, and any declared bundle must exist. Verification remains opt-in.
+  Pairs with
   [ADR-0010](../adr/0010-sigstore-keyless-signing.md) (release
   signing).
 

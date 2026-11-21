@@ -85,9 +85,12 @@ budget.
     rationale stays the win; readers should not expect the
     `learned_filter_v1` 2.4× shrink on every model.
 - **Neutral / follow-ups:**
-  - Sigstore bundles for v3 / v4 fp32 + int8 are populated at release
-    time by `.github/workflows/supply-chain.yml`; placeholder bundles
-    are not added in this PR.
+  - This ADR originally expected per-model Sigstore bundles for v3 / v4
+    fp32 + int8 at release time. The current supply-chain workflow signs the
+    native release archive, not individual ONNX files; no per-model bundles
+    exist. [#3606](https://github.com/vidiko/vmafx/issues/3606) removes the
+    false registry declarations, with per-model signing still tracked by
+    [#1246](https://github.com/vidiko/vmafx/issues/1246) and #3606.
   - When v5 lands (if ever — ADR-0242 declared the ladder saturated),
     the same recipe applies: run `ptq_dynamic.py`, register fields,
     document.

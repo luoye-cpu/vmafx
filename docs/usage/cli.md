@@ -934,34 +934,45 @@ checkpoint.
 
 ### Sigstore bundle verification
 
-`--tiny-model-verify` is a boolean flag (no argument). Before the model is
-loaded into ORT, the loader runs `cosign verify-blob` against the model's
-Sigstore bundle. On success the loader proceeds; on failure the process exits
-non-zero with a diagnostic on stderr
+`--tiny-model-verify` is a boolean flag (no argument), **off by default**.
+All 26 entries currently shipped in
+[`model/tiny/registry.json`](../../model/tiny/registry.json) are unsigned and
+omit `sigstore_bundle`; enabling the flag rejects them. Per-model signing and
+release integration remain follow-up work in
+[#1246](https://github.com/vidiko/vmafx/issues/1246) and
+[#3606](https://github.com/vidiko/vmafx/issues/3606).
+
+When a model has a real bundle, the loader runs `cosign verify-blob` before
+loading it into ORT. On success the loader proceeds; on failure the process
+exits non-zero with a diagnostic on stderr
 (`--tiny-model-verify: signature verification failed for <path> (errno <n>)`).
 
 The bundle is not derived from the model file name. The loader reads
 `registry.json` from the directory that holds the model (by default
 `model/tiny/registry.json`), finds the entry whose `onnx` file name matches, and
-uses that entry's `sigstore_bundle` field, for example
-`dists_sq.onnx.sigstore.json`. Verification therefore needs:
+uses that entry's optional `sigstore_bundle` field. Declare this field only
+when the real bundle file exists. Verification therefore needs:
 
-1. a model registered in the `registry.json` next to it;
-2. the bundle file named by that entry;
+1. a model registered in the `registry.json` next to it, with a
+   `sigstore_bundle` field;
+2. the real bundle file named by that entry;
 3. the `cosign` binary on the host's `PATH`;
 4. a POSIX host. On Windows verification returns `-ENOSYS` and the run fails.
 
-Use it in production inference pipelines that need supply-chain verification of
-model integrity, for example a release runner that pulls a fork-signed `.onnx`
-from an artifact store and refuses to score with an unsigned or tampered model.
-For local development against an unsigned checkpoint, omit the flag.
+Production inference pipelines requiring per-model signer verification must
+provision bundles for the exact model bytes before enabling this flag. For
+unsigned checkpoints, including all current in-tree entries, omit the flag to
+use the ordinary loader checks.
 
 Every failure exits non-zero before any inference runs: `cosign` missing from
-`PATH`, a missing or invalid bundle, an unregistered model, or a
-`cosign verify-blob` rejection (invalid signature, digest mismatch or rejected
-certificate identity). See
-[ADR-0211](../adr/0211-model-registry-sigstore.md) for the registry schema and
-[../ai/inference.md](../ai/inference.md) for the signed-model workflow.
+`PATH`, a missing `sigstore_bundle` field, a missing or invalid bundle file,
+an unregistered model, or a `cosign verify-blob` rejection (invalid signature,
+digest mismatch or rejected certificate identity). Native release archive
+signatures and provenance cover `models.tar.gz`, including its `model/` bytes;
+they do not provide the per-model bundles this flag needs. See
+[security.md](../ai/security.md#release-archive-coverage) for that distinction
+and [ADR-0211](../adr/0211-model-registry-sigstore.md) for the schema decision
+and current implementation status.
 
 ## Logging and misc
 

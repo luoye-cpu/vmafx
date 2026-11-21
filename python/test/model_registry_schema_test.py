@@ -55,12 +55,22 @@ def test_registry_schema_version_is_one() -> None:
 
 
 def test_every_entry_has_license_metadata() -> None:
-    """T6-9 added license + license_url + sigstore_bundle. Lock the rule."""
+    """Every shipped model keeps its per-entry license declaration."""
     reg = _load_registry()
     for m in reg["models"]:
         assert "license" in m, f"{m['id']}: missing license"
-        assert "sigstore_bundle" in m, f"{m['id']}: missing sigstore_bundle"
-        assert m["sigstore_bundle"].endswith(".sigstore.json")
+
+
+def test_shipped_registry_declared_bundles_exist() -> None:
+    """Unsigned rows are valid; declared bundles must name existing files."""
+    reg = _load_registry()
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert _jsonschema_errors(reg, schema) == []
+    for model in reg["models"]:
+        if "sigstore_bundle" in model:
+            bundle = model["sigstore_bundle"]
+            assert bundle.endswith(".sigstore.json"), model["id"]
+            assert (REGISTRY_PATH.parent / bundle).is_file(), model["id"]
 
 
 @pytest.mark.xfail(
@@ -95,6 +105,47 @@ def test_fr_regressor_v2_ensemble_seed_rows_are_production() -> None:
         assert sidecar["sha256"] == row["sha256"]
         assert sidecar["gate"]["passed"] is True
         assert sidecar["gate"]["verdict"] == "PROMOTE"
+
+
+def test_schema_accepts_optional_bundle_field_when_present() -> None:
+    reg = {
+        "schema_version": 1,
+        "models": [
+            {
+                "id": "x",
+                "kind": "fr",
+                "onnx": "x.onnx",
+                "sha256": "0" * 64,
+                "teacher": "none",
+                "sigstore_bundle": "nested/x.onnx.sigstore.json",
+            }
+        ],
+    }
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert _jsonschema_errors(reg, schema) == []
+
+
+def test_schema_rejects_bundle_path_escape() -> None:
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    for bundle in (
+        "../outside.sigstore.json",
+        "nested/../../outside.sigstore.json",
+        "nested/./bundle.sigstore.json",
+        "nested//bundle.sigstore.json",
+        "/outside.sigstore.json",
+        "C:/outside.sigstore.json",
+    ):
+        row = {
+            "id": "x",
+            "kind": "fr",
+            "onnx": "x.onnx",
+            "sha256": "0" * 64,
+            "teacher": "none",
+            "sigstore_bundle": bundle,
+        }
+        reg = {"schema_version": 1, "models": [row]}
+        errors = _jsonschema_errors(reg, schema)
+        assert any("sigstore_bundle" in error for error in errors), bundle
 
 
 def test_schema_rejects_bad_hex_sha256() -> None:
@@ -140,6 +191,29 @@ def test_consistency_rejects_unknown_model_file(tmp_path: Path) -> None:
     }
     errors = _consistency_check(bad, tmp_path)  # tmp_path has no ghost.onnx
     assert any("missing ONNX" in e for e in errors)
+
+
+def test_consistency_rejects_missing_declared_bundle_file(tmp_path: Path) -> None:
+    onnx_path = tmp_path / "x.onnx"
+    onnx_path.write_bytes(b"")
+    import hashlib
+
+    sha = hashlib.sha256(b"").hexdigest()
+    (tmp_path / "x.json").write_text("{}", encoding="utf-8")
+    reg = {
+        "schema_version": 1,
+        "models": [
+            {
+                "id": "x",
+                "kind": "fr",
+                "onnx": "x.onnx",
+                "sha256": sha,
+                "sigstore_bundle": "x.onnx.sigstore.json",
+            }
+        ],
+    }
+    errors = _consistency_check(reg, tmp_path)
+    assert any("sigstore_bundle" in e and "missing bundle file" in e for e in errors)
 
 
 def test_consistency_rejects_malformed_bundle_extension(tmp_path: Path) -> None:

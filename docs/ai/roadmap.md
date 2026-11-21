@@ -23,8 +23,9 @@ The four capabilities already in-tree are described in
 | --- | --- | --- | --- |
 | Training (`ai/`, `vmaf-train`) | Shipped | [ADR-0020](../adr/0020-tinyai-four-capabilities.md) | [training.md](training.md) |
 | Inference (`core/src/dnn/`, ONNX Runtime, op allowlist, 50 MB cap) | Shipped | [ADR-0023](../adr/0023-tinyai-user-surfaces.md) | [inference.md](inference.md) |
-| Model signing verification (`--tiny-model-verify`) | Shipped | ADR-0211 | [security.md](security.md) |
-| Model registry | Shipped, 26 entries | ADR-0211 | [model-registry.md](model-registry.md) |
+| Model signature verifier (`--tiny-model-verify`) | Shipped; off by default, rejects unsigned models | ADR-0211 | [security.md](security.md) |
+| Per-model Sigstore signing and release integration | Pending; all 26 current entries unsigned | ADR-0211 | [#1246](https://github.com/vidiko/vmafx/issues/1246), [#3606](https://github.com/vidiko/vmafx/issues/3606) |
+| Model registry | Shipped, 26 entries with SHA-256 pins and license metadata | ADR-0211 | [model-registry.md](model-registry.md) |
 | FFmpeg `vmafx` tiny options, `vmafx_pre` (8/10/12-bit, optional chroma) | Shipped | ADR-0482 | `ffmpeg-patches/0003`, `ffmpeg-patches/0004` |
 | FR baselines (`fr_regressor_v1`, `vmaf_tiny_v2`) | Shipped | [ADR-0249](../adr/0249-fr-regressor-v1.md), [ADR-0244](../adr/0244-vmaf-tiny-v2.md) | [model cards](models/vmaf_tiny_v2.md) |
 | `nr_metric_v1`, `learned_filter_v1` | Shipped | [ADR-0168](../adr/0168-tinyai-konvid-baselines.md) | [nr_metric_v1](models/nr_metric_v1.md), [learned_filter_v1](models/learned_filter_v1.md) |
@@ -56,12 +57,15 @@ The shipped surface:
   and `ffmpeg-patches/0004` adds the `vmafx_pre` learned-filter filter.
 - **Checkpoints.** `model/tiny/` holds 26 registry entries, see
   [model-registry.md](model-registry.md).
-- **Signing.** `--tiny-model-verify` is wired to `cosign verify-blob`
-  (ADR-0211 / T6-9). `registry.json` carries SHA-256 pins and Sigstore bundle
-  paths.
+- **Signature verifier.** `--tiny-model-verify` is wired to
+  `cosign verify-blob` (ADR-0211 / T6-9) and is off by default. All 26 current
+  entries are unsigned and omit `sigstore_bundle`; enabling verification
+  rejects them. Missing bundle metadata or files fail closed.
 
-Still outstanding: there is no GPU-parity CI, so cross-execution-provider
-variance is verified manually.
+Still outstanding: per-model signing and release integration
+([#1246](https://github.com/vidiko/vmafx/issues/1246),
+[#3606](https://github.com/vidiko/vmafx/issues/3606)), and GPU-parity CI, so
+cross-execution-provider variance is verified manually.
 
 ## 2. Wave 1
 
@@ -295,13 +299,21 @@ Not in Wave 1, listed so they are not forgotten:
 - **GPU-parity CI** (outstanding). CPU against CUDA and CPU against OpenVINO
   cross-device variance as a required status check (at most 1e-4 FP32 and 1e-2
   FP16, per [`inference.md`](inference.md#expected-cross-device-variance)).
-- **Sigstore verification** (shipped, ADR-0211). `--tiny-model-verify` is wired
-  to
-  `cosign verify-blob`; production deployments should set it on.
+- **Sigstore verifier** (shipped, ADR-0211). `--tiny-model-verify` is wired
+  to `cosign verify-blob` and is off by default. Production deployments that
+  require it must provision real per-model bundles first; missing metadata or
+  files refuse the load.
+- **Per-model signing and release integration** (pending,
+  [#1246](https://github.com/vidiko/vmafx/issues/1246),
+  [#3606](https://github.com/vidiko/vmafx/issues/3606)). All 26 current registry
+  entries are unsigned. Native release archive signing and provenance already
+  cover `models.tar.gz`, which packages the entire `model/` tree, but do not
+  supply per-model bundles; see
+  [release archive coverage](security.md#release-archive-coverage).
 - **Model registry** (shipped, ADR-0211). `model/tiny/registry.json` carries
-  SHA-256 pins, Sigstore bundle paths and license metadata for all 26 entries.
-  See
-  [model-registry.md](model-registry.md).
+  SHA-256 pins and license metadata for all 26 entries. The optional
+  `sigstore_bundle` field is declared only when a real bundle exists.
+  See [model-registry.md](model-registry.md).
 
 ## 8. Out of scope
 

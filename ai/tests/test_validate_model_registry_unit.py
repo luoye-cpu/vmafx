@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "ai" / "scripts" / "validate_model_registry.py"
 
@@ -357,11 +359,68 @@ def test_consistency_check_sigstore_bundle_path_shape(tmp_path: Path) -> None:
     assert any("sigstore_bundle must end with .sigstore.json" in e for e in errs)
 
 
+def test_consistency_check_rejects_missing_declared_bundle(tmp_path: Path) -> None:
+    row = _stage_graph(tmp_path, "smoke_v0.onnx", "x", None)
+    row["sigstore_bundle"] = "x.onnx.sigstore.json"
+    errs = VMR._consistency_check({"models": [row]}, tmp_path)
+    assert any("sigstore_bundle missing bundle file" in e for e in errs)
+
+
+def test_consistency_check_rejects_bundle_path_escape(tmp_path: Path) -> None:
+    registry_dir = tmp_path / "registry"
+    registry_dir.mkdir()
+    outside = tmp_path / "outside.sigstore.json"
+    outside.write_text("{}", encoding="utf-8")
+    row = _stage_graph(registry_dir, "smoke_v0.onnx", "x", None)
+    row["sigstore_bundle"] = "../outside.sigstore.json"
+    errs = VMR._consistency_check({"models": [row]}, registry_dir)
+    assert any("relative path under the registry directory" in e for e in errs)
+
+
+def test_consistency_check_rejects_absolute_bundle_path(tmp_path: Path) -> None:
+    row = _stage_graph(tmp_path, "smoke_v0.onnx", "x", None)
+    row["sigstore_bundle"] = (tmp_path / "x.sigstore.json").as_posix()
+    errs = VMR._consistency_check({"models": [row]}, tmp_path)
+    assert any("relative path under the registry directory" in e for e in errs)
+
+
+def test_consistency_check_rejects_symlink_bundle_escape(tmp_path: Path) -> None:
+    registry_dir = tmp_path / "registry"
+    registry_dir.mkdir()
+    outside = tmp_path / "outside.sigstore.json"
+    outside.write_text("{}", encoding="utf-8")
+    bundle = registry_dir / "bundle.sigstore.json"
+    try:
+        bundle.symlink_to(outside)
+    except (OSError, NotImplementedError) as err:
+        pytest.skip(f"symlink creation unavailable: {err}")
+    row = _stage_graph(registry_dir, "smoke_v0.onnx", "x", None)
+    row["sigstore_bundle"] = bundle.name
+    errs = VMR._consistency_check({"models": [row]}, registry_dir)
+    assert any("relative path under the registry directory" in e for e in errs)
+
+
+def test_consistency_check_accepts_nested_bundle_path(tmp_path: Path) -> None:
+    row = _stage_graph(tmp_path, "smoke_v0.onnx", "x", None)
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "x.sigstore.json").write_text("{}", encoding="utf-8")
+    row["sigstore_bundle"] = "nested/x.sigstore.json"
+    assert VMR._consistency_check({"models": [row]}, tmp_path) == []
+
+
+def test_consistency_check_accepts_unsigned_entry(tmp_path: Path) -> None:
+    row = _stage_graph(tmp_path, "smoke_v0.onnx", "x", None)
+    assert VMR._consistency_check({"models": [row]}, tmp_path) == []
+
+
 def test_consistency_check_accepts_well_formed_entry(tmp_path: Path) -> None:
     blob = b"payload"
     onnx = tmp_path / "x.onnx"
     onnx.write_bytes(blob)
     (tmp_path / "x.json").write_text("{}")
+    # File-presence fixture only; the validator does not verify signatures.
+    (tmp_path / "x.sigstore.json").write_text("{}")
     reg = {
         "models": [
             {

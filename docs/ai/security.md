@@ -135,34 +135,46 @@ memory or divert through a non-allowlisted op.
 
 ## Layer 4: signature verification (opt-in)
 
-Release artifacts, including models under `model/tiny/`, are signed by
+All 26 entries currently shipped in
+[`model/tiny/registry.json`](../../model/tiny/registry.json) are unsigned:
+there are no per-model Sigstore bundles. The registry omits the optional
+`sigstore_bundle` field for these entries. Declare that field only when the
+real bundle file exists; a placeholder path is not signing evidence. Per-model
+signing and release integration remain follow-up work in
+[#1246](https://github.com/vidiko/vmafx/issues/1246) and
+[#3606](https://github.com/vidiko/vmafx/issues/3606).
+
+The verifier itself is shipped (T6-9,
+[ADR-0211](../adr/0211-model-registry-sigstore.md)).
+`--tiny-model-verify` is **off by default**. Enabling it for any of the current
+26 entries refuses the model because its bundle metadata is absent. For a
+future signed model:
+
+- `vmaf_dnn_verify_signature()` reads the model's `sigstore_bundle` field from
+  the registry next to the ONNX file; see
+  [model-registry.md](model-registry.md#verify-a-model-at-runtime).
+- On POSIX hosts it invokes `cosign verify-blob` through `posix_spawnp(3p)`
+  with an explicit argument array and the repository workflow identity check
+  in [`model_loader.c`](../../core/src/dnn/model_loader.c).
+- A missing registry entry, missing `sigstore_bundle` field, missing bundle
+  file, unavailable `cosign` or failed verification fails closed. On Windows
+  the verifier returns `-ENOSYS` and the load fails.
+
+Production deployments requiring per-model signatures must provision real
+bundles for their exact model bytes before enabling this flag. SHA-256 pins
+and the other loader checks do not establish a model signer's identity.
+
+### Release archive coverage
+
 [`.github/workflows/supply-chain.yml`](../../.github/workflows/supply-chain.yml)
-with Sigstore's keyless flow. The workflow produces a single Sigstore bundle per
-artifact (signature, certificate and Rekor entry in one file), not the legacy
-split `.sig` and `.pem` pair. The registry names a model's bundle
-`<name>.onnx.sigstore.json`, see [model-registry.md](model-registry.md).
-
-To verify a model by hand before loading it:
-
-```bash
-cosign verify-blob \
-    --certificate-identity-regexp "https://github.com/VMAFx/vmafx/.github/workflows/supply-chain.yml@.*" \
-    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-    --bundle model/tiny/vmaf_tiny_v2.onnx.sigstore.json \
-    model/tiny/vmaf_tiny_v2.onnx
-```
-
-The `--tiny-model-verify` flag does the same at load time
-(T6-9, [ADR-0211](../adr/0211-model-registry-sigstore.md)):
-
-- It invokes `cosign verify-blob` through `posix_spawnp(3p)` and fails closed
-  when the signature is missing or bad.
-- It is off by default for dev-friendliness and strongly recommended in
-  production.
-- It drives `vmaf_dnn_verify_signature()` in
-  [`core/include/libvmaf/dnn.h`](../../core/include/libvmaf/dnn.h), which looks
-  up the model's `sigstore_bundle` field in
-  [`model/tiny/registry.json`](../../model/tiny/registry.json).
+signs native release artifacts with `.bundle` files and attests their build
+provenance. Its packaging script,
+[`scripts/release/build-native-release-artifacts.sh`](../../scripts/release/build-native-release-artifacts.sh),
+copies the entire `model/` directory into `models.tar.gz`, including
+`model/tiny/` model bytes. The archive signature and provenance cover that
+archive as a release artifact. They do not produce the individual
+`<name>.onnx.sigstore.json` files that `--tiny-model-verify` looks up through
+the registry.
 
 ## Reporting
 

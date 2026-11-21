@@ -6,31 +6,31 @@ paths:
   - core/src/dnn/model_loader.c
   - ai/scripts/validate_model_registry.py
   - ai/src/aiutils/onnx_signature.py
-invariant: Model registry entries must validate against schema and verify Sigstore bundles with cosign via posix_spawnp.
+invariant: Unsigned entries omit optional bundles; declared paths must exist; runtime verification stays opt-in.
 ---
 <!-- markdownlint-disable MD013 -->
 # Model Registry Schema and Sigstore Verification
 
-- **Registry schema is trust contract** (T6-9 / [ADR-0211](../../../../docs/adr/0211-model-registry-sigstore.md)).
+- **Registry schema is the metadata contract** (T6-9 / [ADR-0211](../../../../docs/adr/0211-model-registry-sigstore.md)).
   Every entry in [`model/tiny/registry.json`](../../../../model/tiny/registry.json)
   must satisfy [`registry.schema.json`](../../../../model/tiny/registry.schema.json):
-  required `id` / `kind` / `onnx` / `sha256`, plus `license` and
-  `sigstore_bundle` for `schema_version: 1` entries. New fields
-  added by extending schema first, then registry, then any
-  consumers — never other way around. `--tiny-model-verify`
-  path in `model_loader.c` parses registry inline (no JSON dep),
-  spawns `cosign` via `posix_spawnp(3p)`; `system(3)` is and stays
-  banned.
+  required identity, graph, digest and teacher fields; the shipped registry
+  also requires per-model `license` metadata (guarded by
+  `python/test/model_registry_schema_test.py`). `sigstore_bundle` is optional:
+  no field means unsigned, and a declared `.sigstore.json` path must exist.
+  Currently all 26 registry entries are unsigned. The offline validator checks
+  any declared path; `--tiny-model-verify` in `model_loader.c` parses the
+  registry inline (no JSON dep), invokes `cosign` via `posix_spawnp(3p)` and
+  fails closed for a missing entry, bundle field or bundle file. Verification
+  remains opt-in; `system(3)` is and stays banned.
 
-- **Model registry + Sigstore (T6-9, PR #199 open, ADR-0211
-  placeholder)**: `--tiny-model-verify` flag wires through to
-  `cosign verify-blob` against Sigstore bundle declared in
-  registry. Pairs with `quant_mode` / `int8_sha256`
-  fields from
+- **Per-model signing follow-up** (T6-9 / ADR-0211): declare a bundle only when
+  the real per-model artifact exists. The native release archive carries
+  archive-level provenance, but that does not create a per-model Sigstore
+  bundle. Signing and release wiring follow up in [#1246](https://github.com/vidiko/vmafx/issues/1246) and [#3606](https://github.com/vidiko/vmafx/issues/3606). Registry
+  metadata remains separate from `quant_mode` / `int8_sha256` fields from
   [ADR-0173](../../../../docs/adr/0173-ptq-int8-audit-impl.md) /
   [ADR-0174](../../../../docs/adr/0174-first-model-quantisation.md).
-  On merge: every shipped tiny-AI model needs Sigstore bundle
-  path in `model/tiny/registry.json`.
 
 - **Metadata matches graph ([ADR-1546](../../../../docs/adr/1546-tiny-model-metadata-against-graphs.md))** —
   `ai/scripts/validate_model_registry.py` (required check "Tiny-Model
