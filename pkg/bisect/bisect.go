@@ -29,30 +29,11 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/VMAFx/vmafx/pkg/encoder"
 	vmafmodel "github.com/VMAFx/vmafx/pkg/model"
+	"github.com/VMAFx/vmafx/pkg/scorecli"
 )
-
-// defaultScoreTimeout is the upper bound on a single vmaf scoring subprocess
-// invocation. A hung vmaf binary (waiting on a corrupt input pipe, blocked
-// on a missing libvmaf model file, deadlocked GPU driver) would otherwise
-// hang the entire compare sweep indefinitely. Override via the
-// VMAFX_TUNE_SCORE_TIMEOUT environment variable (Go duration string,
-// e.g. "5m" or "30s"). 0 or negative values disable the timeout.
-const defaultScoreTimeout = 30 * time.Minute
-
-// scoreTimeout returns the per-call vmaf-subprocess timeout, honouring the
-// VMAFX_TUNE_SCORE_TIMEOUT environment variable for operator overrides.
-func scoreTimeout() time.Duration {
-	if raw := os.Getenv("VMAFX_TUNE_SCORE_TIMEOUT"); raw != "" {
-		if d, err := time.ParseDuration(raw); err == nil {
-			return d
-		}
-	}
-	return defaultScoreTimeout
-}
 
 // DefaultMaxIter is the default maximum number of bisect iterations.
 // Typically converges in 5-7 steps for a 64-unit CRF window.
@@ -162,7 +143,7 @@ func (p *Params) applyDefaults(enc encoder.Encoder) {
 // its own copies; callers that score many encodes against one reference use
 // NewY4MScorer directly so the reference is decoded once.
 //
-// Each subprocess is bounded by scoreTimeout() (default 30 minutes,
+// Each subprocess is bounded by scorecli.ScoreTimeout() (default 30 minutes,
 // overridable via VMAFX_TUNE_SCORE_TIMEOUT). Without the timeout, a hung
 // vmaf child blocks bisect.Run forever; this is especially likely on a
 // stuck GPU device, a missing libvmaf model file, or a corrupt input
@@ -211,13 +192,13 @@ func runVMAFXML(vmafBin, ref, distorted, model string) (float64, error) {
 	// #nosec G204 -- argv[0] is vmafBin (operator-configured at scorer
 	// construction); argv[1:] mixes fixed flags with `ref` / `distorted`
 	// (caller-controlled but bisect is a dev-time tool not an RPC surface)
-	// and the os.CreateTemp output path. ctx enforces scoreTimeout().
+	// and the os.CreateTemp output path. ctx enforces scorecli.ScoreTimeout().
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return 0, fmt.Errorf("vmaf score timed out after %s: %w\n%s",
-				scoreTimeout(), runErr, string(out))
+				scorecli.ScoreTimeout(), runErr, string(out))
 		}
 		return 0, fmt.Errorf("vmaf score failed: %w\n%s", runErr, string(out))
 	}

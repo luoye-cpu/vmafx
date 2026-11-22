@@ -32,6 +32,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/VMAFx/vmafx/pkg/scorecli"
 	"github.com/VMAFx/vmafx/pkg/y4mdecode"
 )
 
@@ -274,9 +275,9 @@ func y4mHeaderInt(tokens []string, tag byte) int {
 	return 0
 }
 
-// scoreContext bounds one decode or score subprocess by scoreTimeout().
+// scoreContext bounds one decode or score subprocess by scorecli.ScoreTimeout().
 func scoreContext() (context.Context, context.CancelFunc) {
-	if to := scoreTimeout(); to > 0 {
+	if to := scorecli.ScoreTimeout(); to > 0 {
 		return context.WithTimeout(context.Background(), to)
 	}
 	return context.WithCancel(context.Background())

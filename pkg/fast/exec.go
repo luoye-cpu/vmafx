@@ -6,28 +6,12 @@ package fast
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/VMAFx/vmafx/pkg/scorecli"
 )
-
-// defaultScoreTimeout bounds a single libvmaf scoring subprocess. A hung vmaf
-// binary (blocked on a missing model file, a wedged GPU driver, a corrupt
-// input pipe) would otherwise pin the whole TPE loop. Override via
-// VMAFX_TUNE_SCORE_TIMEOUT, matching pkg/bisect. 0 or negative disables it.
-const defaultScoreTimeout = 30 * time.Minute
-
-// scoreTimeout returns the per-call libvmaf timeout, honouring
-// VMAFX_TUNE_SCORE_TIMEOUT for operator overrides.
-func scoreTimeout() time.Duration {
-	if raw := os.Getenv("VMAFX_TUNE_SCORE_TIMEOUT"); raw != "" {
-		if d, err := time.ParseDuration(raw); err == nil {
-			return d
-		}
-	}
-	return defaultScoreTimeout
-}
 
 // commandRunner executes argv. Tests replace it to keep the unit boundary at
 // the process edge; production uses execCommand.
@@ -38,7 +22,7 @@ func runCommand(ctx context.Context, argv []string) error {
 	return commandRunner(ctx, argv)
 }
 
-// execCommand runs argv under a scoreTimeout deadline (unless the caller's
+// execCommand runs argv under a scorecli.ScoreTimeout deadline (unless the caller's
 // context already carries an earlier one) and folds the combined output into
 // the error on failure.
 func execCommand(ctx context.Context, argv []string) error {
@@ -50,7 +34,7 @@ func execCommand(ctx context.Context, argv []string) error {
 	}
 	cancel := context.CancelFunc(func() {})
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		if to := scoreTimeout(); to > 0 {
+		if to := scorecli.ScoreTimeout(); to > 0 {
 			ctx, cancel = context.WithTimeout(ctx, to)
 		}
 	}
@@ -58,7 +42,7 @@ func execCommand(ctx context.Context, argv []string) error {
 
 	// #nosec G204 -- argv[0] is the operator-configured libvmaf binary and
 	// argv[1:] is built by BuildVMAFCommand from validated geometry plus this
-	// package's own temp paths. ctx enforces scoreTimeout().
+	// package's own temp paths. ctx enforces scorecli.ScoreTimeout().
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A child that emits no output must still be reaped once the deadline
 	// fires, so cap the post-cancel wait.

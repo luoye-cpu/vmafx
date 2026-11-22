@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	vmafmodel "github.com/VMAFx/vmafx/pkg/model"
+	"github.com/VMAFx/vmafx/pkg/scorecli"
 	"log/slog"
 	"math"
 	"os"
@@ -149,7 +150,7 @@ func DecodeToRawYUV(src, dst, pixFmt, ffmpegBin string, durationS float64) error
 
 	ctx := context.Background()
 	cancel := func() {}
-	if to := scoreTimeout(); to > 0 {
+	if to := scorecli.ScoreTimeout(); to > 0 {
 		ctx, cancel = context.WithTimeout(ctx, to)
 	}
 	defer cancel()
@@ -233,7 +234,7 @@ func ParseVMAFJSON(data []byte) (float64, error) {
 //  3. parses the pooled mean out of the JSON output,
 //  4. removes both the decoded sidecar and the JSON output.
 //
-// Every invocation is bounded by scoreTimeout() (30 min default,
+// Every invocation is bounded by scorecli.ScoreTimeout() (30 min default,
 // VMAFX_TUNE_SCORE_TIMEOUT override), matching VMAFScoreFunc.
 func YUVScoreFunc(p YUVScoreParams) ScoreFunc {
 	return func(ref, distorted string) (float64, error) {
@@ -304,14 +305,14 @@ func removeScoreArtifact(path, description string) {
 func executeVMAFScore(argv []string, jsonPath string) (float64, error) {
 	ctx := context.Background()
 	cancel := func() {}
-	timeout := scoreTimeout()
+	timeout := scorecli.ScoreTimeout()
 	if timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 	}
 	defer cancel()
 
 	// #nosec G204 -- argv[0] is the operator-configured vmaf binary; the
-	// rest is fixed flags plus caller paths. ctx enforces scoreTimeout().
+	// rest is fixed flags plus caller paths. ctx enforces scorecli.ScoreTimeout().
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

@@ -247,24 +247,26 @@ var vmafVersionRE = regexp.MustCompile(`VMAF version[: ]+(\S+)`)
 // Runner is the subprocess seam. Tests inject a stub.
 type Runner func(ctx context.Context, argv []string) (stderr string, exitStatus int, err error)
 
-// defaultScoreTimeout bounds a single vmaf subprocess. Override via
+// DefaultScoreTimeout bounds a single vmaf subprocess. Override via
 // VMAFX_TUNE_SCORE_TIMEOUT.
-const defaultScoreTimeout = 30 * time.Minute
+const DefaultScoreTimeout = 30 * time.Minute
 
-func scoreTimeout() time.Duration {
+// ScoreTimeout returns the per-call vmaf-subprocess timeout, honouring
+// VMAFX_TUNE_SCORE_TIMEOUT for operator overrides.
+func ScoreTimeout() time.Duration {
 	if raw := os.Getenv("VMAFX_TUNE_SCORE_TIMEOUT"); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil {
 			return d
 		}
 	}
-	return defaultScoreTimeout
+	return DefaultScoreTimeout
 }
 
 // defaultRunner executes argv under a timeout.
 func defaultRunner(ctx context.Context, argv []string) (string, int, error) {
 	cancel := func() {}
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		if to := scoreTimeout(); to > 0 {
+		if to := ScoreTimeout(); to > 0 {
 			ctx, cancel = context.WithTimeout(ctx, to)
 		}
 	}

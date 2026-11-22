@@ -11,29 +11,31 @@ package bisect
 import (
 	"testing"
 	"time"
+
+	"github.com/VMAFx/vmafx/pkg/scorecli"
 )
 
 func TestScoreTimeout_DefaultWhenUnset(t *testing.T) {
 	t.Setenv("VMAFX_TUNE_SCORE_TIMEOUT", "")
-	got := scoreTimeout()
-	if got != defaultScoreTimeout {
-		t.Errorf("scoreTimeout() = %v, want %v", got, defaultScoreTimeout)
+	got := scorecli.ScoreTimeout()
+	if got != scorecli.DefaultScoreTimeout {
+		t.Errorf("scorecli.ScoreTimeout() = %v, want %v", got, scorecli.DefaultScoreTimeout)
 	}
 }
 
 func TestScoreTimeout_HonoursEnvOverride(t *testing.T) {
 	t.Setenv("VMAFX_TUNE_SCORE_TIMEOUT", "13s")
-	got := scoreTimeout()
+	got := scorecli.ScoreTimeout()
 	if got != 13*time.Second {
-		t.Errorf("scoreTimeout() = %v, want 13s", got)
+		t.Errorf("scorecli.ScoreTimeout() = %v, want 13s", got)
 	}
 }
 
 func TestScoreTimeout_InvalidEnvFallsBackToDefault(t *testing.T) {
 	t.Setenv("VMAFX_TUNE_SCORE_TIMEOUT", "garbage")
-	got := scoreTimeout()
-	if got != defaultScoreTimeout {
-		t.Errorf("scoreTimeout() with invalid env = %v, want default %v", got, defaultScoreTimeout)
+	got := scorecli.ScoreTimeout()
+	if got != scorecli.DefaultScoreTimeout {
+		t.Errorf("scorecli.ScoreTimeout() with invalid env = %v, want default %v", got, scorecli.DefaultScoreTimeout)
 	}
 }
 
