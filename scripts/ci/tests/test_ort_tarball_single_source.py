@@ -764,7 +764,8 @@ class TestOrtGuard(unittest.TestCase):
         pins = root / "scripts/ci/ort-nuget-pins.json"
         pins.parent.mkdir(parents=True)
         data = json.loads((ROOT / "scripts/ci/ort-nuget-pins.json").read_text(encoding="utf-8"))
-        for value in (None, {}, [], "1.30.0"):
+        values: tuple[Any, ...] = (None, {}, [], "1.30.0")
+        for value in values:
             with self.subTest(tracked=value):
                 data["tracked"] = value
                 pins.write_text(json.dumps(data), encoding="utf-8")
