@@ -12,8 +12,9 @@ import subprocess
 import unittest
 from copy import deepcopy
 from pathlib import Path
+from typing import Any, ClassVar
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts/ci/werror-args.sh"
@@ -155,11 +156,13 @@ THREAD_FLAGS = "${{ matrix.thread_flags }}"
 
 
 class Msys2WerrorContractTests(unittest.TestCase):
+    workflow: ClassVar[dict[str, Any]]
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.workflow = yaml.safe_load(MATRIX.read_text(encoding="utf-8"))
 
-    def assert_msys2_contract(self, workflow: dict) -> None:
+    def assert_msys2_contract(self, workflow: dict[str, Any]) -> None:
         job = workflow["jobs"]["windows"]
         rows = {row["name"]: row for row in job["strategy"]["matrix"]["include"]}
         self.assertEqual(set(rows), set(MSYS2_ROWS))
