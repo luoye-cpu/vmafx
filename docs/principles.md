@@ -274,12 +274,12 @@ Enforced scanners:
   job first proves the gate rejects a planted end-of-life base. `TRIVY_VERSION`
   and `TRIVY_SHA256` are single-sourced in `build-config.env`; retained
   misconfigurations and image advisories are dated entries in
-  [`.trivyignore.yaml`](https://github.com/VMAFx/vmafx/blob/master/.trivyignore.yaml).
+  [`.trivyignore.yaml`](https://github.com/vidiko/vmafx/blob/master/.trivyignore.yaml).
 - **pip-audit** audits every project lock listed by
   `requirements/locks/manifest.json` in `security-scans.yml`. It first requires
   the planted `requests==2.19.0` fixture to report CVE-2018-18074; retained
   findings are dated entries in
-  [`scripts/ci/pip-audit-ignore.json`](https://github.com/VMAFx/vmafx/blob/master/scripts/ci/pip-audit-ignore.json).
+  [`scripts/ci/pip-audit-ignore.json`](https://github.com/vidiko/vmafx/blob/master/scripts/ci/pip-audit-ignore.json).
 - Pull requests run these scans when the image or Python lock inputs change;
   each required check still reports when work is unaffected. Weekly schedules
   audit all locks and the image, so newly published advisories are caught.

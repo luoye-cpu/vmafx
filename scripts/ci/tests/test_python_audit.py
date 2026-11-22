@@ -253,6 +253,33 @@ class SelfTest(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertEqual(calls, [fixture, lock])
 
+    def test_a_self_test_without_the_advisory_stops_before_the_locks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / "planted.txt"
+            fixture.write_text("requests==2.19.0\n", encoding="utf-8")
+            lock = root / "project.lock"
+            lock.write_text("example==1.0\n", encoding="utf-8")
+            manifest = root / "requirements/locks/manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps({"locks": [{"output": "project.lock"}]}), encoding="utf-8"
+            )
+            ignore = root / "ignore.json"
+            ignore.write_text(json.dumps({"schema_version": 1, "exceptions": []}), encoding="utf-8")
+            calls: list[Path] = []
+
+            def report(_root: Path, requirement: Path) -> dict[str, object]:
+                calls.append(requirement)
+                return {"dependencies": [{"name": "requests", "version": "2.19.0", "vulns": []}]}
+
+            with mock.patch.object(check_python_audit, "run_audit", side_effect=report):
+                result = check_python_audit.main(
+                    ["--root", str(root), "--ignore", str(ignore), "--fixture", str(fixture)]
+                )
+            self.assertEqual(result, 2)
+            self.assertEqual(calls, [fixture])
+
 
 if __name__ == "__main__":
     unittest.main()
