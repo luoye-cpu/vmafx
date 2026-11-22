@@ -693,11 +693,42 @@ class DockerfileLabelTests(GateTestCase):
         )
         self.assertEqual(gate.dockerfile_licence_label_problems(self.root), [])
 
-    def test_a_from_cycle_is_refused(self) -> None:
+    def test_a_manifest_from_cycle_is_refused(self) -> None:
         self._tree(cycle=True)
         with self.assertRaises(gate.ModelError) as error:
             gate.dockerfile_licence_label_problems(self.root)
         self.assertIn("cyclic reference", str(error.exception))
+
+    def test_a_dockerfile_stage_cycle_is_refused(self) -> None:
+        self._tree()
+        (self.root / "docker/Dockerfile.controller").write_text(
+            "FROM builder AS controller\n" "FROM controller AS builder\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(gate.ModelError) as error:
+            gate.dockerfile_licence_label_problems(self.root)
+        self.assertIn("Dockerfile stage cycle", str(error.exception))
+
+    def test_a_child_stage_overrides_a_parent_label(self) -> None:
+        self._tree()
+        (self.root / "docker/Dockerfile.controller").write_text(
+            "FROM scratch AS builder\n"
+            'LABEL org.opencontainers.image.licenses="MIT"\n'
+            "FROM builder AS controller\n"
+            f'LABEL org.opencontainers.image.licenses="{self.LABEL}"\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(gate.dockerfile_licence_label_problems(self.root), [])
+
+    def test_a_continuation_break_inside_a_value_joins_without_a_space(self) -> None:
+        self._tree()
+        (self.root / "docker/Dockerfile.controller").write_text(
+            "FROM scratch AS controller\n"
+            'LABEL org.opencontainers.image.licenses="BSD-2-Clause AND MI\\\n'
+            'T"\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(gate.dockerfile_licence_label_problems(self.root), [])
 
     def test_a_licences_key_on_a_continuation_line_is_read(self) -> None:
         self._tree(controller_label=None)

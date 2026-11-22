@@ -793,17 +793,20 @@ def _unused_notice_only_problems(records: dict[str, dict[str, Any]]) -> list[str
 
 
 def _logical_lines(text: str) -> list[str]:
-    """Join Dockerfile lines that continue with a trailing backslash."""
+    """Join Dockerfile lines that continue with a trailing backslash.
+
+    BuildKit removes only the escape character and appends the next line as
+    written, so a break inside a value joins without an inserted space.
+    """
     logical: list[str] = []
     pending = ""
     for raw in text.splitlines():
         line = raw.rstrip()
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        if pending:
-            line = pending + " " + line.lstrip()
+        line = pending + line
         if line.endswith("\\"):
-            pending = line[:-1].rstrip()
+            pending = line[:-1]
             continue
         logical.append(line)
         pending = ""
@@ -845,9 +848,6 @@ def _stage_index(stages: list[dict[str, Any]], reference: str) -> int | None:
     for index, stage in enumerate(stages):
         if stage.get("name") and stage["name"].lower() == wanted:
             return index
-    if reference.isdigit():
-        index = int(reference) - 1
-        return index if 0 <= index < len(stages) else None
     return None
 
 
@@ -874,7 +874,7 @@ def _image_stage_labels(
     """The effective licence label of each published stage, and missing stages."""
     stages = _dockerfile_stages(path.read_text(encoding="utf-8"))
     if not stages:
-        return [], [f"{relative}: listed in IMAGE_STAGE_RECORDS but missing"]
+        return [], [f"{relative}: listed in IMAGE_STAGE_RECORDS but has no FROM stage"]
     found: list[tuple[str, str | None]] = []
     problems: list[str] = []
     for stage in stage_records:

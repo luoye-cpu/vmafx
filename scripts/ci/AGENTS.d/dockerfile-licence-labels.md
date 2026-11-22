@@ -35,7 +35,8 @@ component is a `ModelError`, not a silent omission. A
 not named in that table. All `licences` list entries are in the union.
 
 **Invariant**: the effective label is an `AND` set equal to the resolved
-record. Missing, extra, absent and lowercase labels all fail. Shared
+record. Missing, extra and absent labels fail; a lowercase `LABEL`
+instruction is read like any other. Shared
 fixture roots without an `artifacts` record are skipped so unrelated
 checks can keep their reduced layout; the repository root may not omit
 that record, and a path listed in `IMAGE_STAGE_RECORDS` whose Dockerfile
