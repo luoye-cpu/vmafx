@@ -521,7 +521,7 @@ request enters the queue only after
 `merge_train_guard.py admit-fork <number> --reviewed-head <sha>` returns `0`,
 and only pinned to that exact head without `--auto`
 (`test_admit_fork_refuses_unreviewed_head`,
-`test_admit_fork_positive_receipt_never_merges_or_mutates`); afterwards,
+`test_admit_fork_positive_receipt_never_merges_or_locks`); afterwards,
 `merge_train_guard.py queue-audit` re-checks every queued fork entry against
 its live head and maintainer approval (`test_audit_queue_and_cli`; see
 [Local merge-train control](merge-train.md#fork-pull-requests)). Semgrep and
