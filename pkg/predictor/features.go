@@ -36,6 +36,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VMAFx/vmafx/internal/executil"
 	"github.com/VMAFx/vmafx/pkg/codecadapter"
 	"github.com/VMAFx/vmafx/pkg/pershot"
 )
@@ -57,7 +58,7 @@ func DefaultCommandRunner(ctx context.Context, argv []string) (string, string, i
 	// #nosec G204 -- argv[0] is an operator-configured ffmpeg / ffprobe path
 	// and argv[1:] is assembled from validated CLI flags.
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = executil.SubprocessWaitDelay
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

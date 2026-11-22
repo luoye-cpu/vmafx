@@ -25,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/VMAFx/vmafx/internal/executil"
 )
 
 // Vendor identifies the GPU vendor.
@@ -100,7 +102,7 @@ func runProbe(cmd string, args ...string) (string, bool) {
 	// commands (nvidia-smi, rocm-smi, etc.) from this package; never with
 	// caller-supplied input.
 	c := exec.CommandContext(ctx, cmd, args...)
-	c.WaitDelay = time.Second
+	c.WaitDelay = executil.ShortSubprocessWaitDelay
 	out, err := c.Output()
 	if err != nil {
 		return "", false

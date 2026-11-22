@@ -32,13 +32,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/VMAFx/vmafx/pkg/model"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/VMAFx/vmafx/internal/executil"
+	"github.com/VMAFx/vmafx/pkg/model"
 )
 
 // Scorer is the public Go API for VMAF scoring.
@@ -178,7 +180,7 @@ func (s *Scorer) newCLICommand(ctx context.Context, args []string) (*exec.Cmd, *
 	// #nosec G204 -- binaryPath is the operator-configured vmaf CLI; args hold fixed
 	// flags, the inputs, the resolved model path and the temporary output.
 	cmd := exec.CommandContext(ctx, s.binaryPath, args...) //nolint:gosec // paths are operator-supplied
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = executil.SubprocessWaitDelay
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	return cmd, &stderr

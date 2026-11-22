@@ -32,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VMAFx/vmafx/internal/executil"
 	vmafmodel "github.com/VMAFx/vmafx/pkg/model"
 )
 
@@ -273,7 +274,7 @@ func defaultRunner(ctx context.Context, argv []string) (string, int, error) {
 	// #nosec G204 -- argv[0] is the operator-configured vmaf binary and
 	// argv[1:] is assembled by BuildCommand from validated CLI flags.
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = executil.SubprocessWaitDelay
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {

@@ -51,6 +51,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VMAFx/vmafx/internal/executil"
 	"github.com/VMAFx/vmafx/pkg/encoder"
 )
 
@@ -290,7 +291,7 @@ func runDetector(ctx context.Context, opts DetectOptions, bin string, args []str
 	// #nosec G204 -- bin is the operator-configured --per-shot-bin; args are
 	// fixed flags plus the caller's source path and this call's temp output.
 	cmd := exec.CommandContext(dctx, bin, args...)
-	cmd.WaitDelay = time.Second
+	cmd.WaitDelay = executil.ShortSubprocessWaitDelay
 	return cmd.Run() == nil
 }
 

@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/VMAFx/vmafx/internal/executil"
 )
 
 // subprocessTimeout bounds a helper subprocess (an ffmpeg decode, an ffprobe,
@@ -36,7 +38,7 @@ func runCommand(ctx context.Context, argv []string) (stdout, stderr string, exit
 	// flag and argv[1:] is assembled by the typed command builders in
 	// pkg/scorecli, pkg/predictor and pkg/pershot. ctx enforces the timeout.
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = executil.SubprocessWaitDelay
 	var outBuf, errBuf strings.Builder
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf

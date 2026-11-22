@@ -36,6 +36,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/VMAFx/vmafx/internal/executil"
 )
 
 // AllBackends lists the backends `vmaf --list-backends` reports and the vmaf
@@ -145,7 +147,7 @@ func execRunner(ctx context.Context, name string, args ...string) (string, strin
 	cmd.Stderr = &errBuf
 	// A probe that emits nothing must still be reaped once the deadline
 	// fires, so cap the post-cancel wait.
-	cmd.WaitDelay = time.Second
+	cmd.WaitDelay = executil.ShortSubprocessWaitDelay
 	err := cmd.Run()
 	return outBuf.String(), errBuf.String(), err == nil
 }

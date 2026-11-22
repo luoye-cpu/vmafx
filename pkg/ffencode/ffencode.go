@@ -29,6 +29,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/VMAFx/vmafx/internal/executil"
 	"github.com/VMAFx/vmafx/pkg/codecadapter"
 	"github.com/VMAFx/vmafx/pkg/hwdevice"
 	"github.com/VMAFx/vmafx/pkg/pyjson"
@@ -493,7 +494,7 @@ func defaultRunner(ctx context.Context, argv []string) (string, int, error) {
 	// argv[1:] is assembled by BuildFFmpegCommand from validated CLI flags.
 	// ctx enforces encodeTimeout().
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = executil.SubprocessWaitDelay
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		if exitErr, ok := errors.AsType[*exec.ExitError](runErr); ok {

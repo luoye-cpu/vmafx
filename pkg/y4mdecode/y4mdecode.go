@@ -25,7 +25,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/VMAFx/vmafx/internal/executil"
 )
 
 // Window is a validated time window in seconds. The zero value is unset: the
@@ -138,7 +139,7 @@ func Open(ctx context.Context, ffmpeg, src string, w Window) (*Stream, error) {
 	// #nosec G204 -- ffmpeg is the operator-configured binary; argv is fixed
 	// flags, the validated window and the scoped source path.
 	cmd := exec.CommandContext(ctx, ffmpeg, Argv(src, "-", 0, 0, w)...)
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = executil.SubprocessWaitDelay
 	stderr := &limitedBuffer{limit: stderrLimit}
 	cmd.Stderr = stderr
 	out, err := cmd.StdoutPipe()

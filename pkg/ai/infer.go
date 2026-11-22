@@ -39,6 +39,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/VMAFx/vmafx/internal/executil"
 	"github.com/VMAFx/vmafx/pkg/observability"
 )
 
@@ -161,7 +162,7 @@ func (r *Registry) Infer(ctx context.Context, modelName string, inputs []float64
 	)
 	// Short post-cancel grace so cmd.Output() unblocks even if the runner
 	// holds inherited pipe descriptors open after the SIGKILL.
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = executil.SubprocessWaitDelay
 	out, runErr := cmd.Output()
 	if runErr != nil {
 		return nil, explainRunnerFailure(ctx, runErr)

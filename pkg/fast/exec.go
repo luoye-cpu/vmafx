@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/VMAFx/vmafx/internal/executil"
 )
 
 // defaultScoreTimeout bounds a single libvmaf scoring subprocess. A hung vmaf
@@ -62,7 +64,7 @@ func execCommand(ctx context.Context, argv []string) error {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	// A child that emits no output must still be reaped once the deadline
 	// fires, so cap the post-cancel wait.
-	cmd.WaitDelay = 2 * time.Second
+	cmd.WaitDelay = executil.SubprocessWaitDelay
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
