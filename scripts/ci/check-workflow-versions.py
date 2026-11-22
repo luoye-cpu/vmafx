@@ -505,12 +505,13 @@ def check_rust_pins(root: Path, rust_want: str | None) -> list[str]:
 
 NODE_VERSION_RE = re.compile(r"node-version:[ \t]*['\"]?([0-9][0-9.]*)['\"]?")
 COSIGN_ENV_RE = re.compile(r'(?m)^  COSIGN_VERSION:\s*"?([0-9.]+)"?\s*(?:#.*)?$')
+COSIGN_ANY_ENV_RE = re.compile(r"(?m)^[ \t]+COSIGN_VERSION:")
 COSIGN_INPUT_RE = re.compile(
     r'cosign-release:\s*"?v\$\{\{\s*env\.COSIGN_VERSION\s*\}\}"?' r"(?=\s*(?:[,}#]|$))",
     re.MULTILINE,
 )
 COSIGN_ANY_RE = re.compile(r"cosign-release:")
-COSIGN_INSTALLER_RE = re.compile(r"(?m)^\s*(?:-\s*)?uses:\s*sigstore/cosign-installer(?:@\S*)?")
+COSIGN_INSTALLER_RE = re.compile(r"(?im)^\s*(?:-\s*)?uses:\s*sigstore/cosign-installer(?:@\S*)?")
 NODE_PRECOMMIT_RE = re.compile(
     r"^default_language_version:[ \t]*\n(?:[ \t]+.*\n)*?[ \t]+node:[ \t]*['\"]?([^'\"\s]+)['\"]?",
     re.MULTILINE,
@@ -594,12 +595,18 @@ def check_cosign_pins(root: Path, cosign_want: str | None) -> list[str]:
         return []
     problems: list[str] = []
     for path in sorted(workflows.glob("*.yml")):
-        text = path.read_text(encoding="utf-8")
+        text = re.sub(r"(?m)^[ \t]*#.*$", "", path.read_text(encoding="utf-8"))
         calls = COSIGN_INSTALLER_RE.findall(text)
         if not calls:
             continue
         rel = path.relative_to(root)
         values = COSIGN_ENV_RE.findall(text)
+        nested = COSIGN_ANY_ENV_RE.findall(text)
+        if len(nested) != len(values):
+            problems.append(
+                f"{rel}: COSIGN_VERSION is set below the top level; a job or step "
+                "override shadows the workflow mirror"
+            )
         if len(values) != 1:
             problems.append(f"{rel} must declare COSIGN_VERSION exactly once")
         elif values[0] != cosign_want:

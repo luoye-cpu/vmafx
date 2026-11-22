@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -122,6 +123,54 @@ class CosignVersionSingleSource(unittest.TestCase):
             "\n".join(CHECK(self.root, WANT)),
         )
 
+    def test_a_commented_derived_input_does_not_offset_a_literal(self) -> None:
+        self.write(
+            "name: sign\n"
+            "env:\n"
+            '  COSIGN_VERSION: "3.1.4"\n'
+            "jobs:\n"
+            "  sign:\n"
+            "    steps:\n"
+            "      - uses: sigstore/cosign-installer\n"
+            "        with:\n"
+            '          cosign-release: "v3.1.4"\n'
+            '          # cosign-release: "v${{ env.COSIGN_VERSION }}"\n'
+        )
+        self.assertIn(
+            "1 cosign-installer step(s) do not set cosign-release from env.COSIGN_VERSION",
+            "\n".join(CHECK(self.root, WANT)),
+        )
+
+    def test_a_job_level_override_shadows_the_mirror(self) -> None:
+        self.write(
+            "name: sign\n"
+            "env:\n"
+            '  COSIGN_VERSION: "3.1.4"\n'
+            "jobs:\n"
+            "  sign:\n"
+            "    env:\n"
+            '      COSIGN_VERSION: "2.0.0"\n'
+            "    steps:\n"
+            "      - uses: sigstore/cosign-installer\n"
+            "        with:\n"
+            "          cosign-release: v${{ env.COSIGN_VERSION }}\n"
+        )
+        self.assertIn(
+            "COSIGN_VERSION is set below the top level",
+            "\n".join(CHECK(self.root, WANT)),
+        )
+
+    def test_mixed_case_installer_step_is_counted(self) -> None:
+        self.write(
+            self.fixture(release='"v3.1.4"').replace(
+                "uses: sigstore/cosign-installer", "uses: Sigstore/Cosign-Installer@v4"
+            )
+        )
+        self.assertIn(
+            "1 cosign-installer step(s) do not set cosign-release from env.COSIGN_VERSION",
+            "\n".join(CHECK(self.root, WANT)),
+        )
+
     def test_renovate_manager_owns_config_and_workflows(self) -> None:
         data = json.loads((ROOT / "renovate.json").read_text(encoding="utf-8"))
         managers = [
@@ -136,6 +185,17 @@ class CosignVersionSingleSource(unittest.TestCase):
         self.assertIn("build-config", patterns)
         self.assertIn(".github/workflows", patterns)
         self.assertTrue(all("COSIGN_VERSION" in item for item in manager["matchStrings"]))
+        config_text = (ROOT / "build-config.env").read_text(encoding="utf-8")
+        workflow_text = next(
+            path.read_text(encoding="utf-8")
+            for path in sorted((ROOT / ".github/workflows").glob("*.yml"))
+            if "COSIGN_VERSION:" in path.read_text(encoding="utf-8")
+        )
+        for pattern in manager["matchStrings"]:
+            with self.subTest(pattern=pattern):
+                # Renovate's RE2 syntax names groups as (?<name>).
+                python_pattern = pattern.replace("(?<", "(?P<")
+                self.assertTrue(re.search(python_pattern, config_text + "\n" + workflow_text))
 
 
 if __name__ == "__main__":
