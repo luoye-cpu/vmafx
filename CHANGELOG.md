@@ -1098,6 +1098,9 @@ Contributed by luoye-cpu.
 - **Add `scripts/dev/upstream_pr_sweep.py`, one tracked tool that rebases, builds and tests the fork's open upstream pull requests.** It is dry-run by default, refuses heads the fork does not own and dirty worktrees, and pushes only with a lease to the contribution fork's own branches ([docs](docs/development/upstream-pr-sweep.md)). Every git it starts drops the repository-locating `GIT_*` variables and the caller's `git -c` overrides, and `scripts/git-hooks/framework-hooks.sh` now runs pre-commit without `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and the object-directory variables, so a hook-run fixture can no longer write into the caller's repository.
 
 
+- Upstream contribution branches: offline pre-push checks for patch shape, tests, attribution, merge conflicts, stale draft IDs, signatures, target paths, and self-review evidence (ADR-3559).
+
+
 - **vmaf-tune introduces content-aware video classification ([ADR-0618](docs/adr/0618-content-aware-classifier.md), [ADR-3374](docs/adr/3374-vmaf-tune-classifier-vision-fails-by-name.md)).**
   `vmaf-tune classify` extracts ITU-T P.910 spatial information (SI) and temporal
   information (TI) via FFmpeg `siti`, probes container geometry and dynamic range
@@ -1300,6 +1303,11 @@ Contributed by luoye-cpu.
 
 
 - **Run the MS-SSIM decimate and SSIMULACRA 2 PTLR bit-exactness checks on Windows.** The two Windows skips (`TODO(ms-ssim-mingw)`, `TODO(ssimulacra2-ptlr-mingw)`) are stale: the scalar references already get a correctly-rounded fma on every compiler — the PTLR test TU is compiled with `-mavx2 -mfma` (gcc inlines `fmaf` as hardware `vfmadd`; the binary contains no `fmaf` libcall), and the decimate scalar uses `vmaf_fmaf_exact`, whose double detour is correctly rounded on every in-range input we swept. Without `-mfma`, mingw-w64's static software `fmaf()` deviates from correctly-rounded on 28.1% of the tests' input grids (1-ulp errors) — the skips' premise was right about the libm, but the build and the decimate scalar had already routed around it. Both tests pass on Windows (`test_ms_ssim_decimate` 10/10, `test_ssimulacra2_simd` 13/13 including all five PTLR cases, MinGW-w64 gcc 16.2), so both skips are removed. Closes VMAFx/vmafx#2886.
+
+
+- Refresh dependency locks automatically on update branches; the DCO
+  exemption covers only live entries among the 30 exact paths listed in
+  `.config/lint-exceptions.d/dco-python-lock-refresh.toml`.
 
 
 - **The `actionlint` hook and `make lint-actions` cannot hang
@@ -2811,6 +2819,16 @@ Contributed by luoye-cpu.
 - **CI:** Install Linux CPU and GPU ONNX Runtime from pinned NuGet packages.
 
 
+- The Windows SYCL tester zip uses the same oneAPI 2026.2 installer as the
+  Windows SYCL CI build for compatibility with MSVC 14.52. The build uses
+  the AOT targets accepted by the installed compiler and reports missing
+  runtime DLLs together
+  ([ADR-3568](docs/adr/3568-windows-sycl-tester-zip-oneapi-2026-2.md)).
+
+
+- **CI:** wait on API rate limits and poll less often (issue 3582).
+
+
 - **ADR allocator scans open pull request heads to avoid fork PR collisions.**
   In claim mode, `scripts/adr/next-free.sh` queries `gh` for open pull request
   head commit SHAs and scans their `docs/adr` trees alongside origin branches.
@@ -2844,6 +2862,14 @@ Contributed by luoye-cpu.
   frozen `docs/adr/_index_fragments/_order.txt`, and step 6 no longer stages the
   rendered index, tag and title pages or `CHANGELOG.md`, which a pull request
   must not carry ([adr-workflow](docs/development/adr-workflow.md)).
+
+
+- **Tests:** the affected-tests runner applies a default 300 s per-test timeout
+  when pytest-timeout is installed, and scales its 900 s base wall cap by
+  `min(4, 1 + max(load1, load5) / CPUs)` to account for host load; suites
+  without a per-test timeout retain the unscaled base cap. With plugin autoload
+  disabled it loads pytest-timeout explicitly, and without `SIGALRM` it uses the
+  thread timeout method.
 
 
 - CI: the Required Checks Aggregator waits out GitHub API 5xx answers for 15
@@ -3261,6 +3287,10 @@ Contributed by luoye-cpu.
   reads unfinished, instead of failing at once. The jobs API had reported the finished
   `FFmpeg Ubuntu gcc work` leg without a conclusion for a few seconds and failed master
   `baeb82e6f` (`T-CI-GATE-JOBS-API-LAG-2026-10-27`).
+
+
+- **CI:** the Git fixture sentinel reports script failures and checks declared
+  failing tests. Its hook uses the tooling suite dependencies.
 
 
 - CI: artifact steps no longer fail on the Gitea mirror with
@@ -3739,6 +3769,9 @@ Contributed by luoye-cpu.
   same-repository pull request the release-bot App opened, re-arms auto-merge when the branch is
   already rendered at the master tip, commits a render that adds only new files, and refuses to
   start without `RUNNER_TEMP` (ADR-3373).
+
+
+- **Dependencies:** Renovate groups coupled clang-format pins and Rust workflow toolchain updates with their matching versions.
 
 
 - **Renovate: update packaged Helm subchart archives on Chart.lock changes.**
