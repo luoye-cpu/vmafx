@@ -6,12 +6,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/golusoris/golusoris/core/retry"
+	"github.com/jonboulle/clockwork"
 )
 
 // requestTimeout bounds every HTTP call.
@@ -83,21 +87,29 @@ const (
 	pollAttempts = 150
 )
 
-// poll calls check until it reports done, at most pollAttempts times; the
-// last error is returned when it never does.
+// errPollPending lets retry.Do treat a check that is simply not ready yet as a
+// retryable condition, without inventing a transport error.
+var errPollPending = errors.New("condition not met")
+
+// poll calls check until it reports done, at most pollAttempts times.
 func poll(ctx context.Context, check func(context.Context) (bool, error)) error {
-	var last error
-	for range pollAttempts {
+	err := retry.Do(ctx, func(ctx context.Context) error {
 		done, err := check(ctx)
 		if done {
 			return nil
 		}
-		last = err
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("%w (last: %v)", ctx.Err(), last)
-		case <-time.After(pollInterval):
+		if err != nil {
+			return err
 		}
+		return errPollPending
+	}, retry.Policy{
+		Initial:     pollInterval,
+		Max:         pollInterval,
+		Multiplier:  1,
+		MaxAttempts: pollAttempts,
+	}, clockwork.NewRealClock())
+	if err != nil {
+		return fmt.Errorf("poll: %w", err)
 	}
-	return fmt.Errorf("gave up after %d attempts (last: %v)", pollAttempts, last)
+	return nil
 }

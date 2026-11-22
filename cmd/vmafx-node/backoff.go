@@ -4,11 +4,11 @@
 // cmd/vmafx-node/backoff.go — jittered exponential backoff for the controller
 // client (ADR-0713 node loop).
 //
-// Every retry the controller client performs (RegisterNode, ReportResult, an
-// empty PullWork, a failed Heartbeat) waits through a backoff value. The delay
-// doubles per consecutive failure up to a cap, and each wait is drawn from the
-// upper half of the current window ("equal jitter") so a fleet of nodes that
-// lost the controller at the same moment does not reconnect in lockstep.
+// RegisterNode and PullWork retries wait through a backoff value. The bounded
+// ReportResult retry goes through core/retry instead. The delay doubles per
+// consecutive failure up to a cap, and each wait is drawn from the upper half
+// of the current window ("equal jitter") so a fleet of nodes that lost the
+// controller at the same moment does not reconnect in lockstep.
 
 package main
 

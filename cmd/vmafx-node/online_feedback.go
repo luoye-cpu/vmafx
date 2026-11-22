@@ -315,6 +315,10 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 // feedbackRetryMax) before retrying. A successful connection resets the
 // backoff to the base interval (ADR-1049) and marks the client connected for
 // /readyz (ADR-3558).
+//
+// The loop is unbounded until ctx ends and resets its delay after every
+// successful connection, so retry.Do's bounded attempt count does not model
+// it; sleepWithContext stays as the context-aware wait here.
 func (fc *FeedbackClient) drainLoop(ctx context.Context) {
 	backoff := fc.effectiveRetryBase()
 	maxBackoff := fc.effectiveRetryMax()

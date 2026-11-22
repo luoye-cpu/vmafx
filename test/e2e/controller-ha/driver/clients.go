@@ -13,7 +13,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/golusoris/golusoris/core/retry"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jonboulle/clockwork"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -75,22 +77,24 @@ func (c *clients) close() {
 // call runs one controller RPC with a timeout, retrying while the controller
 // is unreachable (a replica that just died, a new one starting).
 func call[T any](ctx context.Context, fn func(context.Context) (T, error)) (T, error) {
-	var (
-		out T
-		err error
-	)
-	for range maxRetries {
+	var out T
+	err := retry.Do(ctx, func(ctx context.Context) error {
 		cctx, cancel := context.WithTimeout(ctx, callTimeout)
+		defer cancel()
+		var err error
 		out, err = fn(cctx)
-		cancel()
-		if code := status.Code(err); code != codes.Unavailable && code != codes.DeadlineExceeded {
-			return out, err
-		}
-		if werr := wait(ctx, pollEvery); werr != nil {
-			return out, errors.Join(err, werr)
-		}
-	}
-	return out, fmt.Errorf("controller unreachable after %d tries: %w", maxRetries, err)
+		return err
+	}, retry.Policy{
+		Initial:     pollEvery,
+		Max:         pollEvery,
+		Multiplier:  1,
+		MaxAttempts: maxRetries,
+		Retryable: func(err error) bool {
+			code := status.Code(err)
+			return code == codes.Unavailable || code == codes.DeadlineExceeded
+		},
+	}, clockwork.NewRealClock())
+	return out, err
 }
 
 // wait sleeps d or until ctx ends.

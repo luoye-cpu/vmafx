@@ -42,6 +42,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/golusoris/golusoris/core/clock"
+	"github.com/golusoris/golusoris/core/retry"
+	"github.com/jonboulle/clockwork"
+
 	controllerv1 "github.com/VMAFx/vmafx/gen/go/controller"
 )
 
@@ -75,6 +79,7 @@ type controllerClient struct {
 	capability *controllerv1.NodeCapability
 	log        *slog.Logger
 	sessions   *sessionHolder
+	clk        clock.Clock
 	running    atomic.Int32
 	// metrics is nil in tests that build the client without them.
 	metrics *nodeMetrics
@@ -97,6 +102,7 @@ func newControllerClient(cfg controllerConfig, rpc controllerv1.VmafxControllerC
 	c := &controllerClient{
 		cfg: cfg, rpc: rpc, exec: exec, capability: capability, log: log,
 		sessions: newSessionHolder(), jobs: make(map[string]context.CancelCauseFunc),
+		clk: clockwork.NewRealClock(),
 	}
 	c.pullCtx, c.cancelPull = context.WithCancel(context.Background())
 	c.execCtx, c.cancelExec = context.WithCancel(context.Background())
@@ -167,7 +173,7 @@ func (c *controllerClient) keepSession() {
 
 // register calls RegisterNode until it succeeds or ctx ends. The attempt count
 // is unbounded on purpose (a controller may be down for an hour); ctx bounds
-// the loop.
+// the loop. retry.Do requires MaxAttempts >= 1, so this loop stays hand-written.
 func (c *controllerClient) register(ctx context.Context) (nodeSession, error) {
 	b := newBackoff(registerRetryBase, registerRetryMax)
 	for attempt := 1; ctx.Err() == nil; attempt++ {
@@ -249,7 +255,10 @@ func (c *controllerClient) heartbeatLost(ctx context.Context, s nodeSession, fai
 	return time.Since(*failingSince) >= controllerEvictionWindow
 }
 
-// runSlot pulls and runs jobs until the client stops pulling.
+// runSlot pulls and runs jobs until the client stops pulling. The idle wait is
+// not a failure and the failure backoff resets on every successful poll, so
+// this loop stays hand-written rather than modelling a long-lived worker as a
+// bounded retry.Do operation.
 func (c *controllerClient) runSlot(slot int) {
 	defer c.slots.Done()
 	idle := newBackoff(c.cfg.PollInterval, c.cfg.PollInterval)
@@ -372,24 +381,31 @@ func (c *controllerClient) stopCancelled(ids []string) {
 // report delivers a final result, retrying transient failures with backoff.
 func (c *controllerClient) report(jobID string, res ExecuteResult) {
 	req := finalResultRequest(jobID, res)
-	b := newBackoff(reportRetryBase, reportRetryMax)
-	for attempt := 1; attempt <= maxReportAttempts; attempt++ {
-		err := c.reportOnce(c.keepCtx, req)
-		if err == nil {
-			c.log.Info("job result reported", "job_id", jobID, "score", req.GetScore(), "error", req.GetError())
-			return
+	attempts := 0
+	err := retry.Do(c.keepCtx, func(ctx context.Context) error {
+		attempts++
+		err := c.reportOnce(ctx, req)
+		if err != nil && retryableReport(err) && attempts < maxReportAttempts {
+			c.log.Warn("ReportResult failed; retrying", "job_id", jobID, "attempt", attempts, "error", err)
 		}
-		if !retryableReport(err) || attempt == maxReportAttempts {
-			c.log.Error("job result not delivered", "job_id", jobID, "attempts", attempt, "error", err)
-			return
-		}
-		delay := b.next()
-		c.log.Warn("ReportResult failed; retrying", "job_id", jobID, "attempt", attempt, "retry_in", delay, "error", err)
-		if sleepCtx(c.keepCtx, delay) != nil {
-			c.log.Error("job result not delivered: node stopped", "job_id", jobID, "error", err)
-			return
-		}
+		return err
+	}, retry.Policy{
+		Initial:     reportRetryBase,
+		Max:         reportRetryMax,
+		Multiplier:  2,
+		Jitter:      0.5,
+		MaxAttempts: maxReportAttempts,
+		Retryable:   retryableReport,
+	}, c.clk)
+	if err == nil {
+		c.log.Info("job result reported", "job_id", jobID, "score", req.GetScore(), "error", req.GetError())
+		return
 	}
+	if c.keepCtx.Err() != nil {
+		c.log.Error("job result not delivered: node stopped", "job_id", jobID, "error", err)
+		return
+	}
+	c.log.Error("job result not delivered", "job_id", jobID, "attempts", attempts, "error", err)
 }
 
 // reportOnce sends req under the current session.
