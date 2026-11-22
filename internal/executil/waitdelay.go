@@ -7,9 +7,10 @@ package executil
 import "time"
 
 // SubprocessWaitDelay is the post-cancel grace period used by most
-// cmd.WaitDelay sites. After the context is cancelled, Go closes the child's
-// I/O pipes and waits this long for the process to exit before killing it, so
-// a child that ignores the cancellation cannot block the caller forever.
+// cmd.WaitDelay sites. After the context is done, or after the child exits
+// with its pipes still open, Wait allows this long before it kills the child
+// and closes its I/O pipes, so a child that ignores the cancellation cannot
+// block the caller forever.
 const SubprocessWaitDelay = 2 * time.Second
 
 // ShortSubprocessWaitDelay is the one-second variant used by probes and
