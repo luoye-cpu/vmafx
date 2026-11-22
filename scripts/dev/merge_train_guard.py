@@ -50,6 +50,7 @@ PR_FIELDS = (
     "isCrossRepository,autoMergeRequest,mergeStateStatus"
 )
 GATES = (("make", "lint"), ("make", "test"))
+HARDWARE_SWITCHES = ("GPU_COVERAGE_ENABLED", "SYCL_ARC_RUNNER_ENABLED")
 HEX_SHA_RE = re.compile(r"[0-9a-f]{40}")
 DECISIVE_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
 IGNORED_REVIEW_STATES = frozenset({"COMMENTED", "PENDING"})
@@ -487,6 +488,23 @@ class Train:
         if any(item.get("bucket") != "pass" for item in checks):
             raise Refused("required checks are not eligible for this action")
 
+    def enabled_hardware_switches(self) -> list[str]:
+        """Return enabled hardware lanes; a fork merge group cannot run them."""
+        variables = json.loads(self.gh("variable", "list", "--json", "name,value"))
+        if not isinstance(variables, list):
+            raise Refused("GitHub returned invalid repository variables")
+        enabled = []
+        for item in variables:
+            if not isinstance(item, dict):
+                raise Refused("GitHub returned invalid repository variables")
+            name = item.get("name")
+            value = item.get("value")
+            if not isinstance(name, str) or not isinstance(value, str):
+                raise Refused("GitHub returned invalid repository variables")
+            if name in HARDWARE_SWITCHES and value.strip().lower() == "true":
+                enabled.append(name)
+        return sorted(enabled)
+
     def _check_squash_message(self, number: int, title: str, body_text: str) -> Any:
         composer = load_squash_composer()
         code, output = composer.check_message(
@@ -532,6 +550,12 @@ class Train:
             number, reviewed_head, policy.get("fork_reviewers", [])
         )
         self.require_checks(number)
+        enabled_hardware = self.enabled_hardware_switches()
+        if enabled_hardware:
+            raise Refused(
+                "fork merge groups cannot satisfy enabled hardware lanes: "
+                + ", ".join(enabled_hardware)
+            )
         title = pr.get("title", "")
         body_text = pr.get("body", "") or ""
         self._check_squash_message(number, title, body_text)

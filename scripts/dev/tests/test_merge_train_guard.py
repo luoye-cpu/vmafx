@@ -30,6 +30,7 @@ class FixtureTrain(guard.Train):
         self.metadata: dict[str, Any] = {}
         self.calls: list[tuple[str, ...]] = []
         self.checks = [{"name": "Required Checks Aggregator", "bucket": "pass", "state": "SUCCESS"}]
+        self.variables: list[dict[str, Any]] = []
         self.review_items: list[dict[str, Any]] = []
         self.queue: list[dict[str, Any]] = []
         self.fail_push = False
@@ -54,6 +55,8 @@ class FixtureTrain(guard.Train):
         self.calls.append(args)
         if args[:2] == ("pr", "checks"):
             return json.dumps(self.checks)
+        if args[:2] == ("variable", "list"):
+            return json.dumps(self.variables)
         if args[:2] == ("pr", "list"):
             return json.dumps([self.metadata])
         return ""
@@ -801,11 +804,41 @@ class TrainContract(unittest.TestCase):
         ):
             self.train.admit_fork(1421, self.head)
 
+    def test_admit_fork_refuses_enabled_hardware_lanes(self) -> None:
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        for name in guard.HARDWARE_SWITCHES:
+            self.train.variables = [{"name": name, "value": " TRUE "}]
+            with (
+                self.subTest(name=name),
+                self.assertRaisesRegex(guard.Refused, "hardware lanes"),
+            ):
+                self.train.admit_fork(1421, self.head)
+        self.train.variables = [{"name": "SYCL_ARC_RUNNER_ENABLED", "value": "false"}]
+        with patch.object(guard, "load_squash_composer", return_value=self.stub_composer()):
+            receipt = self.train.admit_fork(1421, self.head)
+        self.assertEqual(receipt["reviewer"], "alice")
+
+    def test_admit_fork_refuses_malformed_hardware_variables(self) -> None:
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        for variables in (
+            {"name": "SYCL_ARC_RUNNER_ENABLED"},
+            [None],
+            [{"name": 1, "value": "true"}],
+        ):
+            self.train.variables = variables
+            with (
+                self.subTest(variables=variables),
+                self.assertRaisesRegex(guard.Refused, "invalid repository variables"),
+            ):
+                self.train.admit_fork(1421, self.head)
+
     def test_admit_fork_rechecks_eligibility_after_squash_message(self) -> None:
         self.configure_fork_pr(("alice",))
         self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
         original_metadata = self.train.metadata.copy()
-        cases = (
+        cases: tuple[tuple[dict[str, Any], str | None, str], ...] = (
             ({"autoMergeRequest": {}}, None, "disarm it before retrying"),
             ({"state": "CLOSED"}, None, "only open PRs targeting master"),
             ({"baseRefName": "other"}, None, "only open PRs targeting master"),
@@ -817,7 +850,11 @@ class TrainContract(unittest.TestCase):
             self.train.metadata = original_metadata.copy()
             (self.state / "hold.txt").write_text("")
 
-            def check_message(*_args: Any) -> None:
+            def check_message(
+                *_args: Any,
+                changes: dict[str, Any] = changes,
+                state_file: str | None = state_file,
+            ) -> None:
                 self.train.metadata.update(changes)
                 if state_file:
                     (self.state / state_file).write_text("1421 newly held\n")
