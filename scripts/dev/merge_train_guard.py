@@ -56,7 +56,7 @@ IGNORED_REVIEW_STATES = frozenset({"COMMENTED", "PENDING"})
 QUEUE_QUERY = (
     'query { repository(owner: "vidiko", name: "vmafx") { '
     'mergeQueue(branch: "master") { entries(first: 100) { nodes { '
-    "state headCommit { oid } pullRequest { number isCrossRepository headRefOid } "
+    "state pullRequest { number isCrossRepository headRefOid } "
     "} } } } }"
 )
 
@@ -173,20 +173,19 @@ def _queue_nodes(payload: Any) -> list[dict[str, Any]]:
     return nodes
 
 
-def _parse_queue_entry(entry: Any) -> tuple[int, bool, str, str]:
+def _parse_queue_entry(entry: Any) -> tuple[int, bool, str]:
     if not isinstance(entry, dict):
         raise Refused("malformed merge queue entry")
-    head_commit = entry.get("headCommit")
     pr = entry.get("pullRequest")
-    if not isinstance(head_commit, dict) or not isinstance(pr, dict):
+    if not isinstance(pr, dict):
         raise Refused("malformed merge queue entry")
-    queued_oid, pr_head = head_commit.get("oid"), pr.get("headRefOid")
+    pr_head = pr.get("headRefOid")
     number, cross = pr.get("number"), pr.get("isCrossRepository")
     if not (_is_positive_int(number) and isinstance(cross, bool)):
         raise Refused("malformed merge queue entry")
-    if not (_is_sha(queued_oid) and _is_sha(pr_head)):
+    if not _is_sha(pr_head):
         raise Refused("malformed merge queue entry")
-    return number, cross, queued_oid, pr_head
+    return number, cross, pr_head
 
 
 def encoded(value: Any) -> bytes:
@@ -536,10 +535,12 @@ class Train:
         title = pr.get("title", "")
         body_text = pr.get("body", "") or ""
         self._check_squash_message(number, title, body_text)
-        fresh = self.pr(number)
+        _, fresh = self._open_master_pr(number)
         if fresh.get("headRefOid") != reviewed_head:
             raise Refused("PR head changed during squash message check")
         _require_unchanged_text(fresh, title, body_text)
+        if fresh.get("autoMergeRequest") is not None:
+            raise Refused("PR has a pending auto-merge request; disarm it before retrying")
         return {
             "number": number,
             "head": reviewed_head,
@@ -565,7 +566,7 @@ class Train:
         for entry in self.queue_entries():
             # headCommit is the squash commit GitHub builds for the entry, never the pull
             # request head, so the live head and its approval decide alone.
-            number, cross, _queued_oid, pr_head = _parse_queue_entry(entry)
+            number, cross, pr_head = _parse_queue_entry(entry)
             if not cross:
                 continue
             approved, reason = _select_fork_approval(self.reviews(number), pr_head, reviewers)

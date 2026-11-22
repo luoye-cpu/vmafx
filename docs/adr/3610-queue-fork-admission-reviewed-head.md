@@ -34,7 +34,13 @@ Admit fork pull requests directly to the `master` merge queue only at the exact 
 ## Consequences
 
 - **Positive**: External fork pull requests can enter the `master` merge queue directly without replacement branches, gated by exact-head maintainer approval in `fork_reviewers`, `CLEAN` merge state, passing required checks, and squash commit message validation (`scripts/dev/tests/test_merge_train_guard.py`).
-- **Security boundary**: A merge group can now carry a fork diff. The provenance guard in `.github/actions/runner-probe/action.yml` (`scripts/ci/merge_group_provenance.py`) writes `same_repo=false` for such a group and hardware probes do not run, so the second barrier of [ADR-3556](3556-merge-queue-merge-group.md) stays in place unchanged; the effect on hardware-gated contexts is recorded from the first live fork group. GitHub documents removal from the queue on failing checks, timeout, user removal and unresolvable branch protection failure (docs page "Merging a pull request with a merge queue", section "Understanding why your pull request was removed from the merge queue"); removal on a head push is not stated there, which is why `queue-audit` exists as a second check.
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:97d2886f4223ea04be4d85b18d32b30db1fe383192d558132f85fb48abb14f9c -->
+
+- **Security boundary**: A merge group can now carry a fork diff. The provenance guard in `.github/actions/runner-probe/action.yml` (`scripts/ci/merge_group_provenance.py`) writes `same_repo=false` for such a group and hardware probes do not run, so the second barrier of [ADR-3556](3556-merge-queue-merge-group.md) stays in place. Fork admission fails closed when an enabled hardware lane cannot report success for the fork merge group: keep the pull request out of the queue while that requirement applies. The Required Checks Aggregator requires success from enabled lanes; if a group is already queued, a missing, skipped, or otherwise unsuccessful required hardware check blocks it. Fork provenance grants no exemption. GitHub documents removal from the queue on failing checks, timeout, user removal and unresolvable branch protection failure (docs page "Merging a pull request with a merge queue", section "Understanding why your pull request was removed from the merge queue"); removal on a head push is not stated there, which is why `queue-audit` exists as a second check.
+
+<!-- /coderabbit-ai-generated:v1 -->
 - **Negative**: Fork pull requests cannot use `--auto` arming; any new push to the fork branch invalidates the reviewed head and requires a fresh maintainer approval on the new commit before `admit-fork` can succeed again.
 - **Neutral / follow-ups**: In-repository pull requests continue to use `Train.guard` and the existing merge-train actions unchanged ([ADR-1244](1244-merge-train-ownership-and-validation.md)).
 

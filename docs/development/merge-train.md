@@ -80,6 +80,10 @@ python3 scripts/dev/merge_train_guard.py queue-audit \
   --repo-root /home/kilian/dev/vmafx/vmafx --state-dir /home/kilian/dev/vmafx/vmafx/.claude/mergetrain
 ```
 
+<!-- coderabbit-ai-generated:v1 -->
+
+<!-- coderabbit-ai-generated-section:v1:e76c5722fe964174577c706e9c4f4bf72f163b501b6be67ac693210ad332210b -->
+
 - `admit-fork NUMBER --reviewed-head SHA` is read-only, runs outside `mutation.lock`,
   and refuses `--apply` (exit `1`). It verifies that `SHA` is a 40-character lowercase
   hex OID, the train is neither paused nor holding `NUMBER` (including release PR #1213),
@@ -89,6 +93,9 @@ python3 scripts/dev/merge_train_guard.py queue-audit \
   (`APPROVED`, `CHANGES_REQUESTED`, `DISMISSED`; `COMMENTED` and `PENDING` ignored) as
   `APPROVED` on `commit.oid == SHA` while none has `CHANGES_REQUESTED`, required checks
   pass, and the squash commit message check passes with unchanged head, title, and body.
+  The final read rechecks that the pull request is open against `master`, the train
+  is not paused, and the pull request is not held. If an auto-merge request exists,
+  the command refuses admission; disarm it before retrying.
   It prints a JSON receipt (`number`, `head`, `reviewer`, `submitted_at`, `merge_state`,
   `checks`) and exits `0` when eligible, or prints `merge-train: refused: ...` and exits
   `1`. Enqueue separately with `gh pr merge NUMBER --squash --match-head-commit SHA`
@@ -101,6 +108,8 @@ python3 scripts/dev/merge_train_guard.py queue-audit \
   clean, it prints `queue audit: 0 problems` and exits `0`; when any cross-repository
   entry fails, it prints one problem per line and exits `1`, and the operator removes the
   failing entry from the merge queue immediately.
+
+<!-- /coderabbit-ai-generated:v1 -->
 
 ## Ownership and promotion
 

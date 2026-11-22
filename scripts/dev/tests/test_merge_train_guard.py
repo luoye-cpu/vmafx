@@ -801,6 +801,45 @@ class TrainContract(unittest.TestCase):
         ):
             self.train.admit_fork(1421, self.head)
 
+    def test_admit_fork_rechecks_eligibility_after_squash_message(self) -> None:
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        original_metadata = self.train.metadata.copy()
+        cases = (
+            ({"autoMergeRequest": {}}, None, "disarm it before retrying"),
+            ({"state": "CLOSED"}, None, "only open PRs targeting master"),
+            ({"baseRefName": "other"}, None, "only open PRs targeting master"),
+            ({"headRefOid": "d" * 40}, None, "head changed during squash message check"),
+            ({}, "hold.txt", "PR #1421 is held"),
+            ({}, "PAUSED", "train is paused"),
+        )
+        for changes, state_file, reason in cases:
+            self.train.metadata = original_metadata.copy()
+            (self.state / "hold.txt").write_text("")
+
+            def check_message(*_args: Any) -> None:
+                self.train.metadata.update(changes)
+                if state_file:
+                    (self.state / state_file).write_text("1421 newly held\n")
+
+            with (
+                self.subTest(reason=reason, changes=changes),
+                patch.object(self.train, "_check_squash_message", side_effect=check_message),
+                self.assertRaisesRegex(guard.Refused, reason),
+            ):
+                self.train.admit_fork(1421, self.head)
+
+    def test_admit_fork_refuses_existing_auto_merge_without_disarming_it(self) -> None:
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        self.train.metadata["autoMergeRequest"] = {"enabledAt": "fixture"}
+        with (
+            patch.object(guard, "load_squash_composer", return_value=self.stub_composer()),
+            self.assertRaisesRegex(guard.Refused, "disarm it before retrying"),
+        ):
+            self.train.admit_fork(1421, self.head)
+        self.assertFalse(any(call[:2] == ("pr", "merge") for call in self.train.calls))
+
     def test_admit_fork_positive_receipt_never_merges_or_locks(self) -> None:
         self.configure_fork_pr(("alice",))
         self.train.review_items = [
@@ -886,6 +925,13 @@ class TrainContract(unittest.TestCase):
         }
         self.train.queue = [same_repo_entry, valid_fork_entry]
         self.assertEqual(self.train.audit_queue(), [])
+        for head_commit in (None, "unavailable"):
+            with self.subTest(head_commit=head_commit):
+                self.train.queue = [dict(valid_fork_entry, headCommit=head_commit)]
+                self.assertEqual(self.train.audit_queue(), [])
+                self.train.queue = [dict(moved_fork_entry, headCommit=head_commit)]
+                self.assertIn(f"on head {moved}", self.train.audit_queue()[0])
+        self.train.queue = [same_repo_entry, valid_fork_entry]
         with patch.object(guard, "Train", return_value=self.train):
             clean_out = io.StringIO()
             with redirect_stdout(clean_out):
@@ -925,6 +971,7 @@ class TrainContract(unittest.TestCase):
             "{}",
             '{"errors":[{"message":"denied"}]}',
             '{"data":{"repository":{}}}',
+            valid_graphql.replace(json.dumps(node["pullRequest"]), "null"),
         )
         for bad_graphql in bad_payloads:
             with (
