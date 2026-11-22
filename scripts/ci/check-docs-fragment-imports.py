@@ -216,6 +216,14 @@ def _scripts_from_helper(helper: Path, makefile_dir: Path, issues: list[str]) ->
     return scripts
 
 
+def _recipe_body_start(makefile: Path, lines: list[str]) -> int:
+    """The index of the first recipe line after the target header."""
+    for index, line in enumerate(lines):
+        if line.split(":", 1)[0].strip() == TARGET and line.rstrip().endswith(":"):
+            return index + 1
+    raise LookupError(f"{makefile} has no {TARGET} target")
+
+
 def recipe_scripts(makefile: Path) -> tuple[list[Path], list[str]]:
     """The Python scripts the `docs-fragments-check` recipe runs, in recipe
     order, plus the recipe's tokenizing findings.
@@ -227,13 +235,7 @@ def recipe_scripts(makefile: Path) -> tuple[list[Path], list[str]]:
     scripts, so every path is repo-relative.
     """
     lines = makefile.read_text(encoding="utf-8").splitlines()
-    start = None
-    for index, line in enumerate(lines):
-        if line.split(":", 1)[0].strip() == TARGET and line.rstrip().endswith(":"):
-            start = index + 1
-            break
-    if start is None:
-        raise LookupError(f"{makefile} has no {TARGET} target")
+    start = _recipe_body_start(makefile, lines)
 
     python: list[Path] = []
     shell: list[Path] = []

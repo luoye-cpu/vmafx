@@ -1541,7 +1541,7 @@ repos:
         entry: python3 scripts/ci/check-docs-fragment-imports.py
         language: system
         stages: [pre-commit]
-        files: '^(Makefile$|requirements/locks/docs-check\.in$|scripts/ci/check-docs-fragment-imports\.py$|scripts/.*\.py$|tools/rc1-tester/src/.*\.py$)'
+        files: '^(Makefile$|requirements/locks/docs-check\.in$|scripts/ci/check-docs-fragment-imports\.py$|scripts/release/concat-changelog-fragments\.sh$|scripts/docs/concat-rebase-notes\.sh$|scripts/.*\.py$|tools/rc1-tester/src/.*\.py$)'
         pass_filenames: false
 
       - id: test-check-docs-fragment-imports
@@ -1549,7 +1549,7 @@ repos:
         entry: python3 -B scripts/ci/tests/test_check_docs_fragment_imports.py
         language: system
         stages: [pre-commit]
-        files: '^(Makefile$|requirements/locks/docs-check\.in$|scripts/ci/check-docs-fragment-imports\.py$|scripts/ci/tests/test_check_docs_fragment_imports\.py$|scripts/.*\.py$|tools/rc1-tester/src/.*\.py$)'
+        files: '^(Makefile$|requirements/locks/docs-check\.in$|scripts/ci/check-docs-fragment-imports\.py$|scripts/ci/tests/test_check_docs_fragment_imports\.py$|scripts/release/concat-changelog-fragments\.sh$|scripts/docs/concat-rebase-notes\.sh$|scripts/.*\.py$|tools/rc1-tester/src/.*\.py$)'
         pass_filenames: false
 
       - id: test-docs-vendored-assets

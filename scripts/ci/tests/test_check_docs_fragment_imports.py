@@ -313,6 +313,29 @@ class CheckDocsFragmentImportsTests(unittest.TestCase):
         )
         self.assertTrue(any("tokenize" in p for p in problems), problems)
 
+    def test_an_untokenizable_helper_line_is_a_finding(self) -> None:
+        """A bash helper line shlex cannot split must fail loudly rather than
+        dropping the python call it may contain."""
+        problems = self.findings(
+            {
+                "Makefile": makefile(CHECKER_LINE + "\n\t@bash scripts/docs/broken-helper.sh"),
+                "scripts/ci/check-docs-fragment-imports.py": "# stub\n",
+                "scripts/docs/broken-helper.sh": (
+                    "#!/usr/bin/env bash\n" 'python3 "$SCRIPT_DIR/oops.py\n'
+                ),
+                "requirements/locks/docs-check.in": DOCS_CHECK_IN,
+            }
+        )
+        self.assertTrue(any("cannot be tokenized" in problem for problem in problems), problems)
+
+    def test_a_makefile_without_the_target_is_a_finding(self) -> None:
+        """A Makefile that does not define docs-fragments-check cannot be
+        scanned; recipe_scripts must raise instead of returning nothing."""
+        with tempfile.TemporaryDirectory() as name:
+            root = plant(Path(name), {"Makefile": "other-check:\n\t@echo hi\n"})
+            with self.assertRaises(LookupError):
+                module.recipe_scripts(root / "Makefile")
+
     def test_an_interpreter_option_does_not_hide_the_script(self) -> None:
         """`python3 -B x.py` in a recipe, and `python3 -B x.py` inside a bash
         helper, both still name the script."""
