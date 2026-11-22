@@ -509,17 +509,23 @@ each queue entry runs these workflows on a synthetic
 `refs/heads/gh-readonly-queue/master/...` ref. Before it is on, nothing changes
 for pull requests.
 
-Queue admission accepts only pull requests whose head branch lives in
-`vidiko/vmafx`. Adding a pull request to the queue requires write access to the
-repository. Maintainers pin
-the reviewed head when enqueueing with
-`gh pr merge <number> --match-head-commit <sha>` or with `expectedHeadOid` on
-the GraphQL `enqueuePullRequest` mutation. `scripts/dev/merge_train_guard.py`
-refuses cross-repository pull requests, and maintainers enqueueing by hand
-apply the same rule. The `test_guard_refuses_cross_repository_prs` regression
-test in `scripts/dev/tests/test_merge_train_guard.py` covers this refusal. A
-fork contribution enters only after its reviewed change sits on an
-in-repository branch. Semgrep and CodeQL jobs retain `security-events: write`
+Same-repository pull requests follow
+[ADR-3556](../adr/3556-merge-queue-merge-group.md): adding to the queue
+requires repository write access, maintainers pin the head with
+`gh pr merge <number> --match-head-commit <sha>` or `expectedHeadOid` on
+`enqueuePullRequest`, and `Train.guard` plus all train actions refuse
+cross-repository pull requests (`test_guard_refuses_cross_repository_prs` in
+`scripts/dev/tests/test_merge_train_guard.py`). Under
+[ADR-3610](../adr/3610-queue-fork-admission-reviewed-head.md), a fork pull
+request enters the queue only after
+`merge_train_guard.py admit-fork <number> --reviewed-head <sha>` returns `0`,
+and only pinned to that exact head without `--auto`
+(`test_admit_fork_refuses_unreviewed_head`,
+`test_admit_fork_positive_receipt_never_merges_or_mutates`); afterwards,
+`merge_train_guard.py queue-audit` re-checks every queued fork entry against
+its live head and maintainer approval (`test_audit_queue_and_cli`; see
+[Local merge-train control](merge-train.md#fork-pull-requests)). Semgrep and
+CodeQL jobs retain `security-events: write`
 on `merge_group` under this rule. Semgrep scans the checkout in its pinned
 image without executing code from the change, so the same admission rule
 covers it. The merge group head includes queued diffs that can rewrite

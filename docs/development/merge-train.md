@@ -46,6 +46,61 @@ missing metadata. Network errors and incomplete inventories never become an
 empty, apparently green queue. `cycle` refuses to act if an ineligible PR already
 has GitHub auto-merge enabled; its owner must disable that server-side state.
 
+## Fork pull requests
+
+`Train.guard` and every merge-train action (`inspect`, `cycle`, `promote`, `rebase`,
+`arm`, `merge`) continue to refuse cross-repository pull requests. Under
+[ADR-3610](../adr/3610-queue-fork-admission-reviewed-head.md), a fork pull request
+may enter the `master` merge queue only after a read-only `admit-fork` check passes
+for the exact maintainer-reviewed head, followed by `queue-audit` after enqueueing.
+
+Configure the optional `fork_reviewers` list in `policy.json` with the non-empty
+GitHub logins of maintainers whose approvals authorize fork admission (a non-list or
+empty-string login fails closed with `invalid train policy: fork_reviewers`; an absent
+or empty list refuses `admit-fork`):
+
+```json
+{
+  "schema": 1,
+  "protected_branches": ["build/base-image-single-source"],
+  "protected_worktrees": ["/home/kilian/dev/vmafx/vmafx/.claude/worktrees/agent-rc1-ffmpeg"],
+  "fork_reviewers": ["lusoris"]
+}
+```
+
+Run `admit-fork` before enqueueing a fork pull request, and `queue-audit` after
+enqueueing it:
+
+```bash
+python3 scripts/dev/merge_train_guard.py admit-fork 1500 \
+  --reviewed-head 0123456789abcdef0123456789abcdef01234567 \
+  --repo-root /home/kilian/dev/vmafx/vmafx --state-dir /home/kilian/dev/vmafx/vmafx/.claude/mergetrain
+
+python3 scripts/dev/merge_train_guard.py queue-audit \
+  --repo-root /home/kilian/dev/vmafx/vmafx --state-dir /home/kilian/dev/vmafx/vmafx/.claude/mergetrain
+```
+
+- `admit-fork NUMBER --reviewed-head SHA` is read-only, runs outside `mutation.lock`,
+  and refuses `--apply` (exit `1`). It verifies that `SHA` is a 40-character lowercase
+  hex OID, the train is neither paused nor holding `NUMBER` (including release PR #1213),
+  the pull request is `OPEN` against `master` with `isDraft == false` and
+  `isCrossRepository == true`, live `headRefOid` equals `SHA`, `mergeStateStatus` is
+  `CLEAN`, at least one login in `fork_reviewers` has its latest decisive review
+  (`APPROVED`, `CHANGES_REQUESTED`, `DISMISSED`; `COMMENTED` and `PENDING` ignored) as
+  `APPROVED` on `commit.oid == SHA` while none has `CHANGES_REQUESTED`, required checks
+  pass, and the squash commit message check passes with unchanged head, title, and body.
+  It prints a JSON receipt (`number`, `head`, `reviewer`, `submitted_at`, `merge_state`,
+  `checks`) and exits `0` when eligible, or prints `merge-train: refused: ...` and exits
+  `1`. Enqueue separately with `gh pr merge NUMBER --squash --match-head-commit SHA`
+  (never `--auto`).
+- `queue-audit` takes no PR number, refuses `--apply` (exit `1`), and queries
+  `mergeQueue(branch: "master")` on `vidiko/vmafx` via `gh api graphql`. In-repository
+  queue entries are skipped. Each cross-repository entry must keep `headCommit.oid ==
+  headRefOid` and satisfy the same `fork_reviewers` approval rule on `headRefOid`. When
+  clean, it prints `queue audit: 0 problems` and exits `0`; when any cross-repository
+  entry fails, it prints one problem per line and exits `1`, and the operator removes the
+  failing entry from the merge queue immediately.
+
 ## Ownership and promotion
 
 A checked-out head branch belongs to its existing owner, even if clean. A

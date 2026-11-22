@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # Copyright 2026 Lusoris
 # SPDX-License-Identifier: EUPL-1.2
-"""Inspect and guard local VMAFx merge-train actions (ADR-1244).
+"""Inspect and guard local VMAFx merge-train and fork-queue actions (ADR-1244, ADR-3610).
 
-Every remote mutation requires --apply. Local gate receipts are produced only
-by executing make lint and make test, never by accepting a pass flag.
+Every remote mutation requires --apply; inspect, admit-fork and queue-audit are
+read-only. Local gate receipts are produced only by executing make lint and make
+test, never by accepting a pass flag.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, TypeGuard
 
 # Installed releases carry their own scripts/lib; checkouts retain the repository root.
 sys.path.insert(
@@ -49,10 +50,143 @@ PR_FIELDS = (
     "isCrossRepository,autoMergeRequest,mergeStateStatus"
 )
 GATES = (("make", "lint"), ("make", "test"))
+HEX_SHA_RE = re.compile(r"[0-9a-f]{40}")
+DECISIVE_REVIEW_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
+IGNORED_REVIEW_STATES = frozenset({"COMMENTED", "PENDING"})
+QUEUE_QUERY = (
+    'query { repository(owner: "vidiko", name: "vmafx") { '
+    'mergeQueue(branch: "master") { entries(first: 100) { nodes { '
+    "state headCommit { oid } pullRequest { number isCrossRepository headRefOid } "
+    "} } } } }"
+)
 
 
 class Refused(RuntimeError):
     """The action has no safe, current authorization."""
+
+
+def _is_sha(value: Any) -> TypeGuard[str]:
+    return isinstance(value, str) and HEX_SHA_RE.fullmatch(value) is not None
+
+
+def _is_positive_int(value: Any) -> TypeGuard[int]:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _is_str_list(value: Any, *, non_empty_items: bool = False) -> bool:
+    if not isinstance(value, list):
+        return False
+    if non_empty_items:
+        return all(isinstance(item, str) and bool(item.strip()) for item in value)
+    return all(isinstance(item, str) for item in value)
+
+
+def _verified_head(pr: dict[str, Any], expected: str | None = None) -> str:
+    if not isinstance(pr.get("isDraft"), bool):
+        raise Refused("PR draft state is unavailable")
+    head = pr.get("headRefOid", "")
+    if not _is_sha(head):
+        raise Refused("PR head is unavailable")
+    if expected is not None and head != expected:
+        raise Refused("PR head changed; repeat inspection and validation")
+    return head
+
+
+def _require_unchanged_text(pr: dict[str, Any], title: str, body_text: str) -> None:
+    fresh_body = pr.get("body") or ""
+    if pr.get("title", "") != title or fresh_body != body_text:
+        raise Refused("PR title or body changed during squash message check")
+
+
+def _review_login(review: dict[str, Any]) -> str:
+    author = review.get("author")
+    login = author.get("login") if isinstance(author, dict) else ""
+    return login if isinstance(login, str) else ""
+
+
+def _review_time(value: Any) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise Refused("PR review timestamp is unavailable")
+    normalized = f"{value[:-1]}+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise Refused(f"invalid PR review timestamp: {value}") from exc
+    if parsed.tzinfo is None:
+        raise Refused(f"PR review timestamp lacks timezone: {value}")
+    return parsed
+
+
+def _latest_decisive_reviews(
+    reviews: list[dict[str, Any]], allowed: set[str]
+) -> dict[str, tuple[tuple[datetime, int], dict[str, Any]]]:
+    latest: dict[str, tuple[tuple[datetime, int], dict[str, Any]]] = {}
+    for index, review in enumerate(reviews):
+        if not isinstance(review, dict):
+            raise Refused("GitHub returned incomplete or invalid PR reviews")
+        login = _review_login(review)
+        if login not in allowed:
+            continue
+        state = review.get("state")
+        if state in IGNORED_REVIEW_STATES:
+            continue
+        if state not in DECISIVE_REVIEW_STATES:
+            raise Refused(f"invalid PR review state: {state!r}")
+        rank = (_review_time(review.get("submittedAt")), index)
+        previous = latest.get(login)
+        if previous is None or rank > previous[0]:
+            latest[login] = (rank, review)
+    return latest
+
+
+def _select_fork_approval(
+    reviews: list[dict[str, Any]], reviewed_head: str, fork_reviewers: list[str]
+) -> tuple[tuple[str, str] | None, str]:
+    if not fork_reviewers:
+        return None, "train policy fork_reviewers must be non-empty"
+    latest = _latest_decisive_reviews(reviews, set(fork_reviewers))
+    matching: list[tuple[tuple[datetime, int], str, str]] = []
+    for login, (rank, review) in latest.items():
+        state = review.get("state")
+        if state == "CHANGES_REQUESTED":
+            return None, f"fork reviewer {login} has CHANGES_REQUESTED; approval refused"
+        if state == "APPROVED":
+            commit = review.get("commit")
+            oid = commit.get("oid") if isinstance(commit, dict) else None
+            if oid == reviewed_head:
+                matching.append((rank, login, str(review["submittedAt"])))
+    if not matching:
+        return None, f"no maintainer approval from fork_reviewers on head {reviewed_head}"
+    _, reviewer, submitted_at = max(matching, key=lambda item: item[0])
+    return (reviewer, submitted_at), ""
+
+
+def _queue_nodes(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict) or payload.get("errors"):
+        raise Refused("GitHub returned malformed or failed mergeQueue response")
+    cursor: Any = payload
+    for key in ("data", "repository", "mergeQueue", "entries"):
+        cursor = cursor.get(key) if isinstance(cursor, dict) else None
+    nodes = cursor.get("nodes") if isinstance(cursor, dict) else None
+    if not isinstance(nodes, list) or len(nodes) >= INVENTORY_LIMIT:
+        raise Refused("GitHub returned incomplete or malformed mergeQueue entries")
+    return nodes
+
+
+def _parse_queue_entry(entry: Any) -> tuple[int, bool, str, str]:
+    if not isinstance(entry, dict):
+        raise Refused("malformed merge queue entry")
+    head_commit = entry.get("headCommit")
+    pr = entry.get("pullRequest")
+    if not isinstance(head_commit, dict) or not isinstance(pr, dict):
+        raise Refused("malformed merge queue entry")
+    queued_oid, pr_head = head_commit.get("oid"), pr.get("headRefOid")
+    number, cross = pr.get("number"), pr.get("isCrossRepository")
+    if not (_is_positive_int(number) and isinstance(cross, bool)):
+        raise Refused("malformed merge queue entry")
+    if not (_is_sha(queued_oid) and _is_sha(pr_head)):
+        raise Refused("malformed merge queue entry")
+    return number, cross, queued_oid, pr_head
 
 
 def encoded(value: Any) -> bytes:
@@ -145,15 +279,26 @@ class Train:
             raise Refused("GitHub returned incomplete or mismatched PR metadata")
         return value
 
+    def reviews(self, number: int) -> list[dict[str, Any]]:
+        value = json.loads(self.gh("pr", "view", str(number), "--json", "reviews"))
+        if not isinstance(value, dict):
+            raise Refused("GitHub returned incomplete or invalid PR reviews")
+        reviews = value.get("reviews")
+        if not isinstance(reviews, list) or not all(isinstance(item, dict) for item in reviews):
+            raise Refused("GitHub returned incomplete or invalid PR reviews")
+        return reviews
+
     def policy(self) -> dict[str, Any]:
         value = json.loads((self.state / "policy.json").read_text())
         if not isinstance(value, dict) or value.get("schema") != 1:
             raise Refused("missing supported train policy")
         for key in ("protected_branches", "protected_worktrees"):
-            if not isinstance(value.get(key), list) or not all(
-                isinstance(item, str) for item in value[key]
-            ):
+            if not _is_str_list(value.get(key)):
                 raise Refused(f"invalid train policy: {key}")
+        if "fork_reviewers" in value and not _is_str_list(
+            value["fork_reviewers"], non_empty_items=True
+        ):
+            raise Refused("invalid train policy: fork_reviewers")
         return value
 
     def held(self) -> set[int]:
@@ -183,7 +328,7 @@ class Train:
             records.append(record)
         return records
 
-    def guard(self, number: int, expected: str | None = None) -> dict[str, Any]:
+    def _open_master_pr(self, number: int) -> tuple[dict[str, Any], dict[str, Any]]:
         policy = self.policy()
         if (self.state / "PAUSED").exists():
             raise Refused("train is paused")
@@ -192,15 +337,13 @@ class Train:
         pr = self.pr(number)
         if pr.get("state") != "OPEN" or pr.get("baseRefName") != "master":
             raise Refused("only open PRs targeting master are eligible")
+        return policy, pr
+
+    def guard(self, number: int, expected: str | None = None) -> dict[str, Any]:
+        policy, pr = self._open_master_pr(number)
         if pr.get("isCrossRepository") is not False:
             raise Refused("cross-repository PRs require an explicit owner")
-        if not isinstance(pr.get("isDraft"), bool):
-            raise Refused("PR draft state is unavailable")
-        head = pr.get("headRefOid", "")
-        if not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}", head) is None:
-            raise Refused("PR head is unavailable")
-        if expected is not None and head != expected:
-            raise Refused("PR head changed; repeat inspection and validation")
+        head = _verified_head(pr, expected)
         branch = pr.get("headRefName", "")
         if not isinstance(branch, str) or not branch or branch == "master":
             raise Refused("invalid PR branch")
@@ -345,17 +488,8 @@ class Train:
         if any(item.get("bucket") != "pass" for item in checks):
             raise Refused("required checks are not eligible for this action")
 
-    def merge(self, number: int, auto: bool) -> None:
-        """Execute validated merge after verifying checks and squash commit message."""
-        pr = self.guard(number)
-        if pr["isDraft"]:
-            raise Refused("draft PRs cannot be armed or merged")
-        self.require_validation(pr["headRefOid"])
-        self.require_checks(number)
-        pr = self.guard(number, pr["headRefOid"])
+    def _check_squash_message(self, number: int, title: str, body_text: str) -> Any:
         composer = load_squash_composer()
-        title = pr.get("title", "")
-        body_text = pr.get("body", "") or ""
         code, output = composer.check_message(
             title=title,
             number=number,
@@ -365,9 +499,96 @@ class Train:
         )
         if code != 0:
             raise Refused(f"squash message check failed: {output.strip()}")
+        return composer
+
+    def _require_fork_approval(
+        self, number: int, reviewed_head: str, reviewers: list[str]
+    ) -> tuple[str, str]:
+        if not reviewers:
+            raise Refused("train policy fork_reviewers must be non-empty")
+        approved, reason = _select_fork_approval(self.reviews(number), reviewed_head, reviewers)
+        if approved is None:
+            raise Refused(reason)
+        return approved
+
+    def admit_fork(self, number: int, reviewed_head: str) -> dict[str, Any]:
+        """Verify read-only fork PR queue-admission gates at the exact reviewed head."""
+        if not _is_sha(reviewed_head):
+            raise Refused("reviewed head must be a 40-character lowercase hex SHA")
+        policy, pr = self._open_master_pr(number)
+        if pr.get("isDraft") is not False:
+            raise Refused("draft PRs cannot be admitted to the merge queue")
+        if pr.get("isCrossRepository") is not True:
+            raise Refused(
+                "in-repository PRs must use merge-train actions "
+                "(inspect, merge, arm, rebase, promote)"
+            )
+        head = _verified_head(pr)
+        if head != reviewed_head:
+            raise Refused("live PR head does not match reviewed head")
+        merge_state = pr.get("mergeStateStatus")
+        if merge_state != "CLEAN":
+            raise Refused(f"PR merge state is {merge_state!r}, expected CLEAN")
+        reviewer_login, submitted_at = self._require_fork_approval(
+            number, reviewed_head, policy.get("fork_reviewers", [])
+        )
+        self.require_checks(number)
+        title = pr.get("title", "")
+        body_text = pr.get("body", "") or ""
+        self._check_squash_message(number, title, body_text)
+        fresh = self.pr(number)
+        if fresh.get("headRefOid") != reviewed_head:
+            raise Refused("PR head changed during squash message check")
+        _require_unchanged_text(fresh, title, body_text)
+        return {
+            "number": number,
+            "head": reviewed_head,
+            "reviewer": reviewer_login,
+            "submitted_at": submitted_at,
+            "merge_state": merge_state,
+            "checks": "pass",
+        }
+
+    def queue_entries(self) -> list[dict[str, Any]]:
+        raw = execute(["gh", "api", "graphql", "-f", f"query={QUEUE_QUERY}"], self.root)
+        nodes = _queue_nodes(json.loads(raw))
+        for node in nodes:
+            _parse_queue_entry(node)
+            if not isinstance(node.get("state"), str) or not node["state"]:
+                raise Refused("GitHub returned mergeQueue entry without state")
+        return nodes
+
+    def audit_queue(self) -> list[str]:
+        policy = self.policy()
+        reviewers: list[str] = policy.get("fork_reviewers", [])
+        problems: list[str] = []
+        for entry in self.queue_entries():
+            number, cross, queued_oid, pr_head = _parse_queue_entry(entry)
+            if not cross:
+                continue
+            if queued_oid != pr_head:
+                problems.append(
+                    f"PR #{number}: queued commit {queued_oid} differs from live head {pr_head}"
+                )
+                continue
+            approved, reason = _select_fork_approval(self.reviews(number), pr_head, reviewers)
+            if approved is None:
+                problems.append(f"PR #{number}: {reason}")
+        return problems
+
+    def merge(self, number: int, auto: bool) -> None:
+        """Execute validated merge after verifying checks and squash commit message."""
+        pr = self.guard(number)
+        if pr["isDraft"]:
+            raise Refused("draft PRs cannot be armed or merged")
+        self.require_validation(pr["headRefOid"])
+        self.require_checks(number)
+        pr = self.guard(number, pr["headRefOid"])
+        title = pr.get("title", "")
+        body_text = pr.get("body", "") or ""
+        composer = self._check_squash_message(number, title, body_text)
         fresh = self.guard(number, pr["headRefOid"])
-        if fresh.get("title", "") != title or (fresh.get("body", "") or "") != body_text:
-            raise Refused("PR title or body changed during squash message check")
+        _require_unchanged_text(fresh, title, body_text)
         subject_line = composer.subject(title, number)
         body_content = composer.body(body_text, LANDING_IDENTITY)
         args = [
@@ -497,10 +718,21 @@ class Train:
                 self.promote(drafts[0]["number"])
 
 
-def main(argv: list[str] | None = None) -> int:
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("inspect", "cycle", "promote", "rebase", "arm", "merge", "validate")
+        "action",
+        choices=(
+            "inspect",
+            "cycle",
+            "promote",
+            "rebase",
+            "arm",
+            "merge",
+            "validate",
+            "admit-fork",
+            "queue-audit",
+        ),
     )
     parser.add_argument("number", type=int, nargs="?")
     parser.add_argument("--repo-root", type=Path, default=Path.cwd())
@@ -508,38 +740,92 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--checkout", type=Path, help="explicit checkout for executing full local gates"
     )
+    parser.add_argument(
+        "--reviewed-head", type=str, help="exact 40-char SHA approved for admit-fork"
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--window", type=int, default=3, help="maximum ready queue size for cycle")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def _require_pr_number(number: int | None) -> int:
+    if number is None or number <= 0:
+        raise Refused("an explicit positive PR number is required")
+    return number
+
+
+def _run_queue_audit(train: Train, args: argparse.Namespace) -> int:
+    if args.number is not None:
+        raise Refused("queue-audit takes no PR number")
+    if args.apply:
+        raise Refused("queue-audit is read-only and refuses --apply")
+    problems = train.audit_queue()
+    if problems:
+        for problem in problems:
+            print(problem)
+        return 1
+    print("queue audit: 0 problems")
+    return 0
+
+
+def _run_admit_fork(train: Train, args: argparse.Namespace) -> int:
+    number = _require_pr_number(args.number)
+    if args.apply:
+        raise Refused("admit-fork is read-only and refuses --apply")
+    if not args.reviewed_head:
+        raise Refused("admit-fork requires --reviewed-head")
+    print(json.dumps(train.admit_fork(number, args.reviewed_head), indent=2))
+    return 0
+
+
+def _run_readonly(train: Train, args: argparse.Namespace) -> int | None:
+    if args.action == "queue-audit":
+        return _run_queue_audit(train, args)
+    if args.action == "admit-fork":
+        return _run_admit_fork(train, args)
+    if args.action == "cycle" and not args.apply:
+        train.cycle(False, args.window)
+        return 0
+    if args.action == "inspect":
+        print(json.dumps(train.guard(_require_pr_number(args.number)), indent=2))
+        return 0
+    return None
+
+
+def _run_mutating(train: Train, args: argparse.Namespace) -> None:
+    if args.action == "cycle":
+        if args.window <= 0:
+            raise Refused("cycle window must be positive")
+        train.cycle(True, args.window)
+        return
+    number = _require_pr_number(args.number)
+    if args.action == "validate":
+        if args.checkout is None:
+            raise Refused("validate requires an explicit --checkout")
+        train.validate(number, args.checkout)
+    elif args.action == "promote":
+        train.promote(number)
+    elif args.action == "rebase":
+        train.rebase(number)
+    else:
+        train.merge(number, auto=args.action == "arm")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
     train = Train(args.repo_root, args.state_dir)
     try:
-        if args.action != "cycle" and (args.number is None or args.number <= 0):
-            raise Refused("an explicit positive PR number is required")
-        if args.action == "cycle" and not args.apply:
-            train.cycle(False, args.window)
-            return 0
-        if args.action == "inspect":
-            print(json.dumps(train.guard(args.number), indent=2))
-            return 0
+        readonly_rc = _run_readonly(train, args)
+        if readonly_rc is not None:
+            return readonly_rc
+        if args.action != "cycle":
+            _require_pr_number(args.number)
         if not args.apply:
             raise Refused(
                 "mutation/validation requires --apply; use inspect for read-only eligibility"
             )
         with train.mutation_lock():
-            if args.action == "cycle":
-                if args.window <= 0:
-                    raise Refused("cycle window must be positive")
-                train.cycle(True, args.window)
-            elif args.action == "validate":
-                if args.checkout is None:
-                    raise Refused("validate requires an explicit --checkout")
-                train.validate(args.number, args.checkout)
-            elif args.action == "promote":
-                train.promote(args.number)
-            elif args.action == "rebase":
-                train.rebase(args.number)
-            else:
-                train.merge(args.number, auto=args.action == "arm")
+            _run_mutating(train, args)
         return 0
     except (Refused, OSError, ValueError, KeyError, TypeError) as exc:
         print(f"merge-train: refused: {exc}", file=sys.stderr)
