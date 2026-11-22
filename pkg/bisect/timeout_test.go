@@ -41,7 +41,7 @@ func TestScoreTimeout_InvalidEnvFallsBackToDefault(t *testing.T) {
 
 // TestVMAFScoreFunc_DoesNotHangOnMissingBinary exercises the score func
 // against an obviously-missing binary path and asserts the call returns
-// rather than blocking. Combined with the cap on scoreTimeout, this
+// rather than blocking. Combined with the scorecli.ScoreTimeout() cap, this
 // guards against the original hang-forever shape of the bug.
 func TestVMAFScoreFunc_DoesNotHangOnMissingBinary(t *testing.T) {
 	t.Setenv("VMAFX_TUNE_SCORE_TIMEOUT", "2s")
