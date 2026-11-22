@@ -977,17 +977,17 @@ BPF_PIN ?=
 node-bpf:
 	@scripts/dev/gen-node-bpf.sh $(BPF_PIN)
 
+GO_CGO_ENV = \
+	CGO_LDFLAGS="-L$(CURDIR)/core/build-cpu/src -lvmaf -lvmafx -lm" \
+	LD_LIBRARY_PATH="$(CURDIR)/core/build-cpu/src$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}"
+
 go-build: node-bpf
 	@command -v go >/dev/null || { echo "go not found — install the version declared by go.mod (https://go.dev/dl/)"; exit 1; }
-	CGO_LDFLAGS="-L$(CURDIR)/core/build-cpu/src -lvmaf -lvmafx -lm" \
-	LD_LIBRARY_PATH="$(CURDIR)/core/build-cpu/src$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" \
-	go build ./...
+	$(GO_CGO_ENV) go build ./...
 
 go-test: node-bpf
 	@command -v go >/dev/null || { echo "go not found — install the version declared by go.mod (https://go.dev/dl/)"; exit 1; }
-	CGO_LDFLAGS="-L$(CURDIR)/core/build-cpu/src -lvmaf -lvmafx -lm" \
-	LD_LIBRARY_PATH="$(CURDIR)/core/build-cpu/src$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" \
-	go test ./...
+	$(GO_CGO_ENV) go test ./...
 
 go-fix:
 	@command -v go >/dev/null || { echo "go not found — install the version declared by go.mod (https://go.dev/dl/)"; exit 1; }
@@ -1006,9 +1006,7 @@ go-fix-check:
 
 go-ort-runner:
 	@command -v go >/dev/null || { echo "go not found — install the version declared by go.mod (https://go.dev/dl/)"; exit 1; }
-	CGO_LDFLAGS="-L$(CURDIR)/core/build-cpu/src -lvmaf -lvmafx -lm" \
-	LD_LIBRARY_PATH="$(CURDIR)/core/build-cpu/src$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}" \
-	go build -o vmafx-ort-runner ./cmd/vmafx-ort-runner
+	$(GO_CGO_ENV) go build -o vmafx-ort-runner ./cmd/vmafx-ort-runner
 
 # setup-envtest: install the kubebuilder envtest control-plane binaries
 #                (etcd + kube-apiserver + kubectl) and print the export line
