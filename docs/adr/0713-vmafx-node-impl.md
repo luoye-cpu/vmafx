@@ -110,6 +110,15 @@ Node-specific `nodeSelector` and `tolerations` override global values.
   `github.com/yalue/onnxruntime_go` is not yet a go.mod dependency (it requires
   a pre-built ORT shared library at link time).
 
+## Status update (2026-11-22)
+
+Q-132 settled on the `vmafx-ort-runner` subprocess as the single ONNX
+integration. The Stage 2 promotion of `InferDirect` is withdrawn, and its
+stub, sentinel error and unit test are removed (issue #2455). `pkg/ai`
+continues to expose inference through `Registry.Infer`; no scoring path
+changes. Adding a direct CGO path later would need its own ADR, because it
+couples the build to `libonnxruntime`.
+
 ## References
 
 - ADR-0709: VMAFX Phase 4b distributed platform.
