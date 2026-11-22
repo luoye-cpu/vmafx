@@ -22,31 +22,14 @@ import (
 	"time"
 
 	"github.com/VMAFx/vmafx/pkg/corpus"
+	"github.com/VMAFx/vmafx/pkg/ffencode"
 )
-
-// defaultEncodeTimeout is the upper bound on a single ffmpeg encode
-// subprocess. A hung ffmpeg (deadlocked encoder, blocked I/O, GPU driver
-// freeze) would otherwise pin the bisect loop forever. Override via
-// VMAFX_TUNE_ENCODE_TIMEOUT (Go duration). 0 or negative disables the
-// timeout.
-const defaultEncodeTimeout = 60 * time.Minute
 
 // defaultProbeTimeout bounds ffprobe invocations. Probing a finite-size
 // container file should take well under a second; a 30-second cap is
 // generous enough to absorb cold-cache stalls without indefinitely
 // stalling a sweep. Override via VMAFX_TUNE_PROBE_TIMEOUT.
 const defaultProbeTimeout = 30 * time.Second
-
-// encodeTimeout returns the per-call ffmpeg-encode timeout, honouring
-// VMAFX_TUNE_ENCODE_TIMEOUT for operator overrides.
-func encodeTimeout() time.Duration {
-	if raw := os.Getenv("VMAFX_TUNE_ENCODE_TIMEOUT"); raw != "" {
-		if d, err := time.ParseDuration(raw); err == nil {
-			return d
-		}
-	}
-	return defaultEncodeTimeout
-}
 
 // probeTimeout returns the per-call ffprobe timeout, honouring
 // VMAFX_TUNE_PROBE_TIMEOUT for operator overrides.
@@ -280,7 +263,7 @@ func runEncodeArgv(
 
 	ctx := context.Background()
 	cancel := func() {}
-	if to := encodeTimeout(); to > 0 {
+	if to := ffencode.EncodeTimeout(); to > 0 {
 		ctx, cancel = context.WithTimeout(ctx, to)
 	}
 	defer cancel()
@@ -311,7 +294,7 @@ func execEncode(
 		// #nosec G204 -- argv[0] is ffmpegBin (operator-configured via
 		// EncodeParams); argv[1:] mixes fixed flags with `src` (validated by
 		// the caller / `pkg/storage` mount path), integer CRF, and the
-		// os.CreateTemp output path. ctx enforces encodeTimeout().
+		// os.CreateTemp output path. ctx enforces ffencode.EncodeTimeout().
 		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 		return cmd.CombinedOutput()
 	}
@@ -407,7 +390,7 @@ func failedEncodeError(
 		params.CRF, codec, runErr, string(stderrBytes))
 	if ctx.Err() == context.DeadlineExceeded {
 		ffErr = fmt.Errorf("ffmpeg encode timed out after %s (crf=%d, codec=%s): %w\n%s",
-			encodeTimeout(), params.CRF, codec, runErr, string(stderrBytes))
+			ffencode.EncodeTimeout(), params.CRF, codec, runErr, string(stderrBytes))
 	}
 	if rmErr := os.Remove(outPath); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 		return errors.Join(ffErr, fmt.Errorf("remove failed-encode temp %q: %w", outPath, rmErr))

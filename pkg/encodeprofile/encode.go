@@ -122,25 +122,6 @@ type EncodeResult struct {
 // _tail(stderr, n=2048).
 const stderrTailBytes = 2048
 
-// defaultEncodeTimeout bounds a single ffmpeg encode. A hung ffmpeg
-// (deadlocked encoder, blocked I/O, GPU driver freeze) would otherwise pin the
-// command forever. It mirrors pkg/encoder's own bound, and its env override,
-// so both encode paths behave the same. Python has no timeout here — that is a
-// deliberate improvement, not a parity gap, and it only changes behaviour in
-// the case where Python would hang indefinitely.
-const defaultEncodeTimeout = 60 * time.Minute
-
-// encodeTimeout returns the per-call ffmpeg timeout, honouring
-// VMAFX_TUNE_ENCODE_TIMEOUT. A non-positive value disables the bound.
-func encodeTimeout() time.Duration {
-	if raw := os.Getenv("VMAFX_TUNE_ENCODE_TIMEOUT"); raw != "" {
-		if d, err := time.ParseDuration(raw); err == nil {
-			return d
-		}
-	}
-	return defaultEncodeTimeout
-}
-
 // ExecRunner is the production Runner: it shells out to the given argv and
 // captures stdout and stderr separately.
 func ExecRunner(argv []string) (RunResult, error) {
@@ -149,14 +130,14 @@ func ExecRunner(argv []string) (RunResult, error) {
 	}
 	ctx := context.Background()
 	cancel := func() {}
-	if to := encodeTimeout(); to > 0 {
+	if to := ffencode.EncodeTimeout(); to > 0 {
 		ctx, cancel = context.WithTimeout(ctx, to)
 	}
 	defer cancel()
 
 	// #nosec G204 -- argv[0] is the operator-supplied ffmpeg binary and the
 	// tail is composed by BuildFFmpegCommand from profile values and CLI
-	// flags. No shell is involved; ctx enforces encodeTimeout().
+	// flags. No shell is involved; ctx enforces ffencode.EncodeTimeout().
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout

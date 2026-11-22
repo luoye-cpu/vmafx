@@ -14,29 +14,31 @@ package encoder
 import (
 	"testing"
 	"time"
+
+	"github.com/VMAFx/vmafx/pkg/ffencode"
 )
 
 func TestEncodeTimeout_DefaultWhenUnset(t *testing.T) {
 	t.Setenv("VMAFX_TUNE_ENCODE_TIMEOUT", "")
-	got := encodeTimeout()
-	if got != defaultEncodeTimeout {
-		t.Errorf("encodeTimeout() = %v, want %v (the default)", got, defaultEncodeTimeout)
+	got := ffencode.EncodeTimeout()
+	if got != ffencode.DefaultEncodeTimeout {
+		t.Errorf("ffencode.EncodeTimeout() = %v, want %v (the default)", got, ffencode.DefaultEncodeTimeout)
 	}
 }
 
 func TestEncodeTimeout_HonoursEnvOverride(t *testing.T) {
 	t.Setenv("VMAFX_TUNE_ENCODE_TIMEOUT", "7s")
-	got := encodeTimeout()
+	got := ffencode.EncodeTimeout()
 	if got != 7*time.Second {
-		t.Errorf("encodeTimeout() = %v, want 7s", got)
+		t.Errorf("ffencode.EncodeTimeout() = %v, want 7s", got)
 	}
 }
 
 func TestEncodeTimeout_InvalidEnvFallsBackToDefault(t *testing.T) {
 	t.Setenv("VMAFX_TUNE_ENCODE_TIMEOUT", "not-a-duration")
-	got := encodeTimeout()
-	if got != defaultEncodeTimeout {
-		t.Errorf("encodeTimeout() with invalid env = %v, want default %v", got, defaultEncodeTimeout)
+	got := ffencode.EncodeTimeout()
+	if got != ffencode.DefaultEncodeTimeout {
+		t.Errorf("ffencode.EncodeTimeout() with invalid env = %v, want default %v", got, ffencode.DefaultEncodeTimeout)
 	}
 }
 
