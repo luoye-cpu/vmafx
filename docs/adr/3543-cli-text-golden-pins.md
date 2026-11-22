@@ -9,7 +9,7 @@
 
 ## Context
 
-The repository gap audit ([issue #3214](https://github.com/VMAFx/vmafx/issues/3214),
+The repository gap audit ([issue #3214](https://github.com/vidiko/vmafx/issues/3214),
 rows C15-01..C15-13, recorded 2026-10-13) found that the text a user actually
 reads — the `vmaf`/`vmafx` help, the `--version` output, the usage blocks of
 the `vmaf_roi`/`vmaf_vpl`/`vmaf-perShot` sidecars, and the option-error and
