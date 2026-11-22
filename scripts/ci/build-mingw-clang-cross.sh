@@ -15,23 +15,23 @@ prefix="${2:-$PWD/install-mingw-clang}"
 stage_dir="${STAGE_DIR:-$PWD/artifact-mingw-clang}"
 
 command -v x86_64-w64-mingw32-clang >/dev/null || {
-    echo "x86_64-w64-mingw32-clang not found; put llvm-mingw/bin on PATH" >&2
-    exit 1
+  echo "x86_64-w64-mingw32-clang not found; put llvm-mingw/bin on PATH" >&2
+  exit 1
 }
 
 meson setup "$build_dir" core \
-    --cross-file build-aux/x86_64-w64-mingw32-clang.ini \
-    --buildtype release \
-    --default-library shared \
-    --prefix "$prefix" \
-    -Db_lto=false \
-    -Denable_tests=false \
-    -Denable_docs=false \
-    -Denable_zimg=false \
-    -Denable_cuda=false \
-    -Denable_sycl=false \
-    -Denable_dnn=disabled \
-    -Denable_asm=false
+  --cross-file build-aux/x86_64-w64-mingw32-clang.ini \
+  --buildtype release \
+  --default-library shared \
+  --prefix "$prefix" \
+  -Db_lto=false \
+  -Denable_tests=false \
+  -Denable_docs=false \
+  -Denable_zimg=false \
+  -Denable_cuda=false \
+  -Denable_sycl=false \
+  -Denable_dnn=disabled \
+  -Denable_asm=false
 
 meson install -C "$build_dir"
 
@@ -39,7 +39,7 @@ meson install -C "$build_dir"
 # llvm-mingw has no libgcc_eh/libgcc/libwinpthread archives in the GCC layout,
 # so only the thunk half of the checker applies here.
 NM="${NM:-x86_64-w64-mingw32-nm}" \
-python3 scripts/ci/check_mingw_import_thunks.py --dll-dir "$build_dir/src" "$build_dir"
+  python3 scripts/ci/check_mingw_import_thunks.py --dll-dir "$build_dir/src" "$build_dir"
 
 staged="${stage_dir}"
 rm -rf "$staged"
@@ -52,11 +52,11 @@ cp "$prefix"/bin/*.exe "$prefix"/bin/*.dll "$staged"/
 toolchain_root="${LLVM_MINGW_ROOT:-$(cd "$(dirname "$(command -v x86_64-w64-mingw32-clang)")/.." && pwd)}"
 runtime_dir="$toolchain_root/x86_64-w64-mingw32/bin"
 for dll in libc++.dll libunwind.dll libwinpthread-1.dll; do
-    if [ ! -f "$runtime_dir/$dll" ]; then
-        echo "$dll not found in $runtime_dir; the staged executable could not start" >&2
-        exit 1
-    fi
-    cp "$runtime_dir/$dll" "$staged/"
+  if [ ! -f "$runtime_dir/$dll" ]; then
+    echo "$dll not found in $runtime_dir; the staged executable could not start" >&2
+    exit 1
+  fi
+  cp "$runtime_dir/$dll" "$staged/"
 done
 
 echo "staged $staged"
