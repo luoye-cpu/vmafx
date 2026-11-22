@@ -11,13 +11,20 @@ installer is involved.
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import hashlib
+import importlib.util
+import inspect
+import io
 import json
 import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,15 +34,28 @@ from scripts.ci import run_affected_suites as runner  # noqa: E402
 from scripts.ci import suite_registry as registry_lib  # noqa: E402
 from scripts.lib import git_env  # noqa: E402
 from scripts.lib import push_head  # noqa: E402
-from scripts.lib.safe_subprocess import TextCommandResult  # noqa: E402
+from scripts.lib.safe_subprocess import CommandTimedOut, TextCommandResult  # noqa: E402
 from scripts.lib.safe_subprocess import run as run_command  # noqa: E402
 
 SCRIPT = ROOT / "scripts" / "ci" / "run_affected_suites.py"
 GIT = shutil.which("git")
 TIMEOUT_SECONDS = 300
+MAX_LINE_LENGTH = 100
 LOCK = "pkg/requirements-dev-lock.txt"
 ROCM_SCRIPT = "scripts/ci/" + "install-rocm-" + "from-image.sh"
 ROCM_NAME = Path(ROCM_SCRIPT).name
+
+
+def _python_complexity(target: Callable[..., object]) -> int:
+    """Count repository Python cyclomatic complexity over a function's AST."""
+    branch_nodes = (ast.If, ast.For, ast.AsyncFor, ast.While, ast.IfExp, ast.ExceptHandler)
+    score = 1
+    for node in ast.walk(ast.parse(inspect.getsource(target))):
+        if isinstance(node, branch_nodes):
+            score += 1
+        elif isinstance(node, ast.BoolOp):
+            score += len(node.values) - 1
+    return score
 
 
 def manifest() -> dict[str, object]:
@@ -473,6 +493,158 @@ class VenvLockTests(unittest.TestCase):
                 pass
 
 
+class LoadCapTests(unittest.TestCase):
+    def test_idle_and_clamped_cap(self) -> None:
+        self.assertEqual(runner.scaled_time_cap(900, 0, 0, 16), 900)
+        self.assertEqual(runner.scaled_time_cap(900, 1000, 0, 16), 3600)
+
+    def test_unavailable_load_and_cpu_fallback(self) -> None:
+        with patch.object(os, "getloadavg", side_effect=OSError, create=True):
+            cap, description = runner._cap_description("pkg", 900)
+        self.assertEqual(cap, 900)
+        self.assertIn("load unavailable", description)
+        with patch.object(os, "getloadavg", return_value=(1.0, 2.0, 3.0), create=True):
+            with patch.object(os, "process_cpu_count", return_value=None, create=True):
+                with patch.object(os, "cpu_count", return_value=8):
+                    self.assertEqual(runner.read_host_load(), (1.0, 2.0, 8))
+
+    def test_suite_timeout_overrides_default(self) -> None:
+        suite = registry_lib.Suite("s", ("t/",), ("c",), pytest_timeout=7)
+        with patch.object(runner, "_run", return_value=TextCommandResult((), 0, "", "")):
+            timeout = runner._suite_timeout(Path(), suite, "python", {}, 3)
+        argv = runner._pytest_argv(
+            "python",
+            suite,
+            Path("results.xml"),
+            ["t/test_x.py"],
+            timeout,
+            {},
+        )
+        self.assertIn("--timeout=7", argv)
+        self.assertNotIn("--timeout=3", argv)
+
+    def test_scaled_cap_guards_zero_cpus(self) -> None:
+        zero_cpu_cap = runner.scaled_time_cap(900, 8, 8, 0)
+        self.assertEqual(zero_cpu_cap, runner.scaled_time_cap(900, 8, 8, 1))
+        self.assertLessEqual(zero_cpu_cap, 4 * 900)
+
+    def test_missing_getloadavg_reports_unavailable(self) -> None:
+        with patch.object(os, "getloadavg", side_effect=AttributeError, create=True):
+            self.assertIsNone(runner.read_host_load())
+            cap, description = runner._cap_description("pkg", 900)
+        self.assertEqual(cap, 900)
+        self.assertIn("load unavailable", description)
+
+    def test_process_cpu_count_wins_over_cpu_count(self) -> None:
+        with (
+            patch.object(os, "getloadavg", return_value=(1.0, 2.0, 3.0), create=True),
+            patch.object(os, "process_cpu_count", return_value=3, create=True),
+            patch.object(os, "cpu_count", return_value=64),
+        ):
+            self.assertEqual(runner.read_host_load(), (1.0, 2.0, 3))
+
+    def test_import_probe_timeout_raises_runner_error(self) -> None:
+        suite = registry_lib.Suite("pkg", ("t/",), ("c",))
+
+        def probe_timeout(
+            argv: Sequence[str], _root: Path, timeout: float, _env: dict[str, str] | None = None
+        ) -> TextCommandResult:
+            if "import pytest_timeout" in argv:
+                raise CommandTimedOut(tuple(argv), timeout, "", "")
+            raise AssertionError(f"unexpected command: {argv}")
+
+        with (
+            patch.object(runner, "_run", side_effect=probe_timeout),
+            self.assertRaisesRegex(runner.RunnerError, "pytest-timeout import check timed out"),
+        ):
+            runner._suite_timeout(Path(), suite, "python", {}, 3)
+
+
+class TimeoutArgvTests(unittest.TestCase):
+    def suite(self, method: str = "signal") -> registry_lib.Suite:
+        return registry_lib.Suite("pkg", ("t/",), ("c",), pytest_timeout_method=method)
+
+    def test_disabled_autoload_registers_timeout_plugin(self) -> None:
+        args = runner._timeout_args(self.suite(), 2.0, {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"})
+        idx_p = args.index("-p")
+        self.assertEqual(args[idx_p + 1], "pytest_timeout")
+        self.assertLess(idx_p, args.index("--timeout=2"))
+
+    def test_enabled_autoload_adds_no_plugin_flag(self) -> None:
+        for env in ({}, {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": ""}):
+            args = runner._timeout_args(self.suite(), 2.0, env)
+            self.assertNotIn("-p", args)
+            self.assertNotIn("pytest_timeout", args)
+
+    def test_no_timeout_gives_no_timeout_args(self) -> None:
+        args = runner._timeout_args(self.suite(), None, {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"})
+        self.assertEqual(args, [])
+
+    def test_signal_method_falls_back_to_thread_without_sigalrm(self) -> None:
+        with patch.object(runner, "_has_sigalrm", return_value=False):
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                args = runner._timeout_args(self.suite("signal"), 2.0, {})
+        self.assertIn("--timeout-method=thread", args)
+        self.assertIn("per-test timeout method thread (signal.SIGALRM unavailable)", out.getvalue())
+        with patch.object(runner, "_has_sigalrm", return_value=True):
+            args = runner._timeout_args(self.suite("signal"), 2.0, {})
+        self.assertIn("--timeout-method=signal", args)
+        for has_sigalrm in (True, False):
+            with patch.object(runner, "_has_sigalrm", return_value=has_sigalrm):
+                args = runner._timeout_args(self.suite("thread"), 2.0, {})
+            self.assertIn("--timeout-method=thread", args)
+
+
+class MissingResultsTests(unittest.TestCase):
+    def test_thread_timeout_banner_names_per_test_timeout(self) -> None:
+        stdout = "x\n" + "+" * 30 + " Timeout " + "+" * 31 + "\n"
+        proc = TextCommandResult((), 1, stdout, "")
+        self.assertEqual(
+            runner._missing_results_details(proc, 2),
+            [
+                "per-test timeout (2 s) exceeded",
+                "pytest wrote no results (exit 1):",
+                stdout,
+            ],
+        )
+
+    def test_missing_timeout_or_plain_output_keeps_missing_results_only(self) -> None:
+        banner = "x\n" + "+" * 30 + " Timeout " + "+" * 31 + "\n"
+        plain = "collected 1 item\n"
+        for stdout, timeout in ((banner, None), (plain, 2)):
+            with self.subTest(stdout=stdout, timeout=timeout):
+                proc = TextCommandResult((), 1, stdout, "")
+                self.assertEqual(
+                    runner._missing_results_details(proc, timeout),
+                    ["pytest wrote no results (exit 1):", stdout],
+                )
+
+    def test_thread_timeout_separator_boundaries(self) -> None:
+        for stdout in ("Timeout (>2.0s) from pytest-timeout.", "x + Timeout + y"):
+            with self.subTest(stdout=stdout):
+                proc = TextCommandResult((), 1, stdout, "")
+                self.assertEqual(
+                    runner._missing_results_details(proc, 2),
+                    ["pytest wrote no results (exit 1):", stdout],
+                )
+        for stdout in (
+            "+ Timeout +",
+            "a\n+ Timeout +\nb",
+            "+ Timeout +\r",
+            "a\r\n+ Timeout +\r\nb",
+        ):
+            with self.subTest(stdout=stdout):
+                proc = TextCommandResult((), 1, stdout, "")
+                self.assertEqual(
+                    runner._missing_results_details(proc, 2),
+                    [
+                        "per-test timeout (2 s) exceeded",
+                        "pytest wrote no results (exit 1):",
+                        stdout,
+                    ],
+                )
+
+
 class SkipPolicyTests(unittest.TestCase):
     def suite(self, fail_on_skip: str | None) -> registry_lib.Suite:
         return registry_lib.Suite("s", ("t/",), ("c",), fail_on_skip=fail_on_skip)
@@ -490,6 +662,45 @@ class SkipPolicyTests(unittest.TestCase):
     def test_an_unrelated_skip_is_not_a_violation(self) -> None:
         """A skip unrelated to packages or declared inputs is no violation."""
         self.assertEqual(runner.skip_violations(self.suite(None), [("t::a", "needs a GPU")]), [])
+
+
+class ParseArgsTests(unittest.TestCase):
+    def test_non_positive_and_non_finite_caps_are_refused(self) -> None:
+        flags = ("--time-cap", "--per-test-timeout", "--install-cap")
+        for flag in flags:
+            for bad in ("0", "-1", "nan", "inf"):
+                with self.subTest(flag=flag, value=bad):
+                    stderr = io.StringIO()
+                    with (
+                        contextlib.redirect_stderr(stderr),
+                        self.assertRaises(SystemExit) as caught,
+                    ):
+                        runner.parse_args(["--files", "x", flag, bad])
+                    self.assertEqual(caught.exception.code, 2)
+                    self.assertIn("time caps must be positive", stderr.getvalue())
+            parsed = runner.parse_args(["--files", "x", flag, "1"])
+            self.assertEqual(getattr(parsed, flag[2:].replace("-", "_")), 1.0)
+
+    def test_run_pytest_and_helpers_complexity(self) -> None:
+        targets = (
+            runner.run_pytest,
+            runner.parse_args,
+            runner._suite_cap,
+            runner._failure_details,
+            runner._missing_results_details,
+            runner._positive_finite,
+        )
+        for target in targets:
+            with self.subTest(function=target.__name__):
+                self.assertLessEqual(_python_complexity(target), 10)
+
+    def test_no_runner_line_past_100_columns(self) -> None:
+        overlong = [
+            f"{lineno}:{len(line)}"
+            for lineno, line in enumerate(SCRIPT.read_text(encoding="utf-8").splitlines(), start=1)
+            if len(line) > MAX_LINE_LENGTH
+        ]
+        self.assertEqual(overlong, [])
 
 
 @unittest.skipIf(GIT is None, "git is required to build the fixture repositories")
@@ -612,6 +823,133 @@ class RunTests(unittest.TestCase):
         result = self.run_script("--time-cap", "2", "--files", "pkg/tests/test_slow.py")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("time cap", result.stderr)
+
+    def test_load_scaled_slow_suite_passes(self) -> None:
+        self.build({"pkg/tests/test_slow.py": "import time\ndef test_slow():\n    time.sleep(3)\n"})
+        output = io.StringIO()
+        with patch.object(runner, "read_host_load", return_value=(32.0, 32.0, 16), create=True):
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                status = runner.main(
+                    [
+                        "--root",
+                        str(self.repo),
+                        "--python-exe",
+                        sys.executable,
+                        "--time-cap",
+                        "2",
+                        "--files",
+                        "pkg/tests/test_slow.py",
+                    ]
+                )
+        self.assertEqual(status, 0, output.getvalue())
+        self.assertIn("time cap 6 s", output.getvalue())
+
+    def test_per_test_timeout_stops_hang(self) -> None:
+        spec = importlib.util.find_spec("pytest_timeout")
+        self.assertIsNotNone(spec, "pytest-timeout is required for this test")
+        self.build(
+            {
+                "pkg/tests/test_hang.py": "import time\ndef test_hang():\n    time.sleep(600)\n",
+            }
+        )
+        started = time.monotonic()
+        result = self.run_script(
+            "--per-test-timeout", "2", "--time-cap", "120", "--files", "pkg/tests/test_hang.py"
+        )
+        self.assertLess(time.monotonic() - started, 60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("per-test timeout (2 s)", result.stderr)
+
+    def test_thread_method_timeout_is_named(self) -> None:
+        spec = importlib.util.find_spec("pytest_timeout")
+        self.assertIsNotNone(spec, "pytest-timeout is required for this test")
+        data = manifest()
+        suites = data["suites"]
+        assert isinstance(suites, list)
+        for entry in suites:
+            if isinstance(entry, dict) and entry.get("name") == "pkg":
+                entry["pytest"] = {"method": "thread"}
+        self.build(
+            {
+                ".github/test-suites.json": json.dumps(data),
+                "pkg/tests/test_hang.py": "import time\ndef test_hang():\n    time.sleep(600)\n",
+            }
+        )
+        started = time.monotonic()
+        result = self.run_script(
+            "--per-test-timeout", "2", "--time-cap", "120", "--files", "pkg/tests/test_hang.py"
+        )
+        self.assertLess(time.monotonic() - started, 60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("per-test timeout (2 s) exceeded", result.stderr)
+        self.assertIn("pytest wrote no results", result.stderr)
+
+    def test_per_test_timeout_stops_hang_with_autoload_disabled(self) -> None:
+        spec = importlib.util.find_spec("pytest_timeout")
+        self.assertIsNotNone(spec, "pytest-timeout is required for this test")
+        self.build(
+            {
+                "pkg/tests/test_hang.py": "import time\ndef test_hang():\n    time.sleep(600)\n",
+            }
+        )
+        self.env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+        try:
+            started = time.monotonic()
+            result = self.run_script(
+                "--per-test-timeout", "2", "--time-cap", "120", "--files", "pkg/tests/test_hang.py"
+            )
+        finally:
+            self.env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
+        self.assertLess(time.monotonic() - started, 60)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("per-test timeout (2 s)", result.stderr)
+
+    def test_plain_failure_does_not_name_per_test_timeout(self) -> None:
+        spec = importlib.util.find_spec("pytest_timeout")
+        self.assertIsNotNone(spec, "pytest-timeout is required for this test")
+        self.build({"pkg/tests/test_plain.py": "def test_plain():\n    assert False\n"})
+        result = self.run_script(
+            "--per-test-timeout", "2", "--time-cap", "120", "--files", "pkg/tests/test_plain.py"
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAILED pkg.tests.test_plain::test_plain", result.stderr)
+        self.assertNotIn("per-test timeout (", result.stdout + result.stderr)
+
+    def test_missing_timeout_plugin_is_reported(self) -> None:
+        self.build({"pkg/tests/test_ok.py": "def test_ok():\n    assert True\n"})
+        original = runner._run
+        with patch.object(runner, "_run", wraps=original) as run:
+
+            def no_plugin(
+                argv: Sequence[str], root: Path, timeout: float, env: dict[str, str] | None = None
+            ) -> TextCommandResult:
+                if "import pytest_timeout" in argv:
+                    return TextCommandResult(tuple(argv), 1, "", "")
+                return original(argv, root, timeout, env)
+
+            run.side_effect = no_plugin
+            output = io.StringIO()
+            with patch.object(runner, "read_host_load", return_value=(32.0, 32.0, 16)):
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                    status = runner.main(
+                        [
+                            "--root",
+                            str(self.repo),
+                            "--python-exe",
+                            sys.executable,
+                            "--files",
+                            "pkg/tests/test_ok.py",
+                        ]
+                    )
+        self.assertEqual(status, 0, output.getvalue())
+        self.assertIn(
+            "pkg: runs without a per-test timeout because pytest-timeout is not installed there",
+            output.getvalue(),
+        )
+        self.assertIn(
+            "pkg: time cap 900 s (base, not load-scaled: no per-test timeout)",
+            output.getvalue(),
+        )
 
     def test_suite_that_cannot_run_locally_is_reported_not_passed(self) -> None:
         """Expose unavailable local coverage and enforce strict skip policy."""

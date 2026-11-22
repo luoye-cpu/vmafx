@@ -1565,3 +1565,7 @@ public authority; documentation never links into either local root.
 | [ADR-3555](3555-intel-neo-lock-file.md) | Pin Intel NEO and Level Zero release `.deb` URLs and SHA-256 digests in `dev/scripts/intel-neo-lock.json` so container and CI installs make zero `api.github.com` calls and `release-dry-run.yml` stays credential-free (ADR-1595), with `--write-lock` refresh on `renovate/**` pushes and version-drift enforcement in `check-workflow-versions.py`; amends ADR-1145 and ADR-1368 | Accepted | ci, build, docker, release, supply-chain, sycl, intel, renovate |
 | [ADR-3561](3561-ort-nuget.md) | Pin CI ORT NuGet | Accepted | ci, ai, supply-chain |
 | [ADR-3567](3567-windows-sycl-oneapi-2026-2.md) | Pin Windows SYCL CI to oneAPI 2026.2 | Accepted | ci, windows, sycl, build |
+| [ADR-3560](3560-python-lock-refresh.md) | Refresh Python dependency locks on dependency-update branches | Accepted | ci, python, supply-chain |
+| [ADR-3568](3568-windows-sycl-tester-zip-oneapi-2026-2.md) | Share oneAPI 2026.2 across Windows SYCL CI and the tester zip | Accepted | ci, windows, sycl, build |
+| [ADR-3609](3609-keep-apt-cache-sweep.md) | Keep the apt archive cache script | Accepted | ci, supply-chain |
+| [ADR-3559](3559-upstream-push-gate.md) | Require offline upstream pre-push checks and recorded self-review, sharing the sweep Git runner and attribution policy | Accepted | upstream, process, tooling, testing |
