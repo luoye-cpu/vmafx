@@ -110,7 +110,7 @@ Node-specific `nodeSelector` and `tolerations` override global values.
   `github.com/yalue/onnxruntime_go` is not yet a go.mod dependency (it requires
   a pre-built ORT shared library at link time).
 
-## Status update (2026-11-22)
+## Status update 2026-11-22
 
 Q-132 settled on the `vmafx-ort-runner` subprocess as the single ONNX
 integration. The Stage 2 promotion of `InferDirect` is withdrawn, and its
