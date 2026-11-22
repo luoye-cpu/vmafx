@@ -499,6 +499,66 @@ commit ever gets a complete verdict ([ADR-1673](../adr/1673-master-runs-not-canc
   added to that list with a reason. Run the check with
   `python3 -B -m unittest scripts/ci/tests/test_master_concurrency_contract.py`.
 
+## Merge queue
+
+Every required-check workflow owed on `merge_group` listens for `merge_group`
+(`types: [checks_requested]`, `branches: [master]`). The queue itself is
+switched on by the master ruleset `merge_queue` rule
+([ADR-3556](../adr/3556-merge-queue-merge-group.md)). Once that rule is on,
+each queue entry runs these workflows on a synthetic
+`refs/heads/gh-readonly-queue/master/...` ref. Before it is on, nothing changes
+for pull requests.
+
+Queue admission accepts only pull requests whose head branch lives in
+`vidiko/vmafx`. Adding a pull request to the queue requires write access to the
+repository. Maintainers pin
+the reviewed head when enqueueing with
+`gh pr merge <number> --match-head-commit <sha>` or with `expectedHeadOid` on
+the GraphQL `enqueuePullRequest` mutation. `scripts/dev/merge_train_guard.py`
+refuses cross-repository pull requests, and maintainers enqueueing by hand
+apply the same rule. The `test_guard_refuses_cross_repository_prs` regression
+test in `scripts/dev/tests/test_merge_train_guard.py` covers this refusal. A
+fork contribution enters only after its reviewed change sits on an
+in-repository branch. Semgrep and CodeQL jobs retain `security-events: write`
+on `merge_group` under this rule. Semgrep scans the checkout in its pinned
+image without executing code from the change, so the same admission rule
+covers it. The merge group head includes queued diffs that can rewrite
+workflow conditions, permissions, guards and scripts, so in-file permission
+scoping is not the enforcement point. The provenance guard before hardware
+probes and hosted ARC routing provide a second barrier against an enqueue
+mistake. Workflow-token access to `mergeQueue` remains unproven until the first
+live merge group; lookup failures fail closed.
+
+- The workflow contract refuses jobs on `merge_group` that read a secret other
+  than `GITHUB_TOKEN` or run self-hosted without an exclusion or the provenance
+  guard in `.github/actions/runner-probe/action.yml`.
+- Every `merge_group` run executes tier `full` (`scripts/ci/ci_tier.py`) and
+  the full impact plan (`scripts/ci/plan-ci-impact.py` emits
+  `event-not-routed:merge_group`).
+- `Required Checks Aggregator` exempts `pullRequestOnly` contexts plus both
+  OpenSSF Scorecard gates on `merge_group`: `Scorecard PR Gate` requires a
+  pull-request payload and already ran on the pull request, while `Scorecard
+  Master Gate` (`mergeGroupExempt`) publishes default-branch Scorecard results
+  and runs on the `master` push after the merge lands.
+- Publish, deploy, registry-push, release-signing, repository-write, and Pages
+  steps keep their existing triggers and never run on `merge_group`.
+- Jobs a pull request skips for runner cost (the three tester GPU image builds
+  in `docker-publish-tester.yml` `build-gpu`) skip a merge group too and run on
+  the `master` push after the merge only when that push selects `tester_image`
+  (`own_paths_only` in `.github/ci-impact.json`). The workflow `validate` job
+  requires `impact.outputs.selected`, and `build-gpu` requires `validate`. When
+  the changed paths of the push are known, a merge limited to other paths, such
+  as `core/`, builds no tester GPU image; when the planner cannot read them, the
+  selector stays set and the images are built.
+  `scripts/ci/tests/test_merge_group_workflow_contract.py` refuses a guard that
+  skips `pull_request` without also skipping `merge_group`. It also refuses a
+  `docker-publish-tester.yml` where `build-gpu` drops `validate` from `needs`
+  or `validate` drops `needs.impact.outputs.selected` from `if`.
+- Check the aggregator `merge_group` cases and workflow trigger contract
+  locally with
+  `python3 -m pytest -q scripts/ci/tests/test_aggregator_event_scope.py` and
+  `python3 -m pytest -q scripts/ci/tests/test_merge_group_workflow_contract.py`.
+
 ## Required-checks aggregator
 
 The single required check on `master` branch protection is the **Required
@@ -572,13 +632,16 @@ absent or skipped, never failed: the names the run's CI tier does not owe, the
 operator switch is off. `scripts/ci/tests/test_aggregator_absent_fails.py`
 runs the embedded script against both rules.
 
-The aggregator's GitHub API calls (`getWorkflowRun`, `listEventsForTimeline`,
-`listAllCheckRuns`, `pullRequestSuites`) retry HTTP 5xx answers for 15 minutes.
-If the API still answers 5xx, the job fails with `Transient GitHub API failure:`,
-the call and the status, and judges no check: rerun the job, because the code
-did not fail.
-Any other API error ends the job at once.
-`scripts/ci/tests/test_ci_aggregator_tier.py` runs both paths against a stub.
+The aggregator's GitHub API calls retry HTTP 5xx answers for 15 minutes; an
+exhausted retry fails as `Transient GitHub API failure:` and judges no check.
+Rate-limit responses wait for `retry-after`, the reset time, or exponential
+backoff, with at most six waits per call and 90 minutes across the script. An
+exhausted limit fails as `GitHub API rate limit:` and asks for a rerun without
+judging checks. Other API errors end the job immediately. Polling starts at 30
+seconds, doubles when the judged checks are unchanged up to 240 seconds, and
+resets to 30 seconds on change. `scripts/ci/tests/test_ci_aggregator_tier.py`
+exercises 5xx handling; `scripts/ci/tests/test_aggregator_rate_limit.py` covers
+rate limits and polling.
 
 ### Release legs
 
@@ -1262,6 +1325,7 @@ need to fail fast. The ROCm layer download in
 `scripts/ci/install-rocm-from-image.sh` retries the whole curl, decompressor and
 tar pipeline up to `LAYER_ATTEMPTS` times; inner curl retries would append to the
 pipe, so this streaming fetch is exempt from both inner retries and file output.
+Each layer attempt obtains a fresh registry pull token before downloading.
 
 Older curl stages use a bounded shell loop around the fetch plus an exact
 `ALLOWLIST` exemption instead of `--retry-all-errors`. In `dev/Containerfile`,
