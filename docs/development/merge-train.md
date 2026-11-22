@@ -95,8 +95,9 @@ python3 scripts/dev/merge_train_guard.py queue-audit \
   (never `--auto`).
 - `queue-audit` takes no PR number, refuses `--apply` (exit `1`), and queries
   `mergeQueue(branch: "master")` on `vidiko/vmafx` via `gh api graphql`. In-repository
-  queue entries are skipped. Each cross-repository entry must keep `headCommit.oid ==
-  headRefOid` and satisfy the same `fork_reviewers` approval rule on `headRefOid`. When
+  queue entries are skipped. Each cross-repository entry must satisfy the same
+  `fork_reviewers` approval rule on its live `headRefOid`; the entry `headCommit` is the
+  squash commit GitHub builds, never the pull request head, so it is not compared. When
   clean, it prints `queue audit: 0 problems` and exits `0`; when any cross-repository
   entry fails, it prints one problem per line and exits `1`, and the operator removes the
   failing entry from the merge queue immediately.

@@ -8,9 +8,9 @@
 
 ## Context
 
-[ADR-3556](3556-merge-queue-merge-group.md) wired `Required Checks Aggregator` and its feeding workflows onto `merge_group` for the `master` merge queue while restricting queue admission to pull requests whose head branch lives in `vidiko/vmafx`. Under that interim rule, `Train.guard` in `scripts/dev/merge_train_guard.py` refused every cross-repository pull request (`merge_train_guard.py:196`), so a fork contribution could enter the queue only if a maintainer re-pushed it onto an in-repository branch or held it outside the queue.
+[ADR-3556](3556-merge-queue-merge-group.md) wired `Required Checks Aggregator` and its feeding workflows onto `merge_group` for the `master` merge queue while restricting queue admission to pull requests whose head branch lives in `vidiko/vmafx`. Under that interim rule, `Train.guard` in `scripts/dev/merge_train_guard.py` refused every cross-repository pull request (`cross-repository PRs require an explicit owner`), so a fork contribution could enter the queue only if a maintainer re-pushed it onto an in-repository branch or held it outside the queue.
 
-Direct queue admission for a fork pull request is safe only when the queued commit is pinned to the exact SHA a listed maintainer reviewed and approved, with `CLEAN` merge state, passing required checks, and a valid squash commit message, and when no pending auto-merge request can enqueue a later unreviewed push on that pull request.
+Direct queue admission for a fork pull request is safe only when the enqueue is pinned to the exact head SHA a listed maintainer reviewed and approved, with `CLEAN` merge state, passing required checks, and a valid squash commit message, and when no pending auto-merge request can enqueue a later unreviewed push on that pull request.
 
 ## Decision
 
@@ -21,7 +21,7 @@ Admit fork pull requests directly to the `master` merge queue only at the exact 
 - Keep `PAUSED`, `hold.txt`, and the release pull request (#1213) holds in force on `admit-fork`.
 - Keep `Train.guard` and every merge-train action (`inspect`, `cycle`, `promote`, `rebase`, `arm`, `merge`) refusing cross-repository pull requests (`cross-repository PRs require an explicit owner`); `admit-fork` is read-only, refuses `--apply`, never calls `gh pr merge`, never pushes, and never writes state.
 - Declare eligible maintainer GitHub logins in `policy.json` under `fork_reviewers`. Among decisive reviews (`APPROVED`, `CHANGES_REQUESTED`, `DISMISSED`; `COMMENTED` and `PENDING` are ignored), take the latest review by `submittedAt` for each login in `fork_reviewers`: at least one must be `APPROVED` with `commit.oid == <sha>`, and none may be `CHANGES_REQUESTED`. Dismissed approvals and approvals from logins outside `fork_reviewers` never count.
-- Run `python3 scripts/dev/merge_train_guard.py queue-audit --state-dir <dir>` after enqueueing to re-check every cross-repository entry in `mergeQueue(branch: "master")` against its live `headRefOid` and the `fork_reviewers` approval rule; the operator removes any failing entry from the queue at once.
+- Run `python3 scripts/dev/merge_train_guard.py queue-audit --state-dir <dir>` after enqueueing to re-check every cross-repository entry in `mergeQueue(branch: "master")` against its live `headRefOid` and the `fork_reviewers` approval rule (the entry `headCommit` is the squash commit GitHub builds, never the pull request head, so it is not compared); the operator removes any failing entry from the queue at once.
 
 ## Alternatives considered
 
@@ -29,7 +29,7 @@ Admit fork pull requests directly to the `master` merge queue only at the exact 
 | --- | --- | --- | --- |
 | Option a: admit fork pull requests at the reviewed head after `merge_train_guard.py admit-fork` returns `0`, enqueue with `--match-head-commit` and no auto-merge, and re-check with `queue-audit` | Preserves contributor pull requests, attribution, and review threads; binds admission to a maintainer-approved commit SHA, `CLEAN` merge state, green required checks, and squash message validation | Requires explicit operator enqueue without `--auto` plus post-enqueue `queue-audit` | Chosen; admits fork pull requests directly while keeping exact-head review binding and existing `merge_group` barriers |
 | Option b: maintainers re-push fork changes to an in-repository branch or open replacement pull requests | Keeps every `merge_group` ref restricted to in-repository branches | Closes or supersedes contributor work, splits review history, and adds manual branch duplication | Rejected: closes or supersedes contributor work |
-| Option c: hold every fork pull request outside the merge queue | Requires zero gateway or documentation changes | Blocks external contributors indefinitely once `master` requires the merge queue | Rejected as a standing rule; it was the interim until this change landed |
+| Option c: hold every fork pull request outside the merge queue | Needs no guard, policy or documentation change | Blocks external contributors indefinitely once `master` requires the merge queue | Rejected as a standing rule; it was the interim until this change landed |
 
 ## Consequences
 

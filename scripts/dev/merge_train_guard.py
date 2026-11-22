@@ -563,13 +563,10 @@ class Train:
         reviewers: list[str] = policy.get("fork_reviewers", [])
         problems: list[str] = []
         for entry in self.queue_entries():
-            number, cross, queued_oid, pr_head = _parse_queue_entry(entry)
+            # headCommit is the squash commit GitHub builds for the entry, never the pull
+            # request head, so the live head and its approval decide alone.
+            number, cross, _queued_oid, pr_head = _parse_queue_entry(entry)
             if not cross:
-                continue
-            if queued_oid != pr_head:
-                problems.append(
-                    f"PR #{number}: queued commit {queued_oid} differs from live head {pr_head}"
-                )
                 continue
             approved, reason = _select_fork_approval(self.reviews(number), pr_head, reviewers)
             if approved is None:

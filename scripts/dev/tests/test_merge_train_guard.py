@@ -873,14 +873,15 @@ class TrainContract(unittest.TestCase):
             "headCommit": {"oid": "e" * 40},
             "pullRequest": {"number": 1400, "isCrossRepository": False, "headRefOid": "f" * 40},
         }
+        group_commit = "c" * 40
         valid_fork_entry = {
             "state": "QUEUED",
-            "headCommit": {"oid": self.head},
+            "headCommit": {"oid": group_commit},
             "pullRequest": {"number": 1421, "isCrossRepository": True, "headRefOid": self.head},
         }
         moved_fork_entry = {
             "state": "QUEUED",
-            "headCommit": {"oid": self.head},
+            "headCommit": {"oid": group_commit},
             "pullRequest": {"number": 1421, "isCrossRepository": True, "headRefOid": moved},
         }
         self.train.queue = [same_repo_entry, valid_fork_entry]
@@ -893,6 +894,7 @@ class TrainContract(unittest.TestCase):
             self.train.queue = [same_repo_entry, moved_fork_entry]
             problems = self.train.audit_queue()
             self.assertEqual(len(problems), 1)
+            self.assertIn(f"on head {moved}", problems[0])
             problem_out = io.StringIO()
             with redirect_stdout(problem_out):
                 self.assertEqual(guard.main(["queue-audit", "--state-dir", str(self.state)]), 1)
