@@ -55,7 +55,7 @@ Replace `1.30.0` with the version to measure.
   ONNX Runtime release sources, direct NuGet downloads, and helper version
   pins within the static scope below.
 
-## Status update (2026-11-20)
+## Status update 2026-11-22
 
 ### Guard scope and limits
 
