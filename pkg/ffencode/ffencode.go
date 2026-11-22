@@ -36,8 +36,9 @@ import (
 
 // DefaultEncodeTimeout bounds a single ffmpeg encode subprocess. Override via
 // VMAFX_TUNE_ENCODE_TIMEOUT (a Go duration); 0 or negative disables it.
-// Mirrors pkg/encoder's posture so both drivers behave alike under a wedged
-// encoder or a blocked GPU driver.
+// pkg/encoder and pkg/encodeprofile call EncodeTimeout() directly, so all
+// three encode drivers share this bound under a wedged encoder or a blocked
+// GPU driver.
 const DefaultEncodeTimeout = 60 * time.Minute
 
 // EncodeTimeout returns the per-call ffmpeg timeout honouring the operator
