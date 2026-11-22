@@ -6,19 +6,20 @@
 ``run_required_aggregator`` runs the real Actions JavaScript with one selected check
 result or absence. Its keyword inputs:
 
-``event`` is the triggering event the script sees (``pull_request`` or ``push``;
-a push is to ``master``) and ``action`` its ``pull_request`` action (``edited``
-arms the ready-for-review window anchor and stale edited-rerun suite exclusion).
-Every synthetic required check defaults to check suite 1, overridden per check by
-``suite_by_check`` and on the selected check by ``selected_suite``. ``workflow_runs``
-are the workflow runs on the commit (``path``, ``event``, ``head_branch``,
-``check_suite_id``, optional ``display_title``, optional ``status`` and ``conclusion``,
-and ``created_at`` or ``created_at_offset_s``); runs of ``editedRerunWorkflows`` without
-``display_title`` stay stale-safe, multiple runs sharing the current edit-stamp prefix
-fail closed as ambiguous regardless of status, while omitting ``workflow_runs`` on an
-``edited`` pull request gives each workflow in ``editedRerunWorkflows`` a single current
-synthetic run in suite 1 matching ``pr_updated_at`` so non-suite tests keep their
-baseline.
+``event`` is the triggering event the script sees (``pull_request``, ``merge_group``,
+or ``push``; ``ref`` overrides ``context.ref`` when set, defaulting to
+``refs/pull/1/merge`` on ``pull_request`` and ``refs/heads/master`` otherwise) and
+``action`` its ``pull_request`` action (``edited`` arms the ready-for-review window
+anchor and stale edited-rerun suite exclusion). Every synthetic required check
+defaults to check suite 1, overridden per check by ``suite_by_check`` and on the
+selected check by ``selected_suite``. ``workflow_runs`` are the workflow runs on the
+commit (``path``, ``event``, ``head_branch``, ``check_suite_id``, optional
+``display_title``, optional ``status`` and ``conclusion``, and ``created_at`` or
+``created_at_offset_s``); runs of ``editedRerunWorkflows`` without ``display_title``
+stay stale-safe, multiple runs sharing the current edit-stamp prefix fail closed as
+ambiguous regardless of status, while omitting ``workflow_runs`` on an ``edited`` pull
+request gives each workflow in ``editedRerunWorkflows`` a single current synthetic run
+in suite 1 matching ``pr_updated_at`` so non-suite tests keep their baseline.
 ``later_workflow_runs`` replace ``workflow_runs`` from the second workflow-run
 listing on. ``head_ref`` is the pull request's head branch (a ``release-please--``
 ref arms the release must-report list). ``absent_checks`` omits named required
@@ -430,6 +431,7 @@ def run_required_aggregator(
     *,
     env: Mapping[str, str] | None = None,
     event: str = "pull_request",
+    ref: str | None = None,
     action: str | None = None,
     pr_number: int | None = 1,
     pr_created_at: str | None = None,
@@ -461,13 +463,45 @@ def run_required_aggregator(
     offsets = (default_started_offset_s, started_offsets_s, created_offsets_s)
     checks = _prepare_checks(script, target, absent_checks, extra_checks, offsets)
     runs = _resolve_workflow_runs(script, event, action, pr_updated_at, workflow_runs)
-    driver_input: dict[str, object] = {
+    ctx = (env or {}, event, ref, action, run_created_at)
+    pr = (pr_number, pr_created_at, pr_created_offset_s, pr_updated_at, head_ref)
+    history = (timeline_events, later_workflow_runs, later_checks)
+    faults = (controls or SimulationControls(), api_errors, api_always, api_error_detail)
+    driver_input = _build_driver_input(script, checks, runs, ctx, pr, history, faults)
+    return _run_driver(driver_input, info_logs, sleeps)
+
+
+def _build_driver_input(
+    script: str,
+    checks: list[dict[str, object]],
+    runs: list[dict[str, object]],
+    ctx: tuple[Mapping[str, str], str, str | None, str | None, str | None],
+    pr: tuple[int | None, str | None, float | None, str | None, str],
+    history: tuple[
+        Sequence[Mapping[str, object]],
+        Sequence[Mapping[str, object]],
+        Sequence[Mapping[str, object]],
+    ],
+    faults: tuple[
+        SimulationControls,
+        Mapping[str, Sequence[int]] | None,
+        Mapping[str, int] | None,
+        Mapping[str, Mapping[str, object]] | None,
+    ],
+) -> dict[str, object]:
+    """Assemble the JSON-serializable input mapping consumed by ``_NODE_DRIVER``."""
+    env, event, ref, action, run_created_at = ctx
+    pr_number, pr_created_at, pr_created_offset_s, pr_updated_at, head_ref = pr
+    timeline_events, later_workflow_runs, later_checks = history
+    controls, api_errors, api_always, api_error_detail = faults
+    return {
         "script": script,
-        **(controls or SimulationControls()).as_input(),
+        **controls.as_input(),
         "checks": checks,
         "expectedApps": _expected_apps(script),
-        "env": dict(env or {}),
+        "env": dict(env),
         "event": event,
+        "ref": ref,
         "action": action,
         "prNumber": pr_number,
         "prCreatedAt": pr_created_at,
@@ -483,4 +517,3 @@ def run_required_aggregator(
         "apiAlways": dict(api_always or {}),
         "apiErrorDetail": dict(api_error_detail or {}),
     }
-    return _run_driver(driver_input, info_logs, sleeps)
