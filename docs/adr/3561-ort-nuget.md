@@ -55,6 +55,8 @@ Replace `1.30.0` with the version to measure.
   ONNX Runtime release sources, direct NuGet downloads, and helper version
   pins within the static scope below.
 
+## Status update (2026-11-20)
+
 ### Guard scope and limits
 
 [`check_ort_tarball_pins.py`](../../scripts/ci/check_ort_tarball_pins.py)
