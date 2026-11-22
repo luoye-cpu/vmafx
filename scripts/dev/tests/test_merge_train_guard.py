@@ -46,7 +46,7 @@ class FixtureTrain(guard.Train):
 
     def git(self, *args: str, cwd: Path | None = None) -> str:
         if args[:2] == ("remote", "get-url"):
-            return "https://github.com/VMAFx/vmafx.git"
+            return "https://github.com/vidiko/vmafx.git"
         if args[0] == "push" and self.fail_push:
             raise guard.Refused("fixture push rejected")
         result: str = super().git(*args, cwd=cwd)
@@ -138,6 +138,19 @@ class TrainContract(unittest.TestCase):
         checkout = self.directory / name
         self.train.git("worktree", "add", "--detach", str(checkout), self.head)
         return checkout
+
+    def test_guard_refuses_cross_repository_prs(self) -> None:
+        field = "isCrossRepository"
+        del self.train.metadata[field]
+        for fields in ({field: True}, {}, {field: None}, {field: "false"}):
+            with (
+                self.subTest(fields=fields),
+                patch.dict(self.train.metadata, fields),
+                self.assertRaisesRegex(
+                    guard.Refused, "cross-repository PRs require an explicit owner"
+                ),
+            ):
+                self.train.guard(1421)
 
     def test_holds_and_nonmaster_apply_to_every_action(self) -> None:
         for condition in ("held", "stacked", "release", "paused", "protected"):
@@ -470,7 +483,7 @@ class TrainContract(unittest.TestCase):
         original = self.train.git
         for urls in (
             "https://example.invalid/fork.git",
-            "https://github.com/VMAFx/vmafx.git\nhttps://example.invalid/fork.git",
+            "https://github.com/vidiko/vmafx.git\nhttps://example.invalid/fork.git",
         ):
 
             def git(*args: str, cwd: Path | None = None, urls: str = urls) -> str:

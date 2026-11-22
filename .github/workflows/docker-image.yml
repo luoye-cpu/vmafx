@@ -7,6 +7,9 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   schedule:
     - cron: "0 5 * * 1"   # weekly, before the security scan
+  merge_group:
+    types: [checks_requested]
+    branches: [master]
   workflow_dispatch:
 
 permissions:

@@ -26,7 +26,7 @@ GHSA-x84v-xcm2-53pg. Empty reports fail. New lock -> manifest entry;
 Pull requests route the audit; weekly schedules audit every lock.
 
 Image: `docker-image.yml` installs the `TRIVY_VERSION` / `TRIVY_SHA256` binary,
-builds `fixtures/trivy-negative.Dockerfile` (`ubuntu:18.04`) and requires
+builds `fixtures/trivy-negative.Dockerfile` (`ubuntu:22.04` at an old digest) and requires
 `trivy image --exit-code 3` to exit 3 before scanning the real `vmaf` image. `.trivyignore.yaml`
 supplies dated misconfiguration and image-vulnerability exceptions; image edits
 select the Docker gate. Trivy expires entries but does not reject unused ones. A changed

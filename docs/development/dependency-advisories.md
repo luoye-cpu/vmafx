@@ -2,7 +2,7 @@
 
 This page covers how a security advisory against a third-party dependency is
 triaged. Vulnerabilities in VMAFx's own code are reported through
-[SECURITY.md](https://github.com/VMAFx/vmafx/blob/master/SECURITY.md).
+[SECURITY.md](https://github.com/vidiko/vmafx/blob/master/SECURITY.md).
 
 ## Where advisories show up
 
@@ -138,7 +138,7 @@ trivy image --exit-code 1 --ignorefile .trivyignore.yaml \
 ```
 
 The job first builds `scripts/ci/fixtures/trivy-negative.Dockerfile`
-(`ubuntu:18.04`, end-of-life) and requires Trivy to return exactly 3 (the explicit findings status). A 0 means
+(`ubuntu:22.04` at a two-year-old digest, still covered by the vulnerability database) and requires Trivy to return exactly 3 (the explicit findings status). A 0 means
 the gate missed known advisories; any other status, including the scanner error status 1, is a scanner failure. Only
 then does it scan the real image. A retained image advisory is a dated entry in
 `.trivyignore.yaml`; Trivy stops suppressing expired entries. Changes to this

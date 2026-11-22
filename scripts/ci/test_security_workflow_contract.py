@@ -116,7 +116,7 @@ class SecurityWorkflowContractTest(unittest.TestCase):
         fixture = (REPO_ROOT / "scripts/ci/fixtures/trivy-negative.Dockerfile").read_text(
             encoding="utf-8"
         )
-        self.assertRegex(fixture, r"FROM ubuntu:18\.04@sha256:[0-9a-f]{64}")
+        self.assertRegex(fixture, r"FROM ubuntu:22\.04@sha256:[0-9a-f]{64}")
         self.assertIn("USER 65534:65534", fixture)
         tier = json.loads((REPO_ROOT / ".github/ci-tier.json").read_text(encoding="utf-8"))
         self.assertIn(".trivyignore.yaml", tier["full_paths"])
