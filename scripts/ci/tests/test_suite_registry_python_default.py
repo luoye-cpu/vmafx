@@ -53,12 +53,16 @@ class RegistryDefault(unittest.TestCase):
     def test_install_without_python_inherits_the_config(self) -> None:
         self.manifest({"locks": ["lock.txt"]})
         registry = suite_registry.load_registry(self.root)
-        self.assertEqual(registry.suites[0].install.python, "3.14")  # type: ignore[union-attr]
+        install = registry.suites[0].install
+        assert install is not None
+        self.assertEqual(install.python, "3.14")
 
     def test_explicit_python_wins(self) -> None:
         self.manifest({"python": "3.13", "locks": ["lock.txt"]})
         registry = suite_registry.load_registry(self.root)
-        self.assertEqual(registry.suites[0].install.python, "3.13")  # type: ignore[union-attr]
+        install = registry.suites[0].install
+        assert install is not None
+        self.assertEqual(install.python, "3.13")
 
     def test_the_config_is_read_once_for_every_install(self) -> None:
         self.manifest({"locks": ["lock.txt"]})

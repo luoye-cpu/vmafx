@@ -218,6 +218,22 @@ def check_workflows(root: Path, lz_want: str | None, py_want: str | None) -> lis
     return problems
 
 
+def _suite_manifest_entries(path: Path) -> tuple[list[object] | None, list[str]]:
+    """Load the suite list, returning a finding instead of raising on bad input."""
+    if not path.is_file():
+        return None, [
+            f"{SUITE_MANIFEST} is missing; suite installs cannot inherit PYTHON_CI_VERSION"
+        ]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return None, [f"{SUITE_MANIFEST} cannot be read as JSON ({exc})"]
+    suites = data.get("suites") if isinstance(data, dict) else None
+    if not isinstance(suites, list):
+        return None, [f"{SUITE_MANIFEST} has no suites list"]
+    return suites, []
+
+
 def check_suite_registry_python(root: Path, py_want: str | None) -> list[str]:
     """Suite installs inherit PYTHON_CI_VERSION instead of repeating it (issue 3103).
 
@@ -229,17 +245,9 @@ def check_suite_registry_python(root: Path, py_want: str | None) -> list[str]:
     if not py_want:
         return ["build-config.env defines no PYTHON_CI_VERSION (issue 3103)"]
     series = ".".join(py_want.split(".")[:2])
-    path = root / SUITE_MANIFEST
-    if not path.is_file():
-        return [f"{SUITE_MANIFEST} is missing; suite installs cannot inherit PYTHON_CI_VERSION"]
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return [f"{SUITE_MANIFEST} cannot be read as JSON ({exc})"]
-    suites = data.get("suites") if isinstance(data, dict) else None
-    if not isinstance(suites, list):
-        return [f"{SUITE_MANIFEST} has no suites list"]
-    problems: list[str] = []
+    suites, problems = _suite_manifest_entries(root / SUITE_MANIFEST)
+    if suites is None:
+        return problems
     inherits = 0
     for index, suite in enumerate(suites):
         install = suite.get("install") if isinstance(suite, dict) else None
