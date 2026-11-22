@@ -97,6 +97,8 @@ class BaseImageGate(unittest.TestCase):
             "rust-toolchain.toml",
             "Cargo.toml",
             "core/src/rust/Cargo.toml",
+            "docker/Dockerfile.tester",
+            "tools/rc1-tester/image/licensing.json",
         ):
             source = ROOT / name
             if source.exists():

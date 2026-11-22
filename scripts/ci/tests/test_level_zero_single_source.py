@@ -78,6 +78,8 @@ class LevelZeroSingleSource(unittest.TestCase):
             "rust-toolchain.toml",
             "Cargo.toml",
             "core/src/rust/Cargo.toml",
+            "docker/Dockerfile.tester",
+            "tools/rc1-tester/image/licensing.json",
         ):
             (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
             (self.repo / name).write_text((ROOT / name).read_text())
