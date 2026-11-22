@@ -720,6 +720,72 @@ class TestOrtGuard(unittest.TestCase):
                     (1, [f"{container}:{line_no}: {SHAPE_FINDING}"]),
                 )
 
+    def test_container_extra_refusal_shapes(self) -> None:
+        container = Path(self.temp.name) / "Containerfile"
+        cases = (
+            (
+                "ARG ORT_VERSION=1.30.0\n"
+                "RUN echo `python3 scripts/ci/ort_nuget_install.py --package cpu"
+                ' --version "${ORT_VERSION}" --prefix /usr/local`\n',
+                2,
+                SHAPE_FINDING,
+            ),
+            (
+                "ARG ORT_VERSION=1.30.0\n"
+                "RUN true | python3 scripts/ci/ort_nuget_install.py --package cpu"
+                ' --version "${ORT_VERSION}" --prefix /usr/local\n',
+                2,
+                SHAPE_FINDING,
+            ),
+            (
+                "ENV ORT_VERSION 1.30.0\n"
+                "RUN python3 scripts/ci/ort_nuget_install.py --package cpu"
+                ' --version "${ORT_VERSION}" --prefix /usr/local\n',
+                2,
+                "unpinned ORT_VERSION '<unresolved>' for package 'cpu'",
+            ),
+            (
+                "ARG ORT_VERSION=1.30.0\n"
+                "FROM scratch\n"
+                "RUN python3 scripts/ci/ort_nuget_install.py --package cpu"
+                ' --version "${ORT_VERSION}" --prefix /usr/local\n',
+                3,
+                "missing ORT_VERSION in build stage",
+            ),
+            (
+                "ARG ORT_VERSION=1.30.0\n"
+                "RUN python3 scripts/ci/ort_nuget_install.py --package cpu"
+                ' --version "${ORT_VERSION}" --prefix /usr/local --print-pin=1.30.0\n',
+                2,
+                SHAPE_FINDING,
+            ),
+        )
+        for text, line_no, message in cases:
+            with self.subTest(text=text):
+                container.write_text(text)
+                self.assertEqual(
+                    guard.check_tarball_pins(files=[container]),
+                    (1, [f"{container}:{line_no}: {message}"]),
+                )
+
+    def test_workflow_module_spelling_is_checked(self) -> None:
+        workflows = Path(self.temp.name) / ".github" / "workflows"
+        workflows.mkdir(parents=True)
+        workflow = workflows / "ort.yml"
+        workflow.write_text(
+            "name: ort\n"
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - run: python3 -m scripts.ci.ort_nuget_install --version 1.99.0\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(
+            guard.check_tarball_pins(files=[workflow]),
+            (1, [f"{workflow}:6: unpinned ORT_VERSION '1.99.0' for package 'cpu'"]),
+        )
+
     def test_container_canonical_shapes_and_installer_flags_accepted(self) -> None:
         installer_src = (ROOT / "scripts/ci/ort_nuget_install.py").read_text(encoding="utf-8")
         installer_flags = set(re.findall(r'add_argument\("(--[a-z-]+)"', installer_src))

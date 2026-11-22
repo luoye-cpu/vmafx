@@ -270,11 +270,8 @@ def _assignment_pairs(rest: str) -> list[tuple[str, str]]:
 
 def _docker_assignment_values(keyword: str, rest: str) -> list[tuple[str, str]]:
     """Parse assignments; retain unknown values for affected names on unsupported syntax."""
+    rest = re.split(r"\s+#", rest, maxsplit=1)[0]
     pairs = _assignment_pairs(rest)
-    if not pairs and keyword == "ENV" and "=" not in rest:
-        legacy = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s+([^\s#]+)", rest)
-        if legacy:
-            pairs = [(legacy.group(1), legacy.group(2).strip("\"'"))]
     if not pairs:
         names = re.findall(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)(?==|\s|$)", rest)
         return [(name, "<unresolved>") for name in names]
@@ -908,7 +905,7 @@ def _scan_workflow_line(
     if "onnxruntime/releases/download" in lower:
         findings.append(f"{path}:{idx + 1}: old ONNX Runtime release source forbidden")
     findings.extend(_check_nuget_download(lines, idx, path, line, is_workflow))
-    if "ort_nuget_install.py" in line and packages is not None:
+    if CONTAINER_HELPER_TOKEN_RE.search(line) and packages is not None:
         findings.extend(_check_helper_step(lines, idx, path, packages, is_workflow))
     return findings
 
@@ -1068,6 +1065,25 @@ def _load_pins_for_check(
     return packages, pin_findings
 
 
+def _scan_target_files(
+    target_files: list[Path],
+    packages: dict[str, dict[str, Any]],
+    findings: list[str],
+    sites: list[tuple[str, str, str, str, Path, int]],
+) -> str | None:
+    """Scan every target file, accumulating findings and sites."""
+    for path in target_files:
+        if path.name == "ort-nuget-pins.json":
+            continue
+        try:
+            file_findings, file_sites = scan_file(path, packages=packages)
+        except OSError as err:
+            return str(err)
+        findings.extend(file_findings)
+        sites.extend(file_sites)
+    return None
+
+
 def check_tarball_pins(
     root: Path | None = None,
     files: list[Path] | None = None,
@@ -1086,15 +1102,9 @@ def check_tarball_pins(
     except (OSError, ValueError, KeyError, TypeError) as err:
         return EXIT_ERROR, [f"check_ort_tarball_pins: error: {err}"]
 
-    for path in target_files:
-        if path.name == "ort-nuget-pins.json":
-            continue
-        try:
-            findings, sites = scan_file(path, packages=packages)
-            all_findings.extend(findings)
-            all_sites.extend(sites)
-        except OSError as err:
-            return EXIT_ERROR, [f"check_ort_tarball_pins: error: {err}"]
+    error = _scan_target_files(target_files, packages, all_findings, all_sites)
+    if error is not None:
+        return EXIT_ERROR, [f"check_ort_tarball_pins: error: {error}"]
 
     known_pairs: dict[tuple[str, str, str], tuple[str, Path, int]] = {}
     for entry_name, flavour, version, sha_val, path, line_no in all_sites:
