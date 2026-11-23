@@ -761,34 +761,12 @@ jobs:
               return Date.parse(run.started_at || run.created_at || run.completed_at || 0);
             }
 
-            // The merge train lands a pull request by fast-forward, so the
-            // commit a master push aggregates is also the head of that pull
-            // request, and the pull-request runs the train cancels once it
-            // lands sit on the same SHA. They are not the verdict of this
-            // push: every master aggregator of 2026-10-06 read the cancelled
-            // pull-request runs of the pull-request-only gates (Deliverables
-            // Checklist, docs/state.md Gate, Silent-Revert Guard and others)
-            // as failures (T-CI-AGGREGATOR-READS-OTHER-EVENT-CHECKS-2026-10-06).
-            // Outside a pull request, check runs whose suite belongs to a
-            // pull-request workflow run are left out. A pull-request
-            // aggregator reads every run as before, and check runs of other
-            // apps (code scanning) always count.
-            // The same commit is also pushed to other branches: release-please
-            // opens its release-notes branch at the master head, and a
-            // verification branch can sit there too. Their push runs of the
-            // workflows without a branch filter are cancelled as superseded,
-            // and the newest of them was read as master's verdict ("Go API
-            // Compatibility: cancelled" on 6275c6f1a,
-            // T-CI-AGGREGATOR-READS-OTHER-BRANCH-RUNS-2026-10-06). Outside a
-            // pull request, suites of workflow runs on another branch are
-            // left out as well.
-            // A scheduled run judges the clock, not the commit: GitHub starts
-            // it on whatever the master head is, and its gate jobs may skip on
-            // schedule. The 10:33 run of `FFmpeg Patch Stack` on fdf711ba6
-            // came while the push aggregator polled, and its skipped check run
-            // was read as master's verdict
-            // (T-CI-AGGREGATOR-READS-SCHEDULE-RUNS-2026-10-15). Outside a pull
-            // request, suites of scheduled workflow runs are left out too.
+            // Outside a pull request, ignore pull-request, scheduled and other-branch
+            // suites: their cancelled/skipped runs were misread as a master verdict
+            // (T-CI-AGGREGATOR-READS-OTHER-EVENT-CHECKS-2026-10-06,
+            // T-CI-AGGREGATOR-READS-OTHER-BRANCH-RUNS-2026-10-06,
+            // T-CI-AGGREGATOR-READS-SCHEDULE-RUNS-2026-10-15; see ADR-0313).
+
             const pullRequestEvents = new Set(['pull_request', 'pull_request_target']);
             const ownBranch = (context.ref || '').startsWith('refs/heads/')
               ? context.ref.slice('refs/heads/'.length)
@@ -990,20 +968,12 @@ jobs:
               });
             }
 
-            // Poll up to 240 minutes for sibling workflows to register their
-            // check_runs and reach a terminal state. A run that has never
-            // appeared after a short registration grace period is treated as
-            // path-filter-not-applicable (acceptable). Older draft-era
-            // check_runs on the same SHA are ignored so a ready PR cannot
-            // merge on skipped draft gates. A run still IN_PROGRESS at
-            // deadline is treated as failure. Runner queue depth sets the
-            // deadline: 30 minutes failed every PR on 2026-05-09 (~80 queued
-            // jobs), 90 minutes failed the 2026-08-30 Renovate wave with no
-            // real check failure (#1083/#1087/#1089, job 89636653774 expired
-            // after 90m14s on queued siblings). A timeout blocks the merge,
-            // which keeps the queue deep, so 240 minutes with
-            // `timeout-minutes` at 250; polling costs a runner slot, not
-            // compute, and the hosted-runner cap is 360 minutes.
+            // Poll up to 240 minutes for sibling workflows; a run absent after the
+            // registration grace is path-filter-not-applicable, an active run at
+            // deadline fails, and older draft-era runs are ignored. 240 minutes with
+            // `timeout-minutes` 250 absorbs queue depth (30m failed 2026-05-09; 90m
+            // failed the 2026-08-30 Renovate wave, #1083/#1087/#1089); polling costs
+            // a runner slot, not compute, and the hosted cap is 360 minutes.
             const deadline = Math.min(Date.now() + 240 * 60 * 1000, budgetEndMs);
             let byName = {};
             let missingEditedWorkflows = [];
