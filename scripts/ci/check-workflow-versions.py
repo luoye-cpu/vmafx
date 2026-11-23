@@ -250,7 +250,9 @@ def check_suite_registry_python(root: Path, py_want: str | None) -> list[str]:
         return problems
     inherits = 0
     for index, suite in enumerate(suites):
-        install = suite.get("install") if isinstance(suite, dict) else None
+        if not isinstance(suite, dict):
+            continue
+        install = suite.get("install")
         if not isinstance(install, dict):
             continue
         name = suite.get("name", f"suites[{index}]")
