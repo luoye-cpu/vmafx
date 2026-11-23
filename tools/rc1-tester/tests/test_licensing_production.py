@@ -389,7 +389,7 @@ def test_every_production_image_that_ships_zimg_reads_that_one_record() -> None:
 def test_the_debian_record_is_the_text_the_gate_demands() -> None:
     """The gate requires the copyright text by path, so the one in the record is it."""
     record = lic.load_manifest()["artifacts"]["production-cli-image"]
-    scan = {"licences": [], "files": []}
+    scan: dict[str, list[str]] = {"licences": [], "files": []}
     needed = lic.needed_texts(record, scan, lic.load_manifest(), set())
     assert "/usr/share/doc/libzimg2/copyright" in needed
     assert needed["/usr/share/doc/libzimg2/copyright"]["artifact"] == (
