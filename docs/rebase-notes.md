@@ -8,6 +8,12 @@ search:
 # Rebase notes
 
 <!-- rebase-notes:fragments:begin (rendered from docs/rebase-notes.d/; do not edit) -->
+## Fatbin compression entry flags (2026-11-20)
+
+- `core/src/check_device_compression.py` reads fatbin entry flags and excludes
+  compressed payloads from raw-code scans. Preserve this check when updating
+  the CUDA build integration.
+
 ## Affected test timeouts (2026-11-20)
 
 - `scripts/ci/run_affected_suites.py`: default per-test timeout 300 s and wall

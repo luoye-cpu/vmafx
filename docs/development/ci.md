@@ -119,10 +119,11 @@ python3 scripts/git-hooks/pre-push-mypy.py
 ```
 
 The gate checks added, copied, modified, renamed and type-changed tracked
-`*.py` paths under `ai/` and `scripts/`. It reports only findings absent from
-the selected merge base, but an analysis crash, a missing tool, base or file, or
-an unattributable nonzero status fails the job. `ai/src/` is checked separately
-with `--explicit-package-bases` so each module has one canonical identity.
+`*.py` paths under `ai/` and `scripts/`. It reports each finding that occurs
+more often than at the selected merge base, but an analysis crash, a missing
+tool, base or file, or an unattributable nonzero status fails the job.
+`ai/src/` is checked separately with `--explicit-package-bases` so each module
+has one canonical identity.
 
 Pull requests compare with `origin/master`. A master push compares with the
 event's previous commit, so hosted post-merge validation covers the pushed
@@ -721,7 +722,10 @@ unrelated documentation changes report success after an explicit impact notice.
 A failing `gosec` scan blocks merging even though it prevents later Go tests
 from running. The scan is `make lint-go`, the target `make lint` runs, so run
 it before pushing a Go change; its flags and the reason for each sit next to
-the target in the `Makefile`. The job also starts on ready-for-review events,
+the target in the `Makefile`. It runs gosec twice: on hand-written code with
+every rule, then with generated files included and the `.gosec.json`
+configuration, so a finding in generated code also fails locally and is fixed
+in its generator. The job also starts on ready-for-review events,
 so draft-era results cannot replace the current validation run.
 
 Before installing native build dependencies, the job runs `go fix -diff ./...`
