@@ -85,7 +85,9 @@ refuses an author name ending in `[bot]` or author email ending in
 `[bot]@users.noreply.github.com`, after NFKC normalization, format-character
 removal, and lowercasing, unless the commit belongs to the branch opener.
 In PR mode, the opener must have type `Bot` and the commit
-email must end in `+<opener-login>@users.noreply.github.com`; membership in the
+email must end in `+<opener-login>@users.noreply.github.com` (except for the
+conditional `dco-bot-opener` and `dco-python-lock-refresh` exemptions documented
+under [Exemptions](#exemptions)); membership in the
 sign-off exemption list is not required. In pre-push mode, the oldest outgoing
 non-merge author counts as opener only if human or its normalized email matches
 a `BOT_LOGINS` noreply suffix; other bots establish no opener and every
@@ -93,11 +95,13 @@ bot-authored commit in that range is refused. Ownership compares normalized
 author names and emails. This preserves listed bots' branches after signed
 human updates. A human
 sign-off, release exemption, or grandfathered PR cannot bypass bot-author
-refusal: a squash landing would add a bot `Co-authored-by:` trailer that the
-landed gate refuses. Re-author the refused commit with
-`git commit --amend --reset-author --no-edit` on that commit, retaining the
-required sign-off, or drop it; for an earlier commit, stop on it during an
-interactive rebase before amending. Landed mode keeps its existing rules.
+refusal: apart from the `dco-landed-release-bot-coauthor` and
+`dco-python-lock-refresh` cases documented below, a squash landing would add a
+bot `Co-authored-by:` trailer that the landed gate refuses. Re-author the
+refused commit with `git commit --amend --reset-author --no-edit` on that
+commit, retaining the required sign-off, or drop it; for an earlier commit,
+stop on it during an interactive rebase before amending. Landed mode keeps its
+existing rules.
 The same message-line rules reject `Co-authored-by:`
 lines with a banned token, generated or created attribution footers, and the
 robot emoji. Pull request mode applies those line rules to the body as well.
@@ -133,7 +137,8 @@ the byte limit plus one byte. Event JSON has an additional
 `MAX_PR_EVENT_BYTES` envelope: six times the body-byte limit plus 1 MiB for
 metadata and JSON escapes. Commit output is captured one commit at a time
 with `MAX_COMMIT_LOG_BYTES` (twice the message-byte limit plus 65,536 bytes
-for metadata); exceeding this capture bound also refuses the input. Git
+for metadata), and per-commit changed-path queries use `MAX_COMMIT_PATHS_BYTES`
+(65,536 bytes); exceeding either capture bound also refuses the input. Git
 fields and records are NUL-delimited so embedded legacy separators cannot
 move identity text into another field.
 
@@ -184,6 +189,81 @@ pre-cutoff ones included:
 Renovate also signs off its own commits (`:gitSignOff` in `renovate.json`), so
 the exemption is a second line, not the only one.
 
+One conditional PR-mode exemption lifts only the
+[bot-opener refusal](../adr/3544-dco-refuse-bot-authored-commits.md)
+(`commit_attribution_reason`, PR-body attribution, and the `Signed-off-by:`
+trailer check in `judge` still run, and `--landed` and pre-push `--merge-base`
+modes keep their existing rules unchanged) when all four conditions hold
+([ADR-3555](../adr/3555-intel-neo-lock-file.md)):
+
+- Evaluation runs in pull request mode (neither `--landed` nor `--merge-base`).
+- GitHub reports the pull request opener as `--author renovate[bot]` with
+  `--author-type Bot`.
+- The commit's author name and email, normalized with `normalized_identity`
+  (NFKC normalization, `Cf` format-character removal, and lowercasing), equal
+  `vmafx-release-bot[bot]` and
+  `340976456+vmafx-release-bot[bot]@users.noreply.github.com`
+  (`RELEASE_BOT_NAME` and `RELEASE_BOT_EMAIL` in `scripts/ci/check-dco.py`).
+- The commit's changed path list from
+  `git diff-tree -z --root --no-commit-id --name-only -r --no-renames`
+  (refused rather than truncated past `MAX_COMMIT_PATHS_BYTES` = 65,536 bytes)
+  is non-empty and every path is a live declared exception of rule
+  `dco-bot-opener` in `.config/lint-exceptions.d/dco-bot-opener.toml`, checked
+  with `scripts/ci/lint_exceptions.py` `still_read("dco-bot-opener", paths, root)`
+  returning an empty list (`--exceptions-root` overrides `root` in fixture
+  tests). The sole declared entry is `dev/scripts/intel-neo-lock.json`
+  (Category D, entered `2026-11-16`, expires `2027-03-16`).
+
+One conditional landed-mode (`--landed`) exemption strips a single exact
+release-bot `Co-authored-by:` trailer line (`RELEASE_BOT_COAUTHOR` in
+`scripts/ci/check-dco.py`) before the landed attribution scan when the commit
+author is `renovate[bot]` with lowercased email
+`29139614+renovate[bot]@users.noreply.github.com` (`RENOVATE_BOT_EMAIL`), that
+stripped line appears once (case-sensitive after `.strip()`), and the commit's
+non-empty changed path list includes at least one live exception in
+`.config/lint-exceptions.d/dco-landed-release-bot-coauthor.toml`
+(`dev/scripts/intel-neo-lock.json`, Category D, entered `2026-11-17`, expires
+`2027-03-17`, [ADR-3555](../adr/3555-intel-neo-lock-file.md)):
+
+```text
+Co-authored-by: vmafx-release-bot[bot] <340976456+vmafx-release-bot[bot]@users.noreply.github.com>
+```
+
+The Python lock refresh class ([ADR-3560](../adr/3560-python-lock-refresh.md))
+permits a signed release-bot commit with the exact refresh subject when every
+changed path has a live entry among the 30 exact paths in
+`.config/lint-exceptions.d/dco-python-lock-refresh.toml`. Each entry is Category
+D, entered 2026-11-18 and expires 2027-03-18. An absent or expired entry refuses
+the path. A new lock output needs a new operator grant before an entry is added.
+
+In landed mode, the same class strips the single release-bot co-author line only
+when the Renovate squash changes at least one live grant path. The remaining
+paths must be manifest inputs or `requirements/locks/manifest.json` itself. For
+the manifest path, the gate reads the parent and squash copies from local Git
+objects. Both must be valid manifests with unique JSON keys, and the only
+changed value must be the top-level `uv_version`, set to an exact release.
+Missing or unreadable Git objects, malformed manifests, and any other manifest
+change keep the co-author line.
+
+Using `GH_TOKEN` and `GITHUB_REPOSITORY`, the gate requires a single associated
+pull request whose merge SHA matches the squash and whose `merged_at` parses as
+an ISO 8601 timestamp. The complete commit list must have fewer than 250 entries
+and include a release-bot commit, identified by normalized Git author name and
+email. Each release-bot commit must have a nonempty file list shorter than one
+API page (100 entries), with valid filenames and statuses `added`, `removed`,
+`modified`, `renamed`, `copied`,
+`changed`, or `unchanged`. Renames require a previous filename, and the gate
+checks any supplied previous filename. Every reported path must have a live grant
+among the 30 paths. Missing configuration, missing, ambiguous, malformed or
+incomplete forge evidence, and `TierError`, `OSError`, `ValueError`,
+`RecursionError`, `KeyError`, `TypeError`, or `OverflowError` from the forge read
+keep the line for the attribution check to refuse. The gate prints a `dco:`
+notice for verification errors.
+
+Every other line of the message and the `Signed-off-by:` check in
+`judge_landed` still run unchanged; a second release-bot line or any other bot
+or tool trailer is still refused.
+
 Verbatim upstream ports and merge commits are not special-cased: merge commits
 are not judged, and a port is committed by a person who signs it off like any
 other commit.
@@ -205,7 +285,8 @@ failure indicates an invalid squash body landed on `master`; published history
 is not rewritten.
 
 The `--landed` mode disables all exemptions (bot logins, `--release-pr`, and
-the cutoff date). It refuses any non-merge commit where:
+the cutoff date), except for the conditional release-bot co-author
+exemptions below. It refuses any non-merge commit where:
 
 - A `Co-authored-by:` line names a bot or automated tool (such as Renovate or
   coding assistants).
@@ -215,6 +296,24 @@ the cutoff date). It refuses any non-merge commit where:
 - The commit lacks a `Signed-off-by:` trailer matching either the commit
   author or the landing identity (`--landing-identity`). The committer address
   is not accepted because GitHub is the committer on every squash merge.
+
+The landed exemption ([ADR-3555](../adr/3555-intel-neo-lock-file.md))
+strips one exact `RELEASE_BOT_COAUTHOR` line before the attribution scan when
+the commit author is `renovate[bot]`
+(`<29139614+renovate[bot]@users.noreply.github.com>`), that exact line appears
+once, and the commit changes a live exception path in
+`.config/lint-exceptions.d/dco-landed-release-bot-coauthor.toml`
+(`dev/scripts/intel-neo-lock.json`, Category D, entered `2026-11-17`, expires
+`2027-03-17`):
+
+```text
+Co-authored-by: vmafx-release-bot[bot] <340976456+vmafx-release-bot[bot]@users.noreply.github.com>
+```
+
+The Python lock refresh class ([ADR-3560](../adr/3560-python-lock-refresh.md))
+also strips that exact line under the same author and single-line conditions
+when the squash paths and merged pull request satisfy the Python lock refresh
+conditions above.
 
 The check examines non-merge commits in the range `BASE_SHA..HEAD_SHA`. If
 the base SHA is all zeros (initial push) or not an ancestor-reachable commit,

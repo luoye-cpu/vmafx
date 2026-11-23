@@ -31,10 +31,10 @@
     "cmd/vmafx-node/providers.go:provideScorer",
     "cmd/vmafx-node/providers.go:provideFeedbackClient",
     "cmd/vmafx-node/online_feedback.go:feedbackSocketDefault",
-    "cmd/vmafx-node/bpf/rclonebypass_bpfel.go:rcloneBypassObjects",
+    "cmd/vmafx-node/bpf/rclonebypass_bpfel.go:rcloneTrackerObjects",
     "model/tiny/registry.json:models"
   ],
-  "spec_sha256": "1d964c7172609d26462c8f071592c86f19ae5e0d5b00806e3fab3915e41e9fe2",
+  "spec_sha256": "d0853586669113f0b9b70f93e5ca4795321d0cde5752d3f4a616ab5a6f590208",
   "engine": {
     "commit": "ccfe85b4851957ac2adf88b4a9ddf9668b2882f1",
     "sha256": "6a70b89b2d53c73fa79cb881a89e709622b2cfd2e8568b8e9797a328993dd0fc"
