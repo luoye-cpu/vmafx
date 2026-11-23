@@ -1909,6 +1909,9 @@ Contributed by luoye-cpu.
   tests) are gone. Scores are unchanged: the copies held the same double.
 
 
+- **GitHub merge-queue `merge_group` support for `Required Checks Aggregator` ([ADR-3556](docs/adr/3556-merge-queue-merge-group.md)).** `required-aggregator.yml` and every workflow that produces a required check owed outside `pull_request` now trigger on `merge_group` (`types: [checks_requested]`, `branches: [master]`) under the `full` CI tier and full impact plan. On `merge_group`, the aggregator exempts `pullRequestOnly` contexts and both OpenSSF Scorecard gates (`Scorecard PR Gate` ran on the pull request; `Scorecard Master Gate` runs on the `master` push after the merge), while publish, Pages, and registry-push steps remain restricted to their existing events.
+
+
 - **Metal feature extractors unwind without `goto`.** Seven Metal host
   wrappers (`float_adm`, `float_moment`, `float_ms_ssim`, `float_psnr`,
   `integer_ciede`, `integer_psnr_hvs`, `ssimulacra2`) release a failed init
@@ -2249,6 +2252,9 @@ Contributed by luoye-cpu.
 
 
 - Consolidated duplicated YUV format tables and file lifecycle helpers from `compat/python-vmaf/tools/reader.py` and `writer.py` into `_YuvIoBase`, and extracted local helpers for repeated blocks in `decorator.py`, `misc.py`, and `plot.py`.
+
+
+- **The research radar collector retries HTTP fetches through tenacity 9.2.1.** `scripts/research/radar_collect.py` replaces its hand-written retry loop in `http_fetch` with `tenacity.Retrying` (Apache-2.0), keeping the same three attempts, 1 s / 4 s backoff, retried transport error classes, and `FetchError` reporting.
 
 
 - **The roadmap and release pages list the full RC4 and RC5 scope.**
@@ -3186,6 +3192,10 @@ Contributed by luoye-cpu.
   anything a program writes there and ignored the log level. They are now
   `ERROR` log lines: on stderr at the configured level for `libvmaf.h` and
   the CLI, and in the context's log callback for the VMAFx API.
+
+
+- **CUDA:** the device compression check reads fatbin entry flags, avoiding
+  false failures when compressed payloads contain raw-code markers.
 
 
 - **CI:** a refused or unreachable connection no longer ends a CI download on the first attempt: curl and wget fetches in shell scripts, workflows and container recipes retry connection and host-resolution failures, the tidy lane's APT downloads retry, and a contract test checks curl and wget fetches for the retry flags and requires retried downloads to write to a file before use.
