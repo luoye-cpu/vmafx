@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [master]
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+    branches: [master]
   workflow_dispatch:
 
 concurrency:
@@ -235,7 +238,7 @@ jobs:
         # Go 1.27.1. Go back to a release tag once one includes x/tools v0.50.0.
         run: bash scripts/ci/go-fetch-retry.sh install github.com/securego/gosec/v2/cmd/gosec@v2.29.1-0.20260914113419-9e8e5d91f2f3
 
-      - name: gosec (exclude generated)
+      - name: gosec
         if: steps.impact.outputs.go_checks == 'true'
         # The flags and why each is there live with the target in the
         # Makefile, so `make lint` and this step run the same scan.
