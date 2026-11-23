@@ -14,7 +14,7 @@
 //   - Loader.Stop (nil ringReader + nil objs guard)
 //   - Loader.drainLoop context-cancel exit
 //   - Loader.closeLinks with empty and populated (mock) link slices
-//   - rcloneBypassObjects.Close on zero objects (generated code)
+//   - rcloneTrackerObjects.Close on zero objects (generated code)
 //
 // ADR-0779: rclone FUSE bypass eBPF program.
 package bpf
@@ -144,9 +144,9 @@ func TestDrainLoop_ShortDeadlineExits(t *testing.T) {
 // values (nothing loaded), which Stop relies on after a failed Start.
 func TestGeneratedClose_ZeroObjects(t *testing.T) {
 	t.Parallel()
-	var objs rcloneBypassObjects
+	var objs rcloneTrackerObjects
 	if err := objs.Close(); err != nil {
-		t.Errorf("rcloneBypassObjects.Close on zero objects: got %v, want nil", err)
+		t.Errorf("rcloneTrackerObjects.Close on zero objects: got %v, want nil", err)
 	}
 }
 
