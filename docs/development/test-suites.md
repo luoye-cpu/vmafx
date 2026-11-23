@@ -284,8 +284,20 @@ editable packages are re-pointed at the checkout on every run, so one cache
 serves every worktree, and a per-venv file lock serialises two runs that share
 it. A suite with `venv_of` runs in another suite's venv, as in CI (no suite uses it
 since the predictor trainer moved into `ai`, ADR-1886). The tests
-run with `pytest -p no:cacheprovider -rs` and the per-test timeout CI uses,
-under a 900 s cap per suite (`--time-cap`).
+run with `pytest -p no:cacheprovider -rs` and a 300 s per-test timeout
+(`--per-test-timeout`), unless the suite specifies its own. If its interpreter
+lacks pytest-timeout, the runner reports that tests run without this timeout.
+For suites with a per-test timeout, the 900 s base cap (`--time-cap`) is multiplied by
+`min(4, 1 + max(load1, load5) / CPUs)`; if load is unavailable, the multiplier is 1.
+Suites without a per-test timeout retain the unscaled base cap. When the child
+environment sets `PYTEST_DISABLE_PLUGIN_AUTOLOAD`, the runner passes
+`-p pytest_timeout` ahead of `--timeout` so the plugin still loads. Where
+`signal.SIGALRM` is missing (Windows), a suite whose timeout method is `signal`
+runs with `thread` instead, and the runner prints that substitution. With the
+`thread` method, pytest-timeout terminates pytest without writing JUnit results,
+and the runner names the exceeded per-test timeout before the missing-results
+lines. The `--time-cap`, `--per-test-timeout` and `--install-cap` values must be
+finite and above zero.
 
 Measured on a loaded 32-core workstation with a warm `uv` wheel cache: a venv
 builds in 1 to 7 s (the first build with an empty wheel cache downloads the
