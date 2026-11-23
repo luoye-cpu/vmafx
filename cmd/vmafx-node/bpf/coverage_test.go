@@ -11,7 +11,7 @@
 // relegated to the integration path.  The tests here cover pure-Go paths:
 //
 //   - New() prefix normalisation (already-slash / needs-slash)
-//   - rcloneBypassPrograms.Close / rcloneBypassMaps.Close with stub nil guards
+//   - rcloneTrackerPrograms.Close / rcloneTrackerMaps.Close with stub nil guards
 //     already exercised by TestStubClose_Objects; this file adds documentation
 //     that we intentionally skip the non-nil branches (need real ebpf.Program)
 //
