@@ -26,6 +26,9 @@
   ],
   "platformAutomerge": true,
   "commitBody": "Signed-off-by: {{{gitAuthor}}}",
+  "gitIgnoredAuthors": [
+    "340976456+vmafx-release-bot[bot]@users.noreply.github.com"
+  ],
   "osvVulnerabilityAlerts": true,
   "dependencyDashboardOSVVulnerabilitySummary": "all",
   "prCreation": "immediate",
@@ -189,6 +192,14 @@
       ],
       "groupName": "numpy (all managers)",
       "automerge": false
+    },
+    {
+      "description": "Group clang-format across pre-commit and pip after their manager groups: scripts/codegen/tests/test_vmafx_api_layout.py requires the hook rev and tooling pin to agree.",
+      "matchPackageNames": [
+        "pre-commit/mirrors-clang-format",
+        "clang-format"
+      ],
+      "groupName": "clang-format (all managers)"
     },
     {
       "description": "Group all Go minor + patch updates into one PR; auto-merge. k8s/grpc/proto patch bumps are low-risk; CI gates catch regressions.",
@@ -449,6 +460,19 @@
       "enabled": false
     },
     {
+      "description": "ADR-3318: the GitHub Actions manager also extracts the Rust toolchain input; the custom manager owns it with the other Rust pins.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchDepNames": [
+        "rust"
+      ],
+      "matchDepTypes": [
+        "uses-with"
+      ],
+      "enabled": false
+    },
+    {
       "description": "ADR-3318: one pull request for the Rust toolchain (build-config.env, rust-toolchain.toml, both Cargo workspaces and the Rust workflow). A new stable release brings new clippy lints, so it is reviewed, not auto-merged.",
       "matchManagers": [
         "custom.regex"
@@ -497,8 +521,8 @@
         "github.com/cordanaLLM/praetor",
         "github.com/cordanaLLM/praetor/**",
         "github.com/cordanaLLM/praetor/cmd/standardsctl",
-        "cordanaLLM/praetor",
-        "cordanaLLM/praetor/**"
+        "tekmora/praetor",
+        "tekmora/praetor/**"
       ],
       "enabled": false
     },
