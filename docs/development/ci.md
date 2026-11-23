@@ -722,7 +722,10 @@ unrelated documentation changes report success after an explicit impact notice.
 A failing `gosec` scan blocks merging even though it prevents later Go tests
 from running. The scan is `make lint-go`, the target `make lint` runs, so run
 it before pushing a Go change; its flags and the reason for each sit next to
-the target in the `Makefile`. The job also starts on ready-for-review events,
+the target in the `Makefile`. It runs gosec twice: on hand-written code with
+every rule, then with generated files included and the `.gosec.json`
+configuration, so a finding in generated code also fails locally and is fixed
+in its generator. The job also starts on ready-for-review events,
 so draft-era results cannot replace the current validation run.
 
 Before installing native build dependencies, the job runs `go fix -diff ./...`

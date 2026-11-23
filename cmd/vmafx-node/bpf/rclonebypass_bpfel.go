@@ -15,7 +15,7 @@ import (
 	"github.com/cilium/ebpf"
 )
 
-type rcloneBypassBypassEntryT struct {
+type rcloneTrackerBypassEntryT struct {
 	_            structs.HostLayout
 	BackingInode uint64
 	Flags        uint32
@@ -23,7 +23,7 @@ type rcloneBypassBypassEntryT struct {
 	_            [3]byte
 }
 
-type rcloneBypassEventT struct {
+type rcloneTrackerEventT struct {
 	_       structs.HostLayout
 	PidTgid uint64
 	FdKey   uint64
@@ -31,7 +31,7 @@ type rcloneBypassEventT struct {
 	Path    [256]int8
 }
 
-type rcloneBypassMountPrefixT struct {
+type rcloneTrackerMountPrefixT struct {
 	_         structs.HostLayout
 	Prefix    [256]int8
 	PrefixLen uint32
@@ -41,38 +41,38 @@ type rcloneBypassMountPrefixT struct {
 //
 // Used for safe lookups in a Collection or CollectionSpec.
 const (
-	rcloneBypassMapBypassFds      = "bypass_fds"
-	rcloneBypassMapEvents         = "events"
-	rcloneBypassMapMountPrefixMap = "mount_prefix_map"
-	rcloneBypassMapScratchPaths   = "scratch_paths"
-	rcloneBypassProgTpCloseEnter  = "tp_close_enter"
-	rcloneBypassProgTpOpenatEnter = "tp_openat_enter"
-	rcloneBypassProgTpOpenatExit  = "tp_openat_exit"
-	rcloneBypassVarUnusedEventT   = "unused_event_t"
+	rcloneTrackerMapBypassFds      = "bypass_fds"
+	rcloneTrackerMapEvents         = "events"
+	rcloneTrackerMapMountPrefixMap = "mount_prefix_map"
+	rcloneTrackerMapScratchPaths   = "scratch_paths"
+	rcloneTrackerProgTpCloseEnter  = "tp_close_enter"
+	rcloneTrackerProgTpOpenatEnter = "tp_openat_enter"
+	rcloneTrackerProgTpOpenatExit  = "tp_openat_exit"
+	rcloneTrackerVarUnusedEventT   = "unused_event_t"
 )
 
-// loadRcloneBypass returns the embedded CollectionSpec for rcloneBypass.
-func loadRcloneBypass() (*ebpf.CollectionSpec, error) {
-	reader := bytes.NewReader(_RcloneBypassBytes)
+// loadRcloneTracker returns the embedded CollectionSpec for rcloneTracker.
+func loadRcloneTracker() (*ebpf.CollectionSpec, error) {
+	reader := bytes.NewReader(_RcloneTrackerBytes)
 	spec, err := ebpf.LoadCollectionSpecFromReader(reader)
 	if err != nil {
-		return nil, fmt.Errorf("can't load rcloneBypass: %w", err)
+		return nil, fmt.Errorf("can't load rcloneTracker: %w", err)
 	}
 
 	return spec, err
 }
 
-// loadRcloneBypassObjects loads rcloneBypass and converts it into a struct.
+// loadRcloneTrackerObjects loads rcloneTracker and converts it into a struct.
 //
 // The following types are suitable as obj argument:
 //
-//	*rcloneBypassObjects
-//	*rcloneBypassPrograms
-//	*rcloneBypassMaps
+//	*rcloneTrackerObjects
+//	*rcloneTrackerPrograms
+//	*rcloneTrackerMaps
 //
 // See ebpf.CollectionSpec.LoadAndAssign documentation for details.
-func loadRcloneBypassObjects(obj any, opts *ebpf.CollectionOptions) error {
-	spec, err := loadRcloneBypass()
+func loadRcloneTrackerObjects(obj any, opts *ebpf.CollectionOptions) error {
+	spec, err := loadRcloneTracker()
 	if err != nil {
 		return err
 	}
@@ -80,69 +80,69 @@ func loadRcloneBypassObjects(obj any, opts *ebpf.CollectionOptions) error {
 	return spec.LoadAndAssign(obj, opts)
 }
 
-// rcloneBypassSpecs contains maps and programs before they are loaded into the kernel.
+// rcloneTrackerSpecs contains maps and programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type rcloneBypassSpecs struct {
-	rcloneBypassProgramSpecs
-	rcloneBypassMapSpecs
-	rcloneBypassVariableSpecs
+type rcloneTrackerSpecs struct {
+	rcloneTrackerProgramSpecs
+	rcloneTrackerMapSpecs
+	rcloneTrackerVariableSpecs
 }
 
-// rcloneBypassProgramSpecs contains programs before they are loaded into the kernel.
+// rcloneTrackerProgramSpecs contains programs before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type rcloneBypassProgramSpecs struct {
+type rcloneTrackerProgramSpecs struct {
 	TpCloseEnter  *ebpf.ProgramSpec `ebpf:"tp_close_enter"`
 	TpOpenatEnter *ebpf.ProgramSpec `ebpf:"tp_openat_enter"`
 	TpOpenatExit  *ebpf.ProgramSpec `ebpf:"tp_openat_exit"`
 }
 
-// rcloneBypassMapSpecs contains maps before they are loaded into the kernel.
+// rcloneTrackerMapSpecs contains maps before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type rcloneBypassMapSpecs struct {
+type rcloneTrackerMapSpecs struct {
 	BypassFds      *ebpf.MapSpec `ebpf:"bypass_fds"`
 	Events         *ebpf.MapSpec `ebpf:"events"`
 	MountPrefixMap *ebpf.MapSpec `ebpf:"mount_prefix_map"`
 	ScratchPaths   *ebpf.MapSpec `ebpf:"scratch_paths"`
 }
 
-// rcloneBypassVariableSpecs contains global variables before they are loaded into the kernel.
+// rcloneTrackerVariableSpecs contains global variables before they are loaded into the kernel.
 //
 // It can be passed ebpf.CollectionSpec.Assign.
-type rcloneBypassVariableSpecs struct {
+type rcloneTrackerVariableSpecs struct {
 	UnusedEventT *ebpf.VariableSpec `ebpf:"unused_event_t"`
 }
 
-// rcloneBypassObjects contains all objects after they have been loaded into the kernel.
+// rcloneTrackerObjects contains all objects after they have been loaded into the kernel.
 //
-// It can be passed to loadRcloneBypassObjects or ebpf.CollectionSpec.LoadAndAssign.
-type rcloneBypassObjects struct {
-	rcloneBypassPrograms
-	rcloneBypassMaps
-	rcloneBypassVariables
+// It can be passed to loadRcloneTrackerObjects or ebpf.CollectionSpec.LoadAndAssign.
+type rcloneTrackerObjects struct {
+	rcloneTrackerPrograms
+	rcloneTrackerMaps
+	rcloneTrackerVariables
 }
 
-func (o *rcloneBypassObjects) Close() error {
-	return _RcloneBypassClose(
-		&o.rcloneBypassPrograms,
-		&o.rcloneBypassMaps,
+func (o *rcloneTrackerObjects) Close() error {
+	return _RcloneTrackerClose(
+		&o.rcloneTrackerPrograms,
+		&o.rcloneTrackerMaps,
 	)
 }
 
-// rcloneBypassMaps contains all maps after they have been loaded into the kernel.
+// rcloneTrackerMaps contains all maps after they have been loaded into the kernel.
 //
-// It can be passed to loadRcloneBypassObjects or ebpf.CollectionSpec.LoadAndAssign.
-type rcloneBypassMaps struct {
+// It can be passed to loadRcloneTrackerObjects or ebpf.CollectionSpec.LoadAndAssign.
+type rcloneTrackerMaps struct {
 	BypassFds      *ebpf.Map `ebpf:"bypass_fds"`
 	Events         *ebpf.Map `ebpf:"events"`
 	MountPrefixMap *ebpf.Map `ebpf:"mount_prefix_map"`
 	ScratchPaths   *ebpf.Map `ebpf:"scratch_paths"`
 }
 
-func (m *rcloneBypassMaps) Close() error {
-	return _RcloneBypassClose(
+func (m *rcloneTrackerMaps) Close() error {
+	return _RcloneTrackerClose(
 		m.BypassFds,
 		m.Events,
 		m.MountPrefixMap,
@@ -150,31 +150,31 @@ func (m *rcloneBypassMaps) Close() error {
 	)
 }
 
-// rcloneBypassVariables contains all global variables after they have been loaded into the kernel.
+// rcloneTrackerVariables contains all global variables after they have been loaded into the kernel.
 //
-// It can be passed to loadRcloneBypassObjects or ebpf.CollectionSpec.LoadAndAssign.
-type rcloneBypassVariables struct {
+// It can be passed to loadRcloneTrackerObjects or ebpf.CollectionSpec.LoadAndAssign.
+type rcloneTrackerVariables struct {
 	UnusedEventT *ebpf.Variable `ebpf:"unused_event_t"`
 }
 
-// rcloneBypassPrograms contains all programs after they have been loaded into the kernel.
+// rcloneTrackerPrograms contains all programs after they have been loaded into the kernel.
 //
-// It can be passed to loadRcloneBypassObjects or ebpf.CollectionSpec.LoadAndAssign.
-type rcloneBypassPrograms struct {
+// It can be passed to loadRcloneTrackerObjects or ebpf.CollectionSpec.LoadAndAssign.
+type rcloneTrackerPrograms struct {
 	TpCloseEnter  *ebpf.Program `ebpf:"tp_close_enter"`
 	TpOpenatEnter *ebpf.Program `ebpf:"tp_openat_enter"`
 	TpOpenatExit  *ebpf.Program `ebpf:"tp_openat_exit"`
 }
 
-func (p *rcloneBypassPrograms) Close() error {
-	return _RcloneBypassClose(
+func (p *rcloneTrackerPrograms) Close() error {
+	return _RcloneTrackerClose(
 		p.TpCloseEnter,
 		p.TpOpenatEnter,
 		p.TpOpenatExit,
 	)
 }
 
-func _RcloneBypassClose(closers ...io.Closer) error {
+func _RcloneTrackerClose(closers ...io.Closer) error {
 	for _, closer := range closers {
 		if err := closer.Close(); err != nil {
 			return err
@@ -187,4 +187,4 @@ func _RcloneBypassClose(closers ...io.Closer) error {
 //
 // ADR-1622: bpf2go embeds the object here; embed_generated_object.sh reads it
 // through embeddedObject() (object_embed.go) so the package builds without it.
-var _RcloneBypassBytes = embeddedObject()
+var _RcloneTrackerBytes = embeddedObject()
