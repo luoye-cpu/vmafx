@@ -1099,11 +1099,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
         run: |
-          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 1/4 -- \
-            python/test/ -v -m "not slow" --tb=short \
-            --timeout=600 --timeout-method=thread \
-            --ignore=python/test/resource \
-            --deselect python/test/command_line_test.py::CommandLineTest
+          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 1/4 -- @scripts/ci/pytest-coverage-shard.args
       - name: Run Python test suite, shard 2/4
         id: python_coverage_shard_2
         if: steps.impact.outputs.golden_harness == 'true'
@@ -1112,11 +1108,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
         run: |
-          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 2/4 -- \
-            python/test/ -v -m "not slow" --tb=short \
-            --timeout=600 --timeout-method=thread \
-            --ignore=python/test/resource \
-            --deselect python/test/command_line_test.py::CommandLineTest
+          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 2/4 -- @scripts/ci/pytest-coverage-shard.args
       - name: Run Python test suite, shard 3/4
         id: python_coverage_shard_3
         if: steps.impact.outputs.golden_harness == 'true'
@@ -1125,11 +1117,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
         run: |
-          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 3/4 -- \
-            python/test/ -v -m "not slow" --tb=short \
-            --timeout=600 --timeout-method=thread \
-            --ignore=python/test/resource \
-            --deselect python/test/command_line_test.py::CommandLineTest
+          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 3/4 -- @scripts/ci/pytest-coverage-shard.args
       - name: Run Python test suite, shard 4/4
         id: python_coverage_shard_4
         if: steps.impact.outputs.golden_harness == 'true'
@@ -1138,11 +1126,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
         run: |
-          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 4/4 -- \
-            python/test/ -v -m "not slow" --tb=short \
-            --timeout=600 --timeout-method=thread \
-            --ignore=python/test/resource \
-            --deselect python/test/command_line_test.py::CommandLineTest
+          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 4/4 -- @scripts/ci/pytest-coverage-shard.args
       - name: Gather coverage report (gcovr)
         if: ${{ always() && steps.impact.outputs.golden_harness == 'true' }}
         working-directory: core
