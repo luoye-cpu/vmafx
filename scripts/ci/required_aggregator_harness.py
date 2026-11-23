@@ -6,19 +6,20 @@
 ``run_required_aggregator`` runs the real Actions JavaScript with one selected check
 result or absence. Its keyword inputs:
 
-``event`` is the triggering event the script sees (``pull_request`` or ``push``;
-a push is to ``master``) and ``action`` its ``pull_request`` action (``edited``
-arms the ready-for-review window anchor and stale edited-rerun suite exclusion).
-Every synthetic required check defaults to check suite 1, overridden per check by
-``suite_by_check`` and on the selected check by ``selected_suite``. ``workflow_runs``
-are the workflow runs on the commit (``path``, ``event``, ``head_branch``,
-``check_suite_id``, optional ``display_title``, optional ``status`` and ``conclusion``,
-and ``created_at`` or ``created_at_offset_s``); runs of ``editedRerunWorkflows`` without
-``display_title`` stay stale-safe, multiple runs sharing the current edit-stamp prefix
-fail closed as ambiguous regardless of status, while omitting ``workflow_runs`` on an
-``edited`` pull request gives each workflow in ``editedRerunWorkflows`` a single current
-synthetic run in suite 1 matching ``pr_updated_at`` so non-suite tests keep their
-baseline.
+``event`` is the triggering event the script sees (``pull_request``, ``merge_group``,
+or ``push``; ``ref`` overrides ``context.ref`` when set, defaulting to
+``refs/pull/1/merge`` on ``pull_request`` and ``refs/heads/master`` otherwise) and
+``action`` its ``pull_request`` action (``edited`` arms the ready-for-review window
+anchor and stale edited-rerun suite exclusion). Every synthetic required check
+defaults to check suite 1, overridden per check by ``suite_by_check`` and on the
+selected check by ``selected_suite``. ``workflow_runs`` are the workflow runs on the
+commit (``path``, ``event``, ``head_branch``, ``check_suite_id``, optional
+``display_title``, optional ``status`` and ``conclusion``, and ``created_at`` or
+``created_at_offset_s``); runs of ``editedRerunWorkflows`` without ``display_title``
+stay stale-safe, multiple runs sharing the current edit-stamp prefix fail closed as
+ambiguous regardless of status, while omitting ``workflow_runs`` on an ``edited`` pull
+request gives each workflow in ``editedRerunWorkflows`` a single current synthetic run
+in suite 1 matching ``pr_updated_at`` so non-suite tests keep their baseline.
 ``later_workflow_runs`` replace ``workflow_runs`` from the second workflow-run
 listing on. ``head_ref`` is the pull request's head branch (a ``release-please--``
 ref arms the release must-report list). ``absent_checks`` omits named required
@@ -40,7 +41,12 @@ or ``created_at_offset_s``) that ``issues.listEventsForTimeline`` pages through.
 "listWorkflowRunsForRepo", "listEventsForTimeline") to sequences of HTTP status
 codes raised in order by successive calls to that stub. ``api_always`` maps stub
 names to an HTTP status code raised on every call to that stub. ``info_logs``,
-when given, collects every ``core.info`` message.
+when given, collects every ``core.info`` message. ``api_error_detail`` supplies per-stub
+headers and messages for errors. ``sleeps`` collects timeout arguments in milliseconds.
+``controls`` takes a ``SimulationControls``: ``advance_sleep`` advances the clock on
+timeouts, ``clock_step_ms`` overrides each subsequent clock read and ``changing_check``
+adds an unrelated check that alternates status on each listing. The defaults keep the
+original driver behavior.
 """
 
 from __future__ import annotations
@@ -50,6 +56,7 @@ import re
 import shutil
 import textwrap
 from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from scripts.lib.safe_subprocess import run as run_command
@@ -67,10 +74,15 @@ const parsedRunCreated =
   typeof input.runCreatedAt === 'string' ? Date.parse(input.runCreatedAt) : Number.NaN;
 const now = Number.isFinite(parsedRunCreated) ? parsedRunCreated : defaultNow;
 let clock = now;
+let firstClockRead = true;
 let runListings = 0;
 const hasLaterRuns = Array.isArray(input.laterWorkflowRuns) && input.laterWorkflowRuns.length > 0;
 class VirtualDate extends Date {
-  static now() { clock += hasLaterRuns && runListings < 2 ? 15000 : 180000; return clock; }
+  static now() {
+    if (firstClockRead) { firstClockRead = false; return clock; }
+    clock += input.clockStepMs ?? (hasLaterRuns && runListings < 2 ? 15000 : 180000);
+    return clock;
+  }
 }
 const runCreatedAt =
   input.runCreatedAt != null ? input.runCreatedAt : new Date(now).toISOString();
@@ -113,11 +125,15 @@ const failures = [];
 const infos = [];
 const apiErrors = input.apiErrors || {};
 const apiAlways = input.apiAlways || {};
+const apiErrorDetail = input.apiErrorDetail || {};
+const sleeps = [];
 function checkApiError(name) {
   const status = apiAlways[name] ?? (apiErrors[name] || []).shift();
   if (status === undefined) return;
-  const error = new Error(`HTTP ${status}`);
+  const detail = apiErrorDetail[name] || {};
+  const error = new Error(detail.message ?? `HTTP ${status}`);
   error.status = status;
+  error.response = {status, headers: detail.headers || {}};
   throw error;
 }
 const github = {rest: {
@@ -137,7 +153,11 @@ const github = {rest: {
   checks: {listForRef: async ({page = 1, per_page: perPage = 30} = {}) => {
     checkApiError('listForRef');
     if (page === 1) listings += 1;
-    const all = listings > 1 && laterChecks.length ? laterChecks : checks;
+    const all = [...(listings > 1 && laterChecks.length ? laterChecks : checks)];
+    if (input.changingCheck) {
+      all.push(withDefaults({name: input.changingCheck, status: listings % 2 ? 'queued' : 'in_progress',
+        check_suite: {id: 1}}));
+    }
     return {data: {check_runs: paginate(all, page, perPage)}};
   }},
   issues: {listEventsForTimeline: async ({page = 1, per_page: perPage = 30} = {}) => {
@@ -181,8 +201,8 @@ new AsyncFunction('github', 'context', 'core', 'process', 'Date', 'setTimeout', 
   core,
   {env: {GITHUB_RUN_ID: '1', ...(input.env || {})}},
   VirtualDate,
-  callback => callback(),
-).then(() => process.stdout.write(JSON.stringify({failures, infos}))).catch(error => {
+  (callback, milliseconds) => { sleeps.push(milliseconds); if (input.advanceSleep) clock += milliseconds; callback(); },
+).then(() => process.stdout.write(JSON.stringify({failures, infos, sleeps}))).catch(error => {
   console.error(error);
   process.exitCode = 1;
 });
@@ -349,17 +369,28 @@ def _string_list(values: object, label: str) -> list[str]:
     return items
 
 
-def _decode_driver_output(stdout: str, info_logs: list[str] | None) -> list[str]:
+def _decode_driver_output(
+    stdout: str, info_logs: list[str] | None, sleeps: list[int] | None
+) -> list[str]:
     payload: object = json.loads(stdout)
     if not isinstance(payload, dict):
         raise AssertionError("aggregator driver must return a JSON object")
     if info_logs is not None:
         info_logs.extend(_string_list(payload.get("infos"), "info messages"))
+    if sleeps is not None:
+        values = payload.get("sleeps")
+        if not isinstance(values, list) or any(
+            isinstance(value, bool) or not isinstance(value, int) for value in values
+        ):
+            raise AssertionError("aggregator sleeps must be integers")
+        sleeps.extend(values)
     return _string_list(payload.get("failures"), "failure messages")
 
 
 def _run_driver(
-    driver_input: Mapping[str, object], info_logs: list[str] | None = None
+    driver_input: Mapping[str, object],
+    info_logs: list[str] | None = None,
+    sleeps: list[int] | None = None,
 ) -> list[str]:
     node = shutil.which("node")
     if node is None:
@@ -374,7 +405,24 @@ def _run_driver(
         check=True,
         timeout_seconds=SUBPROCESS_TIMEOUT_S,
     )
-    return _decode_driver_output(result.stdout, info_logs)
+    return _decode_driver_output(result.stdout, info_logs, sleeps)
+
+
+@dataclass(frozen=True)
+class SimulationControls:
+    """Clock and listing controls for the driver; the defaults change nothing."""
+
+    advance_sleep: bool = False
+    clock_step_ms: int | None = None
+    changing_check: str | None = None
+
+    def as_input(self) -> dict[str, object]:
+        """Return the driver input keys for these controls."""
+        return {
+            "advanceSleep": self.advance_sleep,
+            "clockStepMs": self.clock_step_ms,
+            "changingCheck": self.changing_check,
+        }
 
 
 def run_required_aggregator(
@@ -383,6 +431,7 @@ def run_required_aggregator(
     *,
     env: Mapping[str, str] | None = None,
     event: str = "pull_request",
+    ref: str | None = None,
     action: str | None = None,
     pr_number: int | None = 1,
     pr_created_at: str | None = None,
@@ -404,6 +453,9 @@ def run_required_aggregator(
     api_errors: Mapping[str, Sequence[int]] | None = None,
     api_always: Mapping[str, int] | None = None,
     info_logs: list[str] | None = None,
+    api_error_detail: Mapping[str, Mapping[str, object]] | None = None,
+    sleeps: list[int] | None = None,
+    controls: SimulationControls | None = None,
 ) -> list[str]:
     """Run the real Actions JavaScript; the module docstring lists the inputs."""
     script = _embedded_script(AGGREGATOR_PATH.read_text(encoding="utf-8"))
@@ -411,12 +463,45 @@ def run_required_aggregator(
     offsets = (default_started_offset_s, started_offsets_s, created_offsets_s)
     checks = _prepare_checks(script, target, absent_checks, extra_checks, offsets)
     runs = _resolve_workflow_runs(script, event, action, pr_updated_at, workflow_runs)
-    driver_input: dict[str, object] = {
+    ctx = (env or {}, event, ref, action, run_created_at)
+    pr = (pr_number, pr_created_at, pr_created_offset_s, pr_updated_at, head_ref)
+    history = (timeline_events, later_workflow_runs, later_checks)
+    faults = (controls or SimulationControls(), api_errors, api_always, api_error_detail)
+    driver_input = _build_driver_input(script, checks, runs, ctx, pr, history, faults)
+    return _run_driver(driver_input, info_logs, sleeps)
+
+
+def _build_driver_input(
+    script: str,
+    checks: list[dict[str, object]],
+    runs: list[dict[str, object]],
+    ctx: tuple[Mapping[str, str], str, str | None, str | None, str | None],
+    pr: tuple[int | None, str | None, float | None, str | None, str],
+    history: tuple[
+        Sequence[Mapping[str, object]],
+        Sequence[Mapping[str, object]],
+        Sequence[Mapping[str, object]],
+    ],
+    faults: tuple[
+        SimulationControls,
+        Mapping[str, Sequence[int]] | None,
+        Mapping[str, int] | None,
+        Mapping[str, Mapping[str, object]] | None,
+    ],
+) -> dict[str, object]:
+    """Assemble the JSON-serializable input mapping consumed by ``_NODE_DRIVER``."""
+    env, event, ref, action, run_created_at = ctx
+    pr_number, pr_created_at, pr_created_offset_s, pr_updated_at, head_ref = pr
+    timeline_events, later_workflow_runs, later_checks = history
+    controls, api_errors, api_always, api_error_detail = faults
+    return {
         "script": script,
+        **controls.as_input(),
         "checks": checks,
         "expectedApps": _expected_apps(script),
-        "env": dict(env or {}),
+        "env": dict(env),
         "event": event,
+        "ref": ref,
         "action": action,
         "prNumber": pr_number,
         "prCreatedAt": pr_created_at,
@@ -430,5 +515,5 @@ def run_required_aggregator(
         "laterChecks": [dict(check) for check in later_checks],
         "apiErrors": {name: list(codes) for name, codes in (api_errors or {}).items()},
         "apiAlways": dict(api_always or {}),
+        "apiErrorDetail": dict(api_error_detail or {}),
     }
-    return _run_driver(driver_input, info_logs)
