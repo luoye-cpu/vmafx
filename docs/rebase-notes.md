@@ -8,6 +8,21 @@ search:
 # Rebase notes
 
 <!-- rebase-notes:fragments:begin (rendered from docs/rebase-notes.d/; do not edit) -->
+## Fatbin compression entry flags (2026-11-20)
+
+- `core/src/check_device_compression.py` reads fatbin entry flags and excludes
+  compressed payloads from raw-code scans. Preserve this check when updating
+  the CUDA build integration.
+
+## Affected test timeouts (2026-11-20)
+
+- `scripts/ci/run_affected_suites.py`: default per-test timeout 300 s and wall
+  cap multiplier `min(4, 1 + max(load1, load5) / CPUs)`; suite overrides win,
+  and suites without a per-test timeout retain the unscaled base cap.
+- `scripts/ci/tests/test_run_affected_suites.py`: timeout and load controls.
+- `docs/development/test-suites.md`: runner timeout behavior.
+- `changelog.d/fixed/affected-tests-load-scaled-cap.md`: release note.
+
 ## ROCm image layer pull tokens (2026-11-20)
 
 `scripts/ci/install-rocm-from-image.sh` fetches a registry pull token before
