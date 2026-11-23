@@ -1569,3 +1569,4 @@ public authority; documentation never links into either local root.
 | [ADR-3568](3568-windows-sycl-tester-zip-oneapi-2026-2.md) | Share oneAPI 2026.2 across Windows SYCL CI and the tester zip | Accepted | ci, windows, sycl, build |
 | [ADR-3609](3609-keep-apt-cache-sweep.md) | Keep the apt archive cache script | Accepted | ci, supply-chain |
 | [ADR-3559](3559-upstream-push-gate.md) | Require offline upstream pre-push checks and recorded self-review, sharing the sweep Git runner and attribution policy | Accepted | upstream, process, tooling, testing |
+| [ADR-3556](3556-merge-queue-merge-group.md) | Trigger Required Checks Aggregator and feeding workflows on merge_group for the master merge queue, exempting Scorecard gates and keeping publish steps off merge_group | Accepted | ci, fork-local |
