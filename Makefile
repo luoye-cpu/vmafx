@@ -232,8 +232,14 @@ observability-compose-smoke:
 
 # Go security scan (gosec): the one definition of the gate, run by `make lint`
 # and by the gosec step of .github/workflows/go-ci.yml. Every G* finding fails.
-# -exclude-generated: generated protobuf code (gen/) carries G103
-# (unsafe.Slice) and G115 (int -> uint32 cgo casts) by design.
+# The scan runs twice:
+# 1. Hand-written code, every rule. -exclude-generated: generated protobuf
+#    code (gen/) carries G103 (unsafe.Slice) and G115 (int -> uint32 cgo
+#    casts) by design.
+# 2. Generated code included, with .gosec.json (G103 and G115 off), the
+#    configuration the praetor standards gate runs. Fix a finding in a
+#    generated file in its generator: pass 1 never saw the four G101 findings
+#    the bpf2go identifier once put into the eBPF binding (issue 3630).
 # -exclude-dir=.config/hiss/testdata: the HISS rule engine's own fixtures,
 # whose planted defects (HISS-07 drops an os.Remove error, HISS-09
 # reinterprets &b[0] through unsafe.Pointer) are the evidence the standards
@@ -244,6 +250,8 @@ lint-go:
 	$(call require-tool,gosec,go install github.com/securego/gosec/v2/cmd/gosec@v2.29.1-0.20260914113419-9e8e5d91f2f3)
 	@echo "--- gosec (exclude-generated) ---"
 	@gosec -exclude-generated -exclude-dir=.config/hiss/testdata -quiet ./...
+	@echo "--- gosec (generated included, .gosec.json) ---"
+	@gosec -conf .gosec.json -exclude-dir=.config/hiss/testdata -quiet ./...
 
 # GitHub Actions lint. actionlint validates every workflow under
 # .github/workflows/ against .github/actionlint.yaml; actionlint cannot read a
