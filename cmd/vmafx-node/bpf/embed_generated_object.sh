@@ -10,7 +10,7 @@
 # output changed and this script has to follow it.
 set -eu
 for f in "$@"; do
-  if grep -q '^var _RcloneBypassBytes = embeddedObject()$' "$f"; then
+  if grep -q '^var _RcloneTrackerBytes = embeddedObject()$' "$f"; then
     continue
   fi
   if ! grep -q '^//go:embed rclonebypass_bpfel\.o$' "$f"; then
@@ -20,14 +20,14 @@ for f in "$@"; do
   awk '
     /^\/\/go:embed rclonebypass_bpfel\.o$/ { next }
     /^\t_ "embed"$/ { next }
-    /^var _RcloneBypassBytes \[\]byte$/ {
+    /^var _RcloneTrackerBytes \[\]byte$/ {
       print "// ADR-1622: bpf2go embeds the object here; embed_generated_object.sh reads it"
       print "// through embeddedObject() (object_embed.go) so the package builds without it."
-      print "var _RcloneBypassBytes = embeddedObject()"
+      print "var _RcloneTrackerBytes = embeddedObject()"
       next
     }
     { print }
   ' "$f" >"$f.tmp"
   mv "$f.tmp" "$f"
-  grep -q '^var _RcloneBypassBytes = embeddedObject()$' "$f"
+  grep -q '^var _RcloneTrackerBytes = embeddedObject()$' "$f"
 done
