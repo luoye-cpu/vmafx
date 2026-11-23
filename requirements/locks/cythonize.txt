@@ -1,6 +1,6 @@
 # VMAFx hash lock; regenerate with: make python-locks-write
 # vmafx-uv-version: 0.13.6
-# vmafx-input-sha256: c93608b940088b942d57b87bb217049562f06ec2535dbf0d3d9d4db66d7e31e1
+# vmafx-input-sha256: 540badc85456c4c689c8825591450b0b4521900ad4be02040a07c81c02b6028c
 # vmafx-inputs: requirements/locks/cythonize.in
 cython==3.3.0 \
     --hash=sha256:03056533fe4fdbc4f1d34a39178f9a4937ff35196f8bcdde2a67b5b5809c61fe \

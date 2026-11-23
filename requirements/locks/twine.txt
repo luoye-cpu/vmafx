@@ -1,6 +1,6 @@
 # VMAFx hash lock; regenerate with: make python-locks-write
 # vmafx-uv-version: 0.13.6
-# vmafx-input-sha256: fc2424cd3b125d94fe29b2f128a352f5ab84ec15d45b545e3584acd17e6d21b3
+# vmafx-input-sha256: c2b0bf07606c8c46ce8df7cc13b7e66d5ed8b61729b029a1259d15df49481338
 # vmafx-inputs: requirements/locks/twine.in
 certifi==2026.10.23 \
     --hash=sha256:a9895e6e2758b371e0545e321a3a8fd1fcfd9829ada8824a936dfb16aaaf36cd \
