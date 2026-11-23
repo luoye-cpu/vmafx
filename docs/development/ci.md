@@ -119,10 +119,11 @@ python3 scripts/git-hooks/pre-push-mypy.py
 ```
 
 The gate checks added, copied, modified, renamed and type-changed tracked
-`*.py` paths under `ai/` and `scripts/`. It reports only findings absent from
-the selected merge base, but an analysis crash, a missing tool, base or file, or
-an unattributable nonzero status fails the job. `ai/src/` is checked separately
-with `--explicit-package-bases` so each module has one canonical identity.
+`*.py` paths under `ai/` and `scripts/`. It reports each finding that occurs
+more often than at the selected merge base, but an analysis crash, a missing
+tool, base or file, or an unattributable nonzero status fails the job.
+`ai/src/` is checked separately with `--explicit-package-bases` so each module
+has one canonical identity.
 
 Pull requests compare with `origin/master`. A master push compares with the
 event's previous commit, so hosted post-merge validation covers the pushed
