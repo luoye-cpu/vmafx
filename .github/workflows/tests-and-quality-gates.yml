@@ -11,6 +11,9 @@ on:
     # ADR-0331 (design notes)
     types: [opened, synchronize, reopened, ready_for_review]
     # ADR-0341, ADR-1140, ADR-2169, ADR-3293 (design notes)
+  merge_group:
+    types: [checks_requested]
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -299,7 +302,7 @@ jobs:
     if: needs.tier.outputs.full == 'true'
     name: "Sanitizers (${{ matrix.sanitizer }})"
     # ADR-0359, ADR-3286 (design notes)
-    runs-on: ${{ vars.ARC_RUNNERS_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'arc-runners' || 'ubuntu-26.04' }}
+    runs-on: ${{ vars.ARC_RUNNERS_ENABLED == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && 'arc-runners' || 'ubuntu-26.04' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -473,32 +476,11 @@ jobs:
         if: steps.impact.outputs.tiny_ai == 'true'
         env:
           ORT_VERSION: "1.22.0"
-          ORT_SHA256: "8344d55f93d5bc5021ce342db50f62079daf39aaafb5d311a451846228be49b3"
         run: |
           set -euo pipefail
-          ort_name="onnxruntime-linux-x64-${ORT_VERSION}.tgz"
-          ort_archive="${RUNNER_TEMP}/${ort_name}"
-          ort_url="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ort_name}"
-          bash scripts/ci/download-release.sh "${ort_url}" "${ort_archive}"
-          printf '%s  %s\n' "${ORT_SHA256}" "${ort_archive}" \
-            | sha256sum --check --strict
-          sudo tar -xzf "${ort_archive}" -C /opt/
-          sudo ln -sfn "/opt/onnxruntime-linux-x64-${ORT_VERSION}" /opt/onnxruntime
-          sudo install -d /usr/local/lib/pkgconfig
-          cat <<EOF | sudo tee /usr/local/lib/pkgconfig/libonnxruntime.pc >/dev/null
-          prefix=/opt/onnxruntime
-          exec_prefix=\${prefix}
-          libdir=\${exec_prefix}/lib
-          includedir=\${prefix}/include
-
-          Name: libonnxruntime
-          Description: ONNX Runtime C API
-          Version: ${ORT_VERSION}
-          Libs: -L\${libdir} -lonnxruntime
-          Cflags: -I\${includedir}
-          EOF
-          # Strip the leading YAML indent that `cat <<EOF` preserved.
-          sudo sed -i 's/^          //' /usr/local/lib/pkgconfig/libonnxruntime.pc
+          sudo install -d -o "$(id -u)" /opt/onnxruntime /usr/local/lib/pkgconfig
+          python3 scripts/ci/ort_nuget_install.py --version "${ORT_VERSION}" \
+            --prefix /opt/onnxruntime
           echo "/opt/onnxruntime/lib" | sudo tee /etc/ld.so.conf.d/onnxruntime.conf
           sudo ldconfig
       - name: Build libvmaf (dnn enabled)
@@ -1022,13 +1004,13 @@ jobs:
           path: ${{ runner.temp }}/apt-archives
           key: apt-${{ runner.os }}-${{ runner.arch }}-coverage-${{ hashFiles('.github/apt/coverage.txt') }}
 
-      - name: Cache ONNX Runtime tarball
+      - name: Cache ONNX Runtime package
         if: steps.impact.outputs.golden_harness == 'true'
         id: cache-ort
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ runner.temp }}/ort-cache
-          key: ort-tarball-linux-x64-gpu-1.22.0
+          key: ort-nuget-linux-x64-gpu-${{ hashFiles('scripts/ci/ort-nuget-pins.json') }}
       - name: Install ONNX Runtime (GPU build, CPU + CUDA EPs)
         id: coverage_install_ort
         if: steps.impact.outputs.golden_harness == 'true'
@@ -1036,37 +1018,12 @@ jobs:
         # ADR-0112, ADR-0113 (design notes)
         env:
           ORT_VERSION: "1.22.0"
-          ORT_SHA256: "2a19dbfa403672ec27378c3d40a68f793ac7a6327712cd0e8240a86be2b10c55"
         run: |
           set -euo pipefail
           dpkg -s libcudart12 >/dev/null 2>&1 || sudo apt-get install -y nvidia-cuda-toolkit
-          mkdir -p "${RUNNER_TEMP}/ort-cache"
-          tarball="${RUNNER_TEMP}/ort-cache/onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz"
-          if [ ! -f "$tarball" ]; then
-            bash scripts/ci/download-release.sh \
-              "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz" \
-              "$tarball"
-          fi
-          if ! printf '%s  %s\n' "${ORT_SHA256}" "$tarball" | sha256sum --check --strict; then
-            rm -f "$tarball"
-            exit 1
-          fi
-          sudo tar -xzf "$tarball" -C /opt/
-          sudo ln -sfn "/opt/onnxruntime-linux-x64-gpu-${ORT_VERSION}" /opt/onnxruntime
-          sudo install -d /usr/local/lib/pkgconfig
-          cat <<EOF | sudo tee /usr/local/lib/pkgconfig/libonnxruntime.pc >/dev/null
-          prefix=/opt/onnxruntime
-          exec_prefix=\${prefix}
-          libdir=\${exec_prefix}/lib
-          includedir=\${prefix}/include
-
-          Name: libonnxruntime
-          Description: ONNX Runtime C API
-          Version: ${ORT_VERSION}
-          Libs: -L\${libdir} -lonnxruntime
-          Cflags: -I\${includedir}
-          EOF
-          sudo sed -i 's/^          //' /usr/local/lib/pkgconfig/libonnxruntime.pc
+          sudo install -d -o "$(id -u)" /opt/onnxruntime /usr/local/lib/pkgconfig
+          python3 scripts/ci/ort_nuget_install.py --package gpu --version "${ORT_VERSION}" \
+            --prefix /opt/onnxruntime --cache-dir "${RUNNER_TEMP}/ort-cache"
           echo "/opt/onnxruntime/lib" | sudo tee /etc/ld.so.conf.d/onnxruntime.conf
           sudo ldconfig
       - name: Build with gcov instrumentation
@@ -1275,9 +1232,12 @@ jobs:
   # ADR-1319 (design notes)
   gpu-full-runner-available:
     needs: tier
-    if: needs.tier.outputs.full == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: needs.tier.outputs.full == 'true' && (github.event_name == 'push' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     name: Probe GPU Full Runner
     runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      pull-requests: read
     timeout-minutes: 5
     outputs:
       available: ${{ steps.probe.outputs.available }}
@@ -1287,15 +1247,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Check gpu-full runner availability
         id: probe
-        env:
-          GH_TOKEN: ${{ secrets.SYCL_RUNNER_PROBE_TOKEN || github.token }}
-          RUNNER_ENABLED: ${{ vars.GPU_COVERAGE_ENABLED }}
-          RUNNER_LABELS: "self-hosted linux gpu-full"
-          RUNNER_DISPLAY_NAME: "Coverage GPU"
-          RUNNER_SWITCH_NAME: "GPU_COVERAGE_ENABLED"
-          RUNNER_RUNBOOK: "docs/development/self-hosted-runner.md"
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: bash scripts/ci/check-runner-available.sh
+        uses: ./.github/actions/runner-probe
+        with:
+          token: ${{ secrets.SYCL_RUNNER_PROBE_TOKEN || github.token }}
+          enabled: ${{ vars.GPU_COVERAGE_ENABLED }}
+          labels: "self-hosted linux gpu-full"
+          display-name: "Coverage GPU"
+          switch-name: "GPU_COVERAGE_ENABLED"
+          runbook: "docs/development/self-hosted-runner.md"
 
   coverage-gpu:
     # required-aggregator

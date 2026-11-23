@@ -39,6 +39,7 @@ mkdir -p "$scratch/bin"
 # inspected config; SHIM_VERSION is what
 # --version prints; SHIM_EXITED=1 reports the server container stopped;
 # SHIM_MD5 is what the FUSE read-back hashes to (default: the real file's);
+# The FUSE read-back refuses folders or files inaccessible to others.
 # SHIM_FAIL_EXEC fails the `docker exec` whose arguments contain it;
 # SHIM_RUN_ENV_LOG records the environment arguments of a detached run.
 cat >"$scratch/bin/docker" <<'STUB'
@@ -64,6 +65,11 @@ case "$1" in
     ;;
   exec)
     if [[ "$args" == *md5sum* ]]; then
+      frames="$(cat "$SHIM_STATE/frames")"
+      if [[ -z "$(find "$frames" -prune -perm -005)" || -z "$(find "$frames/ref.yuv" -perm -004)" ]]; then
+        printf 'ERROR : error listing: directory not found\n' >&2
+        exit 3
+      fi
       printf '%s  /tmp/m/ref.yuv\n' "${SHIM_MD5:-$(md5sum "$(cat "$SHIM_STATE/frames")/ref.yuv" | cut -d' ' -f1)}"
     elif [[ -n "${SHIM_FAIL_EXEC:-}" && "$args" == *"$SHIM_FAIL_EXEC"* ]]; then
       exit 5
@@ -95,6 +101,19 @@ exit 0
 STUB
 chmod +x "$scratch/bin/docker" "$scratch/bin/curl"
 
+mkdir -p "$scratch/state" "$scratch/private-frames"
+chmod 0700 "$scratch/private-frames"
+touch "$scratch/private-frames/ref.yuv"
+printf '%s\n' "$scratch/private-frames" >"$scratch/state/frames"
+rc=0
+SHIM_STATE="$scratch/state" "$scratch/bin/docker" exec container rclone md5sum /tmp/m/ref.yuv \
+  >"$scratch/out" 2>"$scratch/err" || rc=$?
+if [[ "$rc" -eq 3 ]]; then
+  ok "the docker stub refuses a frames folder others cannot read"
+else
+  bad "the docker stub refuses a frames folder others cannot read (exit $rc, wanted 3)"
+fi
+
 # smoke EXPECTED_RC DESCRIPTION KIND [ENV=VALUE...]
 smoke() {
   local want="$1" description="$2" kind="$3" rc=0
@@ -102,7 +121,7 @@ smoke() {
   rm -f "$scratch/state/frames"
   mkdir -p "$scratch/state"
   env PATH="$scratch/bin:$PATH" SHIM_KIND="$kind" SHIM_STATE="$scratch/state" \
-    SMOKE_READY_TRIES=2 "$@" "$SMOKE" ghcr.io/vmafx/image@sha256:0 "$kind" 0.1.0 \
+    SMOKE_READY_TRIES=2 "$@" "$SMOKE" ghcr.io/vidiko/image@sha256:0 "$kind" 0.1.0 \
     >"$scratch/out" 2>"$scratch/err" || rc=$?
   if [[ "$rc" -eq "$want" ]]; then ok "$description"; else bad "$description (exit $rc, wanted $want: $(tail -3 "$scratch/err"))"; fi
 }
@@ -174,10 +193,10 @@ smoke 0 "starts the controller for the HTTP check" controller SHIM_RUN_ENV_LOG="
 if grep -q 'VMAFX_AUTH_DISABLED=true' "$log"; then ok "the controller starts with auth disabled"; else bad "the controller starts without VMAFX_AUTH_DISABLED=true"; fi
 
 rc=0
-"$SMOKE" ghcr.io/vmafx/image@sha256:0 bogus 1 >/dev/null 2>&1 || rc=$?
+"$SMOKE" ghcr.io/vidiko/image@sha256:0 bogus 1 >/dev/null 2>&1 || rc=$?
 if [[ "$rc" -eq 64 ]]; then ok "exits 64 on an unknown kind"; else bad "unknown kind exited $rc"; fi
 rc=0
-"$SMOKE" ghcr.io/vmafx/image@sha256:0 >/dev/null 2>&1 || rc=$?
+"$SMOKE" ghcr.io/vidiko/image@sha256:0 >/dev/null 2>&1 || rc=$?
 if [[ "$rc" -eq 64 ]]; then ok "exits 64 on a wrong argument count"; else bad "wrong argument count exited $rc"; fi
 
 printf '%d passed, %d failed\n' "$pass" "$fail"
