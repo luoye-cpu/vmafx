@@ -269,8 +269,8 @@ therefore not reported.
 Two consequences worth knowing:
 
 - A file that already fails still fails for its own reasons, and you may edit
-  it. Adding a *different* finding to it is reported; the ones that were
-  already there are not.
+  it. A finding it did not have is reported, and so is one more copy of a
+  finding it already had; the copies that were already there are not.
 - A non-zero exit with nothing to attribute to a file is treated as mypy
   breaking, and blocks the push.
 

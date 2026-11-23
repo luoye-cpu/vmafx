@@ -58,6 +58,7 @@
     ".clang-format",
     ".clang-tidy",
     ".codacy.yml",
+    ".coderabbit.yaml",
     ".codespellrc",
     ".cppcheck-suppressions.txt",
     ".dockerignore",
