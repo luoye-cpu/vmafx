@@ -258,14 +258,14 @@ class GenNodeBpf(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotIn("//go:embed", binding)
-        self.assertIn("var _RcloneBypassBytes = embeddedObject()", binding)
+        self.assertIn("var _RcloneTrackerBytes = embeddedObject()", binding)
 
     def test_embed_rewrite_is_idempotent_and_refuses_unknown_output(self) -> None:
         """Assert that embedding rewrite is idempotent and rejects input lacking go:embed."""
         script = REPO / "cmd" / "vmafx-node" / "bpf" / "embed_generated_object.sh"
         raw = self.tmp / "raw.go"
         raw.write_text(
-            'package bpf\n\nimport (\n\t_ "embed"\n)\n\n//go:embed rclonebypass_bpfel.o\nvar _RcloneBypassBytes []byte\n',
+            'package bpf\n\nimport (\n\t_ "embed"\n)\n\n//go:embed rclonebypass_bpfel.o\nvar _RcloneTrackerBytes []byte\n',
             encoding="utf-8",
         )
         for _ in range(2):
@@ -279,7 +279,7 @@ class GenNodeBpf(unittest.TestCase):
             self.assertEqual(done.returncode, 0, done.stderr)
         text = raw.read_text(encoding="utf-8")
         self.assertNotIn("go:embed", text)
-        self.assertEqual(text.count("var _RcloneBypassBytes = embeddedObject()"), 1)
+        self.assertEqual(text.count("var _RcloneTrackerBytes = embeddedObject()"), 1)
         other = self.tmp / "other.go"
         other.write_text("package bpf\n", encoding="utf-8")
         refused = subprocess.run(  # noqa: S603 - fixed argv

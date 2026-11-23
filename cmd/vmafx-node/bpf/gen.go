@@ -29,9 +29,17 @@
 // generated object against the layouts the loader relies on;
 // TestEmbeddedObjectMatchesPinnedDigest checks it against the recorded digest.
 //
+// The bpf2go identifier is rcloneTracker, and -output-stem keeps the file
+// names rclonebypass_bpfel.*. gosec G101 reads the generated constant names:
+// the earlier identifier rcloneBypass put "pass" into every one of them, and
+// four object names then read as hard-coded credentials (issue 3630). Keep the
+// identifier free of the words G101 matches (pass, pwd, pw, token, secret,
+// cred, bearer, apiKey); the second gosec pass of `make lint-go` scans this
+// generated file.
+//
 // ADR-0779, ADR-1539, ADR-1622.
 package bpf
 
-//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cflags "-O2 -g -Wall -Wextra" -target bpfel -type event_t rcloneBypass rclone_bypass.bpf.c -- -I/usr/include/bpf -I.
+//go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cflags "-O2 -g -Wall -Wextra" -target bpfel -type event_t -output-stem rclonebypass rcloneTracker rclone_bypass.bpf.c -- -I/usr/include/bpf -I.
 //go:generate sh ./add_spdx_header.sh rclonebypass_bpfel.go
 //go:generate sh ./embed_generated_object.sh rclonebypass_bpfel.go
