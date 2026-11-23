@@ -10,7 +10,7 @@ hide:
 <!-- markdownlint-disable MD013 MD024 MD025 MD038 -->
 # ADR titles
 
-Every ADR, one heading each (1464), so the site search finds an ADR by its title; ADR bodies are not in the search index ([ADR-1512](1512-docs-search-user-pages-only.md)).
+Every ADR, one heading each (1465), so the site search finds an ADR by its title; ADR bodies are not in the search index ([ADR-1512](1512-docs-search-user-pages-only.md)).
 
 ## ADR-0001: Treat uncommitted benchmark result JSON as noise
 
@@ -5839,6 +5839,10 @@ Every ADR, one heading each (1464), so the site search finds an ADR by its title
 ## ADR-3555: Pin Intel NEO and Level Zero release asset URLs and SHA-256 digests in a lock file
 
 [3555-intel-neo-lock-file](3555-intel-neo-lock-file.md)
+
+## ADR-3556: Trigger required checks and aggregator on merge-queue merge\_group events
+
+[3556-merge-queue-merge-group](3556-merge-queue-merge-group.md)
 
 ## ADR-3558: Opt-in node sidecar feedback client, HTTP /readyz readiness probe, and soft per-node affinity
 
