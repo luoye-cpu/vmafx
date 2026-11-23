@@ -1,0 +1,1 @@
+- **Go security scan:** the node's eBPF binding no longer trips gosec G101 (hard-coded credentials): its bpf2go identifier is `rcloneTracker`, whose generated constant names hold no credential word, and `make lint-go` also scans generated Go files with `.gosec.json` (issue 3630).
