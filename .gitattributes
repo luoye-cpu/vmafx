@@ -1,6 +1,11 @@
 # Set the default behavior, in case people don't have core.autocrlf set.
 * text=auto
 
+# GitHub reads workflows as the committed LF blob; keep every checkout LF so
+# the 64 KiB gate and the files it measures agree on Windows too (issue #3637).
+.github/workflows/*.yml text eol=lf
+.github/workflows/*.yaml text eol=lf
+
 # The model file parser requires LF line endings
 *.pkl text eol=lf
 *.model text eol=lf

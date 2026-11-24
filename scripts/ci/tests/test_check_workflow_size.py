@@ -61,6 +61,41 @@ class CheckWorkflowSizeTests(unittest.TestCase):
         res = self.run_checker(str(under))
         self.assertEqual(res.returncode, 0, res.stderr)
 
+    def _workflow_at_size(self, name: str, size: int) -> Path:
+        """Write a valid LF workflow whose UTF-8 byte length is exactly ``size``."""
+        base = (
+            "name: workflow-size fixture\n"
+            "on: push\n"
+            "jobs:\n"
+            "  build:\n"
+            "    runs-on: ubuntu-26.04\n"
+            "    steps:\n"
+            "      - run: true\n"
+        )
+        padding = size - len(base.encode("utf-8"))
+        self.assertGreaterEqual(padding, 2)
+        text = base + "#" + "x" * (padding - 2) + "\n"
+        self.assertEqual(len(text.encode("utf-8")), size)
+        path = self.tmp_path / name
+        path.write_bytes(text.encode("utf-8"))
+        return path
+
+    def test_crlf_checkout_measured_by_lf_blob_size(self) -> None:
+        """Regression: a CRLF checkout passes when its LF blob is under 65536 bytes."""
+        lf_under = self._workflow_at_size("lf-under.yml", 65535)
+        crlf_under = self.tmp_path / "crlf-under.yml"
+        crlf_under.write_bytes(lf_under.read_bytes().replace(b"\n", b"\r\n"))
+        self.assertGreater(crlf_under.stat().st_size, 65536)
+        res_under = self.run_checker(str(crlf_under))
+        self.assertEqual(res_under.returncode, 0, res_under.stderr)
+
+        lf_over = self._workflow_at_size("lf-over.yml", 65537)
+        crlf_over = self.tmp_path / "crlf-over.yml"
+        crlf_over.write_bytes(lf_over.read_bytes().replace(b"\n", b"\r\n"))
+        res_over = self.run_checker(str(crlf_over))
+        self.assertEqual(res_over.returncode, 1)
+        self.assertIn("crlf-over.yml (65537 bytes) exceeds 65536 byte limit", res_over.stderr)
+
     def test_repository_workflows_positive(self) -> None:
         """Positive case: all workflow files in the repository pass."""
         res = self.run_checker()

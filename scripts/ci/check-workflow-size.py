@@ -89,10 +89,16 @@ def _utf16_len(text: str) -> int:
 
 
 def check_workflow_sizes(workflow_paths: list[Path], max_bytes: int) -> list[tuple[Path, int]]:
-    """Return a list of (path, size) tuples for workflows that exceed max_bytes."""
+    """Return a list of (path, size) tuples for workflows that exceed max_bytes.
+
+    GitHub reads the committed blob, whose line endings are LF. A Windows
+    checkout with ``core.autocrlf=true`` rewrites those to CRLF and adds one
+    byte per line, so measure the LF-normalized bytes rather than the
+    working-tree file size.
+    """
     oversized: list[tuple[Path, int]] = []
     for path in workflow_paths:
-        size = path.stat().st_size
+        size = len(path.read_bytes().replace(b"\r\n", b"\n"))
         if size > max_bytes:
             oversized.append((path, size))
     return oversized
