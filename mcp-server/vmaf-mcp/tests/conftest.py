@@ -20,6 +20,18 @@ VMAF_UNDER_TEST = vmaftest.find()
 _NOT_BUILT = _REPO_ROOT / vmaftest.BUILD_DIRS[0] / "tools" / vmaftest.executable_name()
 
 
+@pytest.fixture(scope="session")
+def vmaf_under_test() -> Path | None:
+    """The CLI resolved before the autouse fixture replaces ``VMAF_BIN``.
+
+    Tests that need a built CLI should consume this instead of calling
+    ``vmaftest.find()`` after the autouse fixture ran: that fixture deliberately
+    points ``VMAF_BIN`` at the missing build path when nothing is built, so a
+    second ``find()`` raises rather than returning ``None``.
+    """
+    return VMAF_UNDER_TEST
+
+
 @pytest.fixture(autouse=True)
 def _server_runs_the_vmaf_under_test(monkeypatch: pytest.MonkeyPatch) -> None:
     """Point the server at the build under test before every test.

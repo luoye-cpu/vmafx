@@ -18,6 +18,7 @@ The schemas here MUST stay byte-identical to the Go server's
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import anyio
@@ -284,20 +285,36 @@ def test_vmaf_score_rejects_invalid_core_params(args: dict, match: str) -> None:
         anyio.run(lambda: srv._call_tool_dispatch("vmaf_score", anchored, None))
 
 
-def _score_fixture_pair() -> tuple[Path, Path]:
+def _score_fixture_pair(vmaf_under_test: Path | None) -> tuple[Path, Path]:
     repo = srv._repo_root()
     ref = repo / "python" / "test" / "resource" / "yuv" / "src01_hrc00_576x324.yuv"
     dis = repo / "python" / "test" / "resource" / "yuv" / "src01_hrc01_576x324.yuv"
     if not ref.exists() or not dis.exists():
         pytest.skip("Netflix src01 fixtures not found")
-    # conftest.py points the server's VMAF_BIN at this binary.
-    if vmaftest.find() is None:
+    # conftest resolves this before its autouse fixture replaces VMAF_BIN.
+    if vmaf_under_test is None:
         pytest.skip(vmaftest.MISSING_MESSAGE)
     return ref, dis
 
 
-def test_e2e_score_cpu_with_tinyai_flags_and_error_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    ref, dis = _score_fixture_pair()
+def test_score_fixture_pair_skips_without_a_built_cli(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    repo = tmp_path
+    fixtures = repo / "python" / "test" / "resource" / "yuv"
+    fixtures.mkdir(parents=True)
+    for name in ("src01_hrc00_576x324.yuv", "src01_hrc01_576x324.yuv"):
+        (fixtures / name).touch()
+    monkeypatch.setattr(srv, "_repo_root", lambda: repo)
+
+    with pytest.raises(pytest.skip.Exception, match=re.escape(vmaftest.MISSING_MESSAGE)):
+        _score_fixture_pair(None)
+
+
+def test_e2e_score_cpu_with_tinyai_flags_and_error_path(
+    monkeypatch: pytest.MonkeyPatch, vmaf_under_test: Path | None
+) -> None:
+    ref, dis = _score_fixture_pair(vmaf_under_test)
 
     monkeypatch.setenv("VMAF_MCP_ALLOW", str(ref.resolve().parent))
 
