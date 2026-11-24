@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Copyright 2026 Lusoris
+# SPDX-License-Identifier: EUPL-1.2
+#
+# CodeRabbit review settings for this repository. A repository file replaces
+# the organisation and app settings unless `inheritance` is true, so every
+# setting not named here still comes from those levels.
+#
+# The "Fix comments" finishing touch is off. It pushes commits authored by
+# coderabbitai[bot] without a sign-off to the pull request branch, which the
+# DCO check refuses (ADR-3544); review findings are fixed in signed commits
+# by the pull request author instead.
+---
+inheritance: true
+reviews:
+  finishing_touches:
+    autofix:
+      enabled: false
