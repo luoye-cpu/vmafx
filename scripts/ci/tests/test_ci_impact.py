@@ -155,6 +155,9 @@ CONSUMER_SELECTORS = {"upstream_consumers"}
 GSTREAMER_SELECTORS = {"gstreamer_element"}
 # ADR-3338 / ADR-3545: dev-container and docker/dev Ubuntu image own-input lanes.
 DEV_CONTAINER_LANE_SELECTORS = {"dev_container_inputs", "ubuntu_dev_images"}
+# #2749: the root image build and Trivy scan follow the image's own inputs on a
+# light-tier pull request, so the input-only selector does not fire on a fallback.
+DOCKER_IMAGE_LANE_SELECTORS = {"docker_image_inputs"}
 OWN_PATHS_ONLY = (
     TESTER_SELECTORS
     | MSVC_LEG_SELECTORS
@@ -162,6 +165,7 @@ OWN_PATHS_ONLY = (
     | CONSUMER_SELECTORS
     | GSTREAMER_SELECTORS
     | DEV_CONTAINER_LANE_SELECTORS
+    | DOCKER_IMAGE_LANE_SELECTORS
 )
 
 
@@ -1211,7 +1215,11 @@ class WorkflowContract(unittest.TestCase):
                 # by the aggregator only for a tier that does not owe it).
                 self.assertIn(f"needs: [tier, impact, {work_job}]", block)
                 self.assertRegex(
-                    block, r"if: always\(\) && needs\.tier\.outputs\.(light|full) == 'true'"
+                    block,
+                    r"if: always\(\) && (?:"
+                    r"needs\.tier\.outputs\.(light|full) == 'true'"
+                    r"|\(needs\.tier\.outputs\.full == 'true' \|\| "
+                    r"needs\.tier\.outputs\.light == 'true'\))",
                 )
                 self.assertIn(f"name: {check_name}", block)
                 if "gate_leg_result.py" in block:

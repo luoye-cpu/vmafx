@@ -120,6 +120,16 @@ area: gates
   waits while own-input lane work runs. Never move `impact` or `tester-image` back to
   `outputs.full`; `test_ci_routing_contract.py` + `test_ci_aggregator_tier.py` plant
   both regressions.
+- **Fifth own-input lane: `Docker Image Build` (#2749).** `docker-image.yml`
+  `impact` and its required gate run on `outputs.light`; step `pick` selects broad
+  `docker_image` on the full tier and narrow `docker_image_inputs`
+  (`own_paths_only`) on the light tier. Narrow selector = root `Dockerfile`,
+  `.dockerignore`, `.trivyignore.yaml`, `build-config.env`, the planted negative
+  Dockerfile and `scripts/ci/install-cuda-toolkit.sh`. The light lane builds the
+  image and runs the negative-then-real Trivy scan only when one of those inputs
+  changes; the broad selector remains the full-tier/master-push barrier. Never
+  gate `impact` or the `Docker Image Build` check back on `outputs.full`;
+  `test_ci_routing_contract.py` exercises the lane.
 - **`build_work` = `c_core` + `python/**`, `compat/**`, build / pytest-timeout / tox
   locks, prune script.** `build.yml` work job (`Linux Intel LLVM`, `macOS Clang+Metal`,
   `Windows MSVC+CUDA (full)`) runs `compat/vmaf/tests/test_decorator_extended.py`

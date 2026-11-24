@@ -30,13 +30,14 @@ jobs:
 
   impact:
     needs: tier
-    if: needs.tier.outputs.full == 'true'
+    if: needs.tier.outputs.full == 'true' || needs.tier.outputs.light == 'true'
     name: Plan Docker image impact
     runs-on: ubuntu-26.04
     # 5-minute floor: hosted runner setup and checkout jitter; bound is max(5, 2 x p95).
     timeout-minutes: 5
     outputs:
-      selected: ${{ steps.impact.outputs.docker_image }}
+      selected: ${{ steps.pick.outputs.selected }}
+      reason: ${{ steps.pick.outputs.reason }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -51,6 +52,28 @@ jobs:
         run: |
           python3 scripts/ci/plan-ci-impact.py --event "$EVENT_NAME" \
             --base "$BASE_SHA" --head "$HEAD_SHA" --github-output "$GITHUB_OUTPUT"
+      # ADR-2198 / #2749: the full tier owes the broad selector; a light-tier
+      # pull request owes the image's own inputs so an affected Dockerfile still
+      # runs the Trivy image scan before it lands.
+      - name: Pick the selector of this tier
+        id: pick
+        env:
+          FULL: ${{ needs.tier.outputs.full }}
+          BROAD: ${{ steps.impact.outputs.docker_image }}
+          NARROW: ${{ steps.impact.outputs.docker_image_inputs }}
+        run: |
+          if [ "$FULL" = true ]; then
+            selected="$BROAD" selector=docker_image
+          else
+            selected="$NARROW" selector=docker_image_inputs
+          fi
+          case "$selected" in
+            true) reason="selected by $selector" ;;
+            false) reason="not selected: $selector matched no changed path; the broad selector runs on the full tier and the master push" ;;
+            *) echo "::error::planner gave $selector='$selected'"; exit 1 ;;
+          esac
+          echo "$reason"
+          { echo "selected=$selected"; echo "reason=$reason"; } >> "$GITHUB_OUTPUT"
 
   docker-work:
     needs: impact
@@ -185,7 +208,7 @@ jobs:
 
   docker:
     needs: [tier, impact, docker-work]
-    if: always() && needs.tier.outputs.full == 'true'
+    if: always() && (needs.tier.outputs.full == 'true' || needs.tier.outputs.light == 'true')
     # required-aggregator
     name: Docker Image Build
     runs-on: ubuntu-26.04

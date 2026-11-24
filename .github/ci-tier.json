@@ -98,6 +98,14 @@
         "tester_image"
       ],
       "reason": "A full-only context whose amd64 build and licence check also run on a light-tier pull request, but only when the diff touches an input of the tester image (selector tester_image of .github/ci-impact.json, ADR-3554): Renovate pull request #3476 moved RELEASE_PYTHON_BASE in build-config.env and docker/Dockerfile.tester to Python 3.14.10 on the light tier, built no tester image, and master e36e898c5 went red on the missing cpython_license_rst entry. The arm64 and GPU tester images stay on the master push and dispatch."
+    },
+    {
+      "workflow": "docker-image.yml",
+      "context": "Docker Image Build",
+      "selectors": [
+        "docker_image_inputs"
+      ],
+      "reason": "A full-only context whose root image build and Trivy scan also run on a light-tier pull request, but only when the diff touches the image itself or its scan policy (selector docker_image_inputs of .github/ci-impact.json): issue #2749 requires the image gate on affected pull requests, while an ordinary own pull request stays light. The work job still builds and exercises the planted vulnerable image before scanning the real image; the aggregator holds its required context until the lane reports."
     }
   ],
   "untiered_jobs": [

@@ -355,7 +355,21 @@
         ".dockerignore",
         "python/requirements.txt",
         "python/pyproject.toml",
-        ".trivyignore.yaml"
+        ".trivyignore.yaml",
+        "build-config.env",
+        "scripts/ci/fixtures/trivy-negative.Dockerfile",
+        "scripts/ci/install-cuda-toolkit.sh"
+      ]
+    },
+    "docker_image_inputs": {
+      "own_paths_only": true,
+      "patterns": [
+        "Dockerfile",
+        ".dockerignore",
+        ".trivyignore.yaml",
+        "build-config.env",
+        "scripts/ci/fixtures/trivy-negative.Dockerfile",
+        "scripts/ci/install-cuda-toolkit.sh"
       ]
     },
     "dev_container": {
