@@ -105,6 +105,8 @@ pkg/pyjson/testdata/float_repr.txt -text
 pkg/pymath/testdata/exp2_glibc.txt -text
 pkg/tune/auto/testdata/python_plans/index.json -text
 pkg/tune/sidecar/testdata/python_sidecar.json -text
+scripts/ci/fixtures/pip-audit-known-vuln.txt -text
+scripts/ci/fixtures/trivy-negative.Dockerfile -text
 scripts/codegen/tests/fixtures/full.toml -text
 testdata/bench_all.sh -text
 testdata/benchmark_netflix.py -text
