@@ -3,6 +3,7 @@
 # Copyright 2026 Lusoris
 # SPDX-License-Identifier: EUPL-1.2
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -13,6 +14,8 @@ import sys
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +30,13 @@ SPEC = importlib.util.spec_from_file_location(
 assert SPEC and SPEC.loader
 STACK = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(STACK)
+
+MAINTENANCE_SETTINGS = (
+    "gc.auto=0",
+    "gc.autoDetach=false",
+    "maintenance.auto=false",
+    "maintenance.autoDetach=false",
+)
 
 
 class ReleaseSelection(unittest.TestCase):
@@ -99,6 +109,15 @@ class SharedSeriesTimeoutDerivation(unittest.TestCase):
         self.assertIsNotNone(match)
         assert match is not None
         self.assertEqual(int(match.group(1)), STACK.SHARED_SERIES_DEFAULT_DOWNLOAD_SECONDS)
+
+
+class FailingCheckoutCleanup(tempfile.TemporaryDirectory[str]):
+    """Inject a directory removal error while still freeing the test checkout."""
+
+    def cleanup(self) -> None:
+        """Raise the error observed when a background writer races the removal."""
+        super().cleanup()
+        raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), self.name)
 
 
 class RealReplay(unittest.TestCase):
@@ -290,17 +309,108 @@ class RealReplay(unittest.TestCase):
         self.assertEqual(result["target_source"], "fetched (unpinned)")
         STACK.maintain(self.repo, self.output, False, False)
 
-    def test_conflicting_release_preserves_every_input(self) -> None:
+    def tag_conflicting_release(self) -> None:
+        """Create a stable release that changes the same line as the integration patch."""
         self.git(self.upstream, "switch", "--detach", "n9.0.1")
         (self.upstream / "sample").write_text("incompatible upstream\n")
         self.git(self.upstream, "commit", "-qam", "release")
         self.git(self.upstream, "tag", "n9.1")
+
+    def test_conflicting_release_preserves_every_input(self) -> None:
+        self.tag_conflicting_release()
         before = self.contents()
         with self.assertRaises(RuntimeError):
             STACK.maintain(self.repo, self.output, True, True)
         self.assertEqual(self.contents(), before)
         self.assertEqual(json.loads((self.output / "receipt.json").read_text())["status"], "failed")
         self.assertIn("CONFLICT", (self.output / "replay.log").read_text())
+
+    def run_refresh_cli(self, *options: str) -> tuple[int, str]:
+        """Run the CLI against the fixture repository and capture its diagnostics."""
+        stdout = StringIO()
+        with (
+            patch.object(STACK, "__file__", str(self.repo / "scripts/ci/x.py")),
+            patch.object(sys, "argv", ["ffmpeg_patch_stack.py", "--refresh", *options]),
+            redirect_stdout(stdout),
+        ):
+            return STACK.main(), stdout.getvalue()
+
+    def test_rebase_error_survives_checkout_cleanup_failure(self) -> None:
+        """Keep the real Git conflict first in the receipt and CLI diagnostics."""
+        self.tag_conflicting_release()
+        with patch.object(STACK.tempfile, "TemporaryDirectory", FailingCheckoutCleanup):
+            code, stdout = self.run_refresh_cli("--latest", "--output-dir", str(self.output))
+        receipt = json.loads((self.output / "receipt.json").read_text())
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["status"], "failed")
+        self.assertIn("git rebase failed", receipt["error"])
+        self.assertIn("CONFLICT", (self.output / "replay.log").read_text())
+        self.assertIn(f"[Errno {errno.ENOTEMPTY}]", receipt["cleanup_error"])
+        self.assertTrue(stdout.startswith("FFmpeg patch stack FAILED: git rebase failed"))
+        self.assertIn(f"\nCheckout cleanup failed: {receipt['cleanup_error']}\n", stdout)
+
+    def test_checkout_cleanup_failure_alone_fails_refresh(self) -> None:
+        """Fail when replay succeeds but its temporary checkout cannot be cleaned up."""
+        before = self.contents()
+        with (
+            patch.object(STACK.tempfile, "TemporaryDirectory", FailingCheckoutCleanup),
+            self.assertRaises(OSError) as raised,
+        ):
+            STACK.maintain(self.repo, self.output, True, False)
+        receipt = json.loads((self.output / "receipt.json").read_text())
+        self.assertEqual(raised.exception.errno, errno.ENOTEMPTY)
+        self.assertEqual(receipt["status"], "failed")
+        self.assertEqual(receipt["error"], str(raised.exception))
+        self.assertNotIn("cleanup_error", receipt)
+        self.assertEqual(self.contents(), before)
+
+    def test_receipt_write_error_preserves_replay_error(self) -> None:
+        """Report the original conflict if the failure receipt cannot be written."""
+        self.tag_conflicting_release()
+        write_text = Path.write_text
+
+        def fail_receipt_write(path: Path, data: str, **kwargs: str | None) -> int:
+            if path == self.output / "receipt.json":
+                raise PermissionError("injected receipt write failure")
+            return write_text(path, data, **kwargs)
+
+        with patch.object(Path, "write_text", autospec=True, side_effect=fail_receipt_write):
+            code, stdout = self.run_refresh_cli("--latest", "--output-dir", str(self.output))
+        self.assertEqual(code, 1)
+        self.assertTrue(stdout.startswith("FFmpeg patch stack FAILED: git rebase failed"))
+        self.assertIn("\nCould not write failure receipt: injected receipt write failure\n", stdout)
+
+    def test_default_report_cleanup_failure_fails_refresh(self) -> None:
+        """Recover a failure receipt when report deletion already removed the old one."""
+
+        def fail_report_cleanup(path: Path, *, ignore_errors: bool = False) -> None:
+            if path.name.startswith("vmafx-ffmpeg-report-"):
+                (path / "receipt.json").unlink()
+                raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), str(path))
+            shutil.rmtree(path, ignore_errors=ignore_errors)
+
+        with (
+            patch.object(STACK.tempfile, "tempdir", str(self.root)),
+            patch.object(STACK, "shutil", wraps=shutil) as filesystem,
+        ):
+            filesystem.rmtree.side_effect = fail_report_cleanup
+            code, stdout = self.run_refresh_cli()
+        (report,) = self.root.glob("vmafx-ffmpeg-report-*")
+        receipt = json.loads((report / "receipt.json").read_text())
+        self.assertEqual(code, 1)
+        self.assertEqual(receipt["status"], "failed")
+        self.assertIn(f"[Errno {errno.ENOTEMPTY}]", receipt["error"])
+        self.assertIn(f"FFmpeg patch stack FAILED: {receipt['error']}\n", stdout)
+        self.assertIn(f"Diagnostics: {report}", stdout)
+
+    def test_replay_prefix_disables_automatic_git_maintenance(self) -> None:
+        """Prevent automatic Git writers from racing disposable checkout removal."""
+        prefix = STACK.Replay(self.root / "checkout", self.output).prefix
+        settings = [prefix[index + 1] for index, flag in enumerate(prefix) if flag == "-c"]
+        self.assertCountEqual(
+            [setting for setting in settings if setting.startswith(("gc.", "maintenance."))],
+            MAINTENANCE_SETTINGS,
+        )
 
     def test_network_failure_is_failure_and_preserves_files(self) -> None:
         config = self.repo / "build-config.env"
@@ -862,6 +972,23 @@ class SharedSeriesReplay(RealReplay):
             STACK.maintain(self.repo, self.output, True, False)
         self.assertEqual(self.contents(), before)
         self.assertEqual(json.loads((self.output / "receipt.json").read_text())["status"], "failed")
+
+    def test_shared_series_git_inherits_maintenance_settings(self) -> None:
+        """Check repository-local settings visible to Git launched by the shell helper."""
+        run = STACK.run_command
+
+        def observe_shared_series(command: list[str], **kwargs: object) -> object:
+            if command[1:2] == [str(STACK.SHARED_SERIES_SCRIPT)]:
+                checkout = Path(command[-1])
+                for setting in MAINTENANCE_SETTINGS:
+                    key, value = setting.split("=", 1)
+                    configured = self.git(checkout, "config", "--local", "--get", key)
+                    self.assertEqual(configured.strip(), value)
+            return run(command, **kwargs)
+
+        with patch.object(STACK, "run_command", side_effect=observe_shared_series):
+            receipt = STACK.maintain(self.repo, self.output, True, False)
+        self.assertEqual(receipt["shared_patch_count"], 1)
 
     def test_series_is_applied_first_and_ours_are_rendered_alone(self) -> None:
         result = STACK.maintain(self.repo, self.output, True, False)
