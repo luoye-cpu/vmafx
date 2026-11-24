@@ -1674,6 +1674,9 @@ Contributed by luoye-cpu.
   (HISS-19).
 
 
+- Add a local check that reports numeric tokens in PR bodies and replies that are absent from their evidence files.
+
+
 - **Extra compilation-database entries bring three hand-built sources into clang-tidy coverage.**
   `scripts/ci/gen-mex-compile-commands.py` now provides entries for the LD_PRELOAD fault injector
   and the upstream parity harness, and `scripts/ci/gen-gpu-compile-commands.py` adds the
@@ -2835,6 +2838,9 @@ Contributed by luoye-cpu.
 - **CI:** wait on API rate limits and poll less often (issue 3582).
 
 
+- **Go security scan:** the node's eBPF binding no longer trips gosec G101 (hard-coded credentials): its bpf2go identifier is `rcloneTracker`, whose generated constant names hold no credential word, and `make lint-go` also scans generated Go files with `.gosec.json` (issue 3630).
+
+
 - **ADR allocator scans open pull request heads to avoid fork PR collisions.**
   In claim mode, `scripts/adr/next-free.sh` queries `gh` for open pull request
   head commit SHAs and scans their `docs/adr` trees alongside origin branches.
@@ -3534,6 +3540,9 @@ Contributed by luoye-cpu.
   20261030. `Msys2InheritContract` in
   `scripts/ci/test_ffmpeg_patch_workflow_contract.py` refuses such a step with
   the cache on.
+
+
+- **CI:** the mypy gate counts repeated findings, so a new occurrence of an inherited error is reported even when its path, code and message match.
 
 
 - CI: Renovate's CI Node.js pull request can pass the dependency-only deliverables exemption and move Node to a new major while the engine-locked documentation workflow keeps its own major until the next engine pin move.
