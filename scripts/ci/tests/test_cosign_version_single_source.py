@@ -141,6 +141,50 @@ class CosignVersionSingleSource(unittest.TestCase):
             "\n".join(CHECK(self.root, WANT)),
         )
 
+    def test_a_trailing_comment_does_not_turn_a_literal_into_the_expression(self) -> None:
+        self.write(self.fixture(release='"v3.1.4" # cosign-release: v${{ env.COSIGN_VERSION }}'))
+        self.assertIn(
+            "1 cosign-installer step(s) do not set cosign-release from env.COSIGN_VERSION",
+            "\n".join(CHECK(self.root, WANT)),
+        )
+
+    def test_flow_style_job_env_override_is_seen(self) -> None:
+        self.write(
+            "name: sign\n"
+            "env:\n"
+            '  COSIGN_VERSION: "3.1.4"\n'
+            "jobs:\n"
+            "  sign:\n"
+            '    env: {COSIGN_VERSION: "2.0.0"}\n'
+            "    steps:\n"
+            "      - uses: sigstore/cosign-installer\n"
+            "        with:\n"
+            "          cosign-release: v${{ env.COSIGN_VERSION }}\n"
+        )
+        self.assertIn(
+            "COSIGN_VERSION is set below the top level",
+            "\n".join(CHECK(self.root, WANT)),
+        )
+
+    def test_quoted_step_env_override_is_seen(self) -> None:
+        self.write(
+            "name: sign\n"
+            "env:\n"
+            '  COSIGN_VERSION: "3.1.4"\n'
+            "jobs:\n"
+            "  sign:\n"
+            "    steps:\n"
+            "      - uses: sigstore/cosign-installer\n"
+            "        env:\n"
+            '          "COSIGN_VERSION": "2.0.0"\n'
+            "        with:\n"
+            "          cosign-release: v${{ env.COSIGN_VERSION }}\n"
+        )
+        self.assertIn(
+            "COSIGN_VERSION is set below the top level",
+            "\n".join(CHECK(self.root, WANT)),
+        )
+
     def test_a_job_level_override_shadows_the_mirror(self) -> None:
         self.write(
             "name: sign\n"

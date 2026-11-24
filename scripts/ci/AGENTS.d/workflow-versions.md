@@ -70,10 +70,12 @@ in `tests/test_renovate_file_patterns.py`. New pin site -> both, same commit.
 cosign-installer (audit C2-07): `COSIGN_VERSION` in `build-config.env` owns
 the release. `with:` inputs cannot source the file, so every signing workflow
 carries one top-level `COSIGN_VERSION` mirror and each `cosign-release` input
-is `v${{ env.COSIGN_VERSION }}`; `check_cosign_pins()` anchors the mirror to
-the two-space top-level `env:` block, counts every `cosign-installer` step
-(including flow-style `with:` maps), and requires each step's input to end at
-the expression. The repository has 25 steps across nine workflows. Fixture:
-`tests/test_cosign_version_single_source.py`. Renovate: one `custom.regex`
-manager reads `build-config.env` plus every workflow mirror, so one bump moves
-both. New workflow or input -> widen both, same commit.
+is `v${{ env.COSIGN_VERSION }}`; `check_cosign_pins()` parses the workflow as
+YAML, requires exactly one top-level declaration (duplicates are counted
+through `yaml.compose`), rejects any job or step `COSIGN_VERSION` override
+including flow mappings and quoted keys, and requires each installer step's
+input to match the exact expression. The repository has 25 steps across nine
+workflows. Fixture: `tests/test_cosign_version_single_source.py` (15 tests).
+Renovate: one `custom.regex` manager reads `build-config.env` plus every
+workflow mirror, so one bump moves both. New workflow or input -> widen both,
+same commit.
