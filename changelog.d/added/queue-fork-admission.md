@@ -1,0 +1,1 @@
+- Merge-queue fork admission: read-only reviewed-head admission verdict (`admit-fork`), `fork_reviewers` train policy, and post-enqueue `queue-audit` verification in `scripts/dev/merge_train_guard.py` (ADR-3610).
