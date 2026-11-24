@@ -55,9 +55,7 @@ class VerifyAllPullRequestJob(unittest.TestCase):
         checkout = job()["steps"][0]
         self.assertTrue(checkout["uses"].startswith("actions/checkout@"))
         self.assertEqual(checkout["with"]["fetch-depth"], 0)
-        self.assertEqual(
-            checkout["with"]["ref"], "${{ github.event.pull_request.head.sha }}"
-        )
+        self.assertEqual(checkout["with"]["ref"], "${{ github.event.pull_request.head.sha }}")
         self.assertFalse(checkout["with"]["persist-credentials"])
 
     def test_it_sets_up_go_and_node_before_verify_all(self) -> None:
