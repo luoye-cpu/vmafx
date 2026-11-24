@@ -224,15 +224,20 @@ jobs:
   # Required Checks Aggregator: the required Standards job already runs the
   # audit, context, HISS and duplicate checks, and this job's value is the
   # artifact, not a second merge gate.
+  #
+  # Linux-only on purpose: `hiss-replay-platforms` owns the macOS/Windows HISS
+  # replay evidence, while this job's value is the full command log a reviewer
+  # can read, not a second platform-parity matrix.
   verify-all:
     needs: tier
-    if: needs.tier.outputs.light == 'true' || needs.tier.outputs.full == 'true'
+    if: github.event_name == 'pull_request' && (needs.tier.outputs.light == 'true' || needs.tier.outputs.full == 'true')
     name: Verify All
     runs-on: ubuntu-26.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -270,6 +275,7 @@ jobs:
         id: verify
         if: steps.filter.outputs.run_audit == 'true'
         shell: bash
+        timeout-minutes: 25
         run: |
           set -o pipefail
           out="$RUNNER_TEMP/verify-all"
@@ -279,7 +285,12 @@ jobs:
 
           set +e
           make verify-all 2>&1 | tee "$log"
-          status=${PIPESTATUS[0]}
+          statuses=("${PIPESTATUS[@]}")
+          status=${statuses[0]}
+          tee_status=${statuses[1]}
+          if [ "$status" -eq 0 ] && [ "$tee_status" -ne 0 ]; then
+            status=$tee_status
+          fi
           set -e
 
           sha=$(sha256sum "$log" | awk '{print $1}')
@@ -311,6 +322,7 @@ jobs:
             ${{ runner.temp }}/verify-all/verify-all.log
             ${{ runner.temp }}/verify-all/verify-all-receipt.txt
           if-no-files-found: ignore
+          overwrite: true
           retention-days: 14
 
       - name: Upload verify-all log (Gitea)

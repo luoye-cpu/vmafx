@@ -31,7 +31,8 @@ def load() -> dict[str, Any]:
 
 
 def job() -> dict[str, Any]:
-    return load()["jobs"][JOB_ID]
+    found: dict[str, Any] = load()["jobs"][JOB_ID]
+    return found
 
 
 def step(name: str) -> dict[str, Any]:
@@ -43,14 +44,20 @@ class VerifyAllPullRequestJob(unittest.TestCase):
         definition = job()
         self.assertEqual(definition["name"], "Verify All")
         self.assertEqual(definition["needs"], "tier")
-        self.assertIn("needs.tier.outputs.light == 'true'", definition["if"])
-        self.assertIn("needs.tier.outputs.full == 'true'", definition["if"])
+        self.assertEqual(
+            definition["if"],
+            "github.event_name == 'pull_request' && "
+            "(needs.tier.outputs.light == 'true' || needs.tier.outputs.full == 'true')",
+        )
         self.assertEqual(definition["timeout-minutes"], 30)
 
     def test_it_checks_out_history_for_the_merge_base_filter(self) -> None:
         checkout = job()["steps"][0]
         self.assertTrue(checkout["uses"].startswith("actions/checkout@"))
         self.assertEqual(checkout["with"]["fetch-depth"], 0)
+        self.assertEqual(
+            checkout["with"]["ref"], "${{ github.event.pull_request.head.sha }}"
+        )
         self.assertFalse(checkout["with"]["persist-credentials"])
 
     def test_it_sets_up_go_and_node_before_verify_all(self) -> None:
@@ -96,11 +103,15 @@ class VerifyAllPullRequestJob(unittest.TestCase):
         run = verify["run"]
         self.assertIn("set -o pipefail", run)
         self.assertIn('make verify-all 2>&1 | tee "$log"', run)
-        self.assertIn("status=${PIPESTATUS[0]}", run)
+        self.assertIn('statuses=("${PIPESTATUS[@]}")', run)
+        self.assertIn("status=${statuses[0]}", run)
+        self.assertIn("tee_status=${statuses[1]}", run)
+        self.assertIn("status=$tee_status", run)
         self.assertIn("printf 'log_sha256=%s", run)
         self.assertIn("printf 'exit_code=%s", run)
         self.assertIn('exit "$status"', run)
         self.assertEqual(verify["shell"], "bash")
+        self.assertEqual(verify["timeout-minutes"], 25)
 
     def test_it_uploads_the_log_and_receipt_even_on_failure(self) -> None:
         uploads = [s for s in job()["steps"] if "upload-artifact" in s.get("uses", "")]
@@ -112,6 +123,10 @@ class VerifyAllPullRequestJob(unittest.TestCase):
             paths = upload["with"]["path"]
             self.assertIn("verify-all/verify-all.log", paths)
             self.assertIn("verify-all/verify-all-receipt.txt", paths)
+        github_upload = next(
+            u for u in uploads if u["uses"].startswith("actions/upload-artifact@cf430e03")
+        )
+        self.assertTrue(github_upload["with"]["overwrite"])
 
     def test_every_action_is_pinned_to_a_commit(self) -> None:
         for step_definition in job()["steps"]:
