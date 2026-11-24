@@ -32,6 +32,9 @@ Schema (every wrapper emits):
 The orchestrator runs every wrapper across the requested corpus,
 aggregates the four ``summary`` blocks, and emits a comparison
 table to stdout (and optionally to ``--out-json``).
+
+Exit codes: ``0`` every wrapper run produced a valid payload; ``4`` no
+corpus; ``5`` at least one wrapper run failed.
 """
 
 from __future__ import annotations
@@ -48,6 +51,9 @@ from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 HERE = pathlib.Path(__file__).resolve().parent
+
+EXIT_NO_CORPUS = 4
+EXIT_WRAPPER_FAILED = 5
 
 # ---- corpus discovery -------------------------------------------------------
 
@@ -287,6 +293,7 @@ class CompetitorAggregate:
     runtime_total_ms: float
     params: int
     gflops: float
+    n_failed: int = 0
 
 
 def _mean(xs: Sequence[float]) -> float:
@@ -296,6 +303,7 @@ def _mean(xs: Sequence[float]) -> float:
 def aggregate(
     competitor: str,
     results: Iterable[dict[str, Any]],
+    n_failed: int = 0,
 ) -> CompetitorAggregate:
     summaries = [r["summary"] for r in results]
     return CompetitorAggregate(
@@ -307,16 +315,28 @@ def aggregate(
         runtime_total_ms=sum(s.get("runtime_total_ms", 0.0) for s in summaries),
         params=int(summaries[0].get("params", 0)) if summaries else 0,
         gflops=float(summaries[0].get("gflops", 0.0)) if summaries else 0.0,
+        n_failed=n_failed,
     )
 
 
 def render_table(aggs: Sequence[CompetitorAggregate]) -> str:
     """Render a fixed-width comparison table as plain text."""
-    headers = ("competitor", "n", "PLCC", "SROCC", "RMSE", "runtime_ms", "params", "GFLOPs")
+    headers = (
+        "competitor",
+        "n",
+        "failed",
+        "PLCC",
+        "SROCC",
+        "RMSE",
+        "runtime_ms",
+        "params",
+        "GFLOPs",
+    )
     rows = [headers] + [
         (
             a.competitor,
             str(a.n_clips),
+            str(a.n_failed),
             f"{a.plcc_mean:.4f}",
             f"{a.srocc_mean:.4f}",
             f"{a.rmse_mean:.4f}",
@@ -401,6 +421,23 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _run_competitor_over_corpus(
+    competitor: str,
+    corpus: Sequence[CorpusItem],
+    td_path: pathlib.Path,
+) -> tuple[list[dict[str, Any]], int]:
+    results: list[dict[str, Any]] = []
+    n_failed = 0
+    for i, item in enumerate(corpus):
+        out_path = td_path / f"{competitor}-{i:04d}.json"
+        try:
+            results.append(run_wrapper(competitor, item, out_path))
+        except RuntimeError as exc:
+            print(f"  failed {competitor}/{item.name}: {exc}", file=sys.stderr)
+            n_failed += 1
+    return results, n_failed
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(list(sys.argv[1:] if argv is None else argv))
 
@@ -417,22 +454,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"(licence: see tools/external-bench/README.md).",
             file=sys.stderr,
         )
-        return 4
+        return EXIT_NO_CORPUS
     if args.limit > 0:
         corpus = corpus[: args.limit]
 
     aggs: list[CompetitorAggregate] = []
+    failure_counts: list[tuple[str, int]] = []
     with tempfile.TemporaryDirectory(prefix="external-bench-") as td:
         td_path = pathlib.Path(td)
         for competitor in args.competitors:
-            results: list[dict[str, Any]] = []
-            for i, item in enumerate(corpus):
-                out_path = td_path / f"{competitor}-{i:04d}.json"
-                try:
-                    results.append(run_wrapper(competitor, item, out_path))
-                except RuntimeError as e:
-                    print(f"  skip {competitor}/{item.name}: {e}", file=sys.stderr)
-            aggs.append(aggregate(competitor, results))
+            results, n_failed = _run_competitor_over_corpus(competitor, corpus, td_path)
+            if n_failed:
+                failure_counts.append((competitor, n_failed))
+            aggs.append(aggregate(competitor, results, n_failed=n_failed))
 
     table = render_table(aggs)
     print(table)
@@ -440,6 +474,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.out_json:
         args.out_json.write_text(render_json(aggs) + "\n", encoding="utf-8")
 
+    if failure_counts:
+        total = sum(count for _, count in failure_counts)
+        parts = ", ".join(f"{name}={count}" for name, count in failure_counts)
+        print(
+            f"external-bench: {total} wrapper run(s) failed ({parts}); exit 5",
+            file=sys.stderr,
+        )
+        return EXIT_WRAPPER_FAILED
     return 0
 
 
