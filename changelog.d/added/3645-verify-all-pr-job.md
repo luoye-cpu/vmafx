@@ -1,0 +1,1 @@
+- CI: the advisory `Verify All` job in `standards-gate.yml` now runs `make verify-all` on every light- or full-tier pull request and uploads `verify-all.log` plus a sha256 receipt as the `verify-all` artifact (#3645). The job does not replace the required Standards gate.
