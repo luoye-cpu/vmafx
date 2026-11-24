@@ -1098,6 +1098,9 @@ Contributed by luoye-cpu.
 - **Add `scripts/dev/upstream_pr_sweep.py`, one tracked tool that rebases, builds and tests the fork's open upstream pull requests.** It is dry-run by default, refuses heads the fork does not own and dirty worktrees, and pushes only with a lease to the contribution fork's own branches ([docs](docs/development/upstream-pr-sweep.md)). Every git it starts drops the repository-locating `GIT_*` variables and the caller's `git -c` overrides, and `scripts/git-hooks/framework-hooks.sh` now runs pre-commit without `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and the object-directory variables, so a hook-run fixture can no longer write into the caller's repository.
 
 
+- Upstream contribution branches: offline pre-push checks for patch shape, tests, attribution, merge conflicts, stale draft IDs, signatures, target paths, and self-review evidence (ADR-3559).
+
+
 - **vmaf-tune introduces content-aware video classification ([ADR-0618](docs/adr/0618-content-aware-classifier.md), [ADR-3374](docs/adr/3374-vmaf-tune-classifier-vision-fails-by-name.md)).**
   `vmaf-tune classify` extracts ITU-T P.910 spatial information (SI) and temporal
   information (TI) via FFmpeg `siti`, probes container geometry and dynamic range
@@ -1300,6 +1303,11 @@ Contributed by luoye-cpu.
 
 
 - **Run the MS-SSIM decimate and SSIMULACRA 2 PTLR bit-exactness checks on Windows.** The two Windows skips (`TODO(ms-ssim-mingw)`, `TODO(ssimulacra2-ptlr-mingw)`) are stale: the scalar references already get a correctly-rounded fma on every compiler — the PTLR test TU is compiled with `-mavx2 -mfma` (gcc inlines `fmaf` as hardware `vfmadd`; the binary contains no `fmaf` libcall), and the decimate scalar uses `vmaf_fmaf_exact`, whose double detour is correctly rounded on every in-range input we swept. Without `-mfma`, mingw-w64's static software `fmaf()` deviates from correctly-rounded on 28.1% of the tests' input grids (1-ulp errors) — the skips' premise was right about the libm, but the build and the decimate scalar had already routed around it. Both tests pass on Windows (`test_ms_ssim_decimate` 10/10, `test_ssimulacra2_simd` 13/13 including all five PTLR cases, MinGW-w64 gcc 16.2), so both skips are removed. Closes VMAFx/vmafx#2886.
+
+
+- Refresh dependency locks automatically on update branches; the DCO
+  exemption covers only live entries among the 30 exact paths listed in
+  `.config/lint-exceptions.d/dco-python-lock-refresh.toml`.
 
 
 - **The `actionlint` hook and `make lint-actions` cannot hang
@@ -1666,6 +1674,9 @@ Contributed by luoye-cpu.
   (HISS-19).
 
 
+- Add a local check that reports numeric tokens in PR bodies and replies that are absent from their evidence files.
+
+
 - **Extra compilation-database entries bring three hand-built sources into clang-tidy coverage.**
   `scripts/ci/gen-mex-compile-commands.py` now provides entries for the LD_PRELOAD fault injector
   and the upstream parity harness, and `scripts/ci/gen-gpu-compile-commands.py` adds the
@@ -1899,6 +1910,9 @@ Contributed by luoye-cpu.
   clang-cl, icx-cl and MinGW-w64), and the local copies of the constants
   (fourteen in the feature sources, the SYCL twins included, and four in
   tests) are gone. Scores are unchanged: the copies held the same double.
+
+
+- **GitHub merge-queue `merge_group` support for `Required Checks Aggregator` ([ADR-3556](docs/adr/3556-merge-queue-merge-group.md)).** `required-aggregator.yml` and every workflow that produces a required check owed outside `pull_request` now trigger on `merge_group` (`types: [checks_requested]`, `branches: [master]`) under the `full` CI tier and full impact plan. On `merge_group`, the aggregator exempts `pullRequestOnly` contexts and both OpenSSF Scorecard gates (`Scorecard PR Gate` ran on the pull request; `Scorecard Master Gate` runs on the `master` push after the merge), while publish, Pages, and registry-push steps remain restricted to their existing events.
 
 
 - **Metal feature extractors unwind without `goto`.** Seven Metal host
@@ -2241,6 +2255,9 @@ Contributed by luoye-cpu.
 
 
 - Consolidated duplicated YUV format tables and file lifecycle helpers from `compat/python-vmaf/tools/reader.py` and `writer.py` into `_YuvIoBase`, and extracted local helpers for repeated blocks in `decorator.py`, `misc.py`, and `plot.py`.
+
+
+- **The research radar collector retries HTTP fetches through tenacity 9.2.1.** `scripts/research/radar_collect.py` replaces its hand-written retry loop in `http_fetch` with `tenacity.Retrying` (Apache-2.0), keeping the same three attempts, 1 s / 4 s backoff, retried transport error classes, and `FetchError` reporting.
 
 
 - **The roadmap and release pages list the full RC4 and RC5 scope.**
@@ -2811,6 +2828,19 @@ Contributed by luoye-cpu.
 - **CI:** Install Linux CPU and GPU ONNX Runtime from pinned NuGet packages.
 
 
+- The Windows SYCL tester zip uses the same oneAPI 2026.2 installer as the
+  Windows SYCL CI build for compatibility with MSVC 14.52. The build uses
+  the AOT targets accepted by the installed compiler and reports missing
+  runtime DLLs together
+  ([ADR-3568](docs/adr/3568-windows-sycl-tester-zip-oneapi-2026-2.md)).
+
+
+- **CI:** wait on API rate limits and poll less often (issue 3582).
+
+
+- **Go security scan:** the node's eBPF binding no longer trips gosec G101 (hard-coded credentials): its bpf2go identifier is `rcloneTracker`, whose generated constant names hold no credential word, and `make lint-go` also scans generated Go files with `.gosec.json` (issue 3630).
+
+
 - **ADR allocator scans open pull request heads to avoid fork PR collisions.**
   In claim mode, `scripts/adr/next-free.sh` queries `gh` for open pull request
   head commit SHAs and scans their `docs/adr` trees alongside origin branches.
@@ -2844,6 +2874,14 @@ Contributed by luoye-cpu.
   frozen `docs/adr/_index_fragments/_order.txt`, and step 6 no longer stages the
   rendered index, tag and title pages or `CHANGELOG.md`, which a pull request
   must not carry ([adr-workflow](docs/development/adr-workflow.md)).
+
+
+- **Tests:** the affected-tests runner applies a default 300 s per-test timeout
+  when pytest-timeout is installed, and scales its 900 s base wall cap by
+  `min(4, 1 + max(load1, load5) / CPUs)` to account for host load; suites
+  without a per-test timeout retain the unscaled base cap. With plugin autoload
+  disabled it loads pytest-timeout explicitly, and without `SIGALRM` it uses the
+  thread timeout method.
 
 
 - CI: the Required Checks Aggregator waits out GitHub API 5xx answers for 15
@@ -3162,6 +3200,10 @@ Contributed by luoye-cpu.
   the CLI, and in the context's log callback for the VMAFx API.
 
 
+- **CUDA:** the device compression check reads fatbin entry flags, avoiding
+  false failures when compressed payloads contain raw-code markers.
+
+
 - **CI:** a refused or unreachable connection no longer ends a CI download on the first attempt: curl and wget fetches in shell scripts, workflows and container recipes retry connection and host-resolution failures, the tidy lane's APT downloads retry, and a contract test checks curl and wget fetches for the retry flags and requires retried downloads to write to a file before use.
 
 
@@ -3261,6 +3303,10 @@ Contributed by luoye-cpu.
   reads unfinished, instead of failing at once. The jobs API had reported the finished
   `FFmpeg Ubuntu gcc work` leg without a conclusion for a few seconds and failed master
   `baeb82e6f` (`T-CI-GATE-JOBS-API-LAG-2026-10-27`).
+
+
+- **CI:** the Git fixture sentinel reports script failures and checks declared
+  failing tests. Its hook uses the tooling suite dependencies.
 
 
 - CI: artifact steps no longer fail on the Gitea mirror with
@@ -3496,6 +3542,9 @@ Contributed by luoye-cpu.
   the cache on.
 
 
+- **CI:** the mypy gate counts repeated findings, so a new occurrence of an inherited error is reported even when its path, code and message match.
+
+
 - CI: Renovate's CI Node.js pull request can pass the dependency-only deliverables exemption and move Node to a new major while the engine-locked documentation workflow keeps its own major until the next engine pin move.
 
 
@@ -3537,6 +3586,12 @@ Contributed by luoye-cpu.
   `float_psnr` and `ciede` twins up to 15 bits, the `psnr_hvs` twins up to 11
   bits. Before, twins outside the five `picture_copy()` families were accepted
   unmeasured, and the `float_moment` twins returned unscaled moments there.
+
+
+- Correct fork links after the organisation moves and reject obsolete GitHub organisation references with a documented pre-commit check.
+
+
+- **Dev container:** Install ONNX Runtime from the pinned NuGet helper, avoiding unavailable release archives.
 
 
 - **Traces, metrics and logs leave the services when an OTLP endpoint is
@@ -3735,6 +3790,9 @@ Contributed by luoye-cpu.
   start without `RUNNER_TEMP` (ADR-3373).
 
 
+- **Dependencies:** Renovate groups coupled clang-format pins and Rust workflow toolchain updates with their matching versions.
+
+
 - **Renovate: update packaged Helm subchart archives on Chart.lock changes.**
   Configures top-level `postUpdateOptions: ["helmUpdateSubChartArchives"]` in
   `renovate.json` so subchart archive tarballs (`deploy/helm/.../charts/*.tgz`)
@@ -3757,6 +3815,9 @@ Contributed by luoye-cpu.
   The no-reference model (#2166) is a 1.1 item because the live no-reference mode
   (#2413) needs it; the 1.3 row now names the artefact detectors (#2272), ST-GREED
   (#2394) and the decision issue (#2167) instead.
+
+
+- CI: refresh the registry pull token before every ROCm image layer attempt so long installs and retries do not reuse an expired token.
 
 
 - **ROCm container layer downloads retry the entire pipeline.** Mid-stream network
@@ -4139,6 +4200,16 @@ Contributed by luoye-cpu.
   ([FFmpeg patch automation](docs/development/ffmpeg-patch-automation.md)).
   `scripts/ci/test_ffmpeg_patch_stack.py` refuses a header the series adds with
   any other guard.
+
+
+- **CI:** Move the Windows MSVC+SYCL oneAPI offline installer pin in `libvmaf-build-matrix.yml` to `2026.2.0.661` (`intel-oneapi-toolkit-2026.2.0.661_offline.exe`): MSVC 14.52 refuses Clang front ends older than 22 (`STL1000`), and Intel's release notes describe a Clang 22 front end from compiler release 2026.0.0 ([ADR-3567](docs/adr/3567-windows-sycl-oneapi-2026-2.md)).
+  The installer size and SHA-256 are checked before extraction.
+  Builds run `44487361326` measured six refused AOT targets (`tgllp`, `adl-s`,
+  `adl-p`, `adl-n`, `rpl-s`, `rpl-p`). Xe-LP, Alder Lake and Raptor Lake
+  integrated devices get no AOT image from the Windows CI build and, by design,
+  fall back to the [`spir64` image compiled at run time](docs/backends/sycl/aot.md#default-target-list).
+  Builds run `44499808688` built the leg with the 13 accepted targets; the
+  run-time fallback on the six refused families remains unmeasured.
 
 
 - **The Windows SYCL tester zip passes its import check.** `cfgmgr32.dll`, which the Level Zero loader imports, is a System32 DLL and is now accepted by `scripts/ci/check-windows-bundle-imports.py`; an unknown DLL is still refused. The x64-sycl leg failed on it, so no rc.3 Windows zip was published.
