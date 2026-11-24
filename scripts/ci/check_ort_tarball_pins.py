@@ -342,7 +342,10 @@ def _check_tracked_versions(
         if name not in valid:
             findings.append(f"{pin_file}: tracked package '{name}' is not in packages")
             continue
-        if str(version) not in valid[name].get("versions", {}):
+        if not isinstance(version, str):
+            findings.append(f"{pin_file}: tracked {name} version {version!r} is not a string")
+            continue
+        if version not in valid[name].get("versions", {}):
             findings.append(
                 f"{pin_file}: tracked {name} version '{version}' has no sha256/size pin; "
                 f"run scripts/ci/ort_nuget_install.py --package {name} --print-pin {version}"
@@ -435,7 +438,7 @@ def _container_helper_calls(lines: list[str], site_idx: int) -> list[str] | None
       "${ORT_VERSION}" or "$ORT_VERSION"
     - helper simple command matches fullmatch:
       [ORT_VERSION=<literal>] python3 [/build/vmaf/]scripts/ci/ort_nuget_install.py <flags>
-      (/build/vmaf/ allowed for dev/Containerfile:745), with flags from ort_nuget_install.py
+      (/build/vmaf/ allowed for dev/Containerfile:744), with flags from ort_nuget_install.py
       (--package, --version, --prefix, --pkgconfig-dir, --cache-dir, --print-pin), each at
       most once, and --version in {<literal>, $ORT_VERSION, ${ORT_VERSION}, "${ORT_VERSION}",
       "$ORT_VERSION"}

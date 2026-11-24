@@ -742,6 +742,38 @@ class TestOrtGuard(unittest.TestCase):
             "\n".join(findings),
         )
 
+    def test_unknown_tracked_package_fails(self) -> None:
+        root = Path(self.temp.name)
+        pins = root / "scripts/ci/ort-nuget-pins.json"
+        pins.parent.mkdir(parents=True)
+        data = json.loads((ROOT / "scripts/ci/ort-nuget-pins.json").read_text(encoding="utf-8"))
+        data["tracked"]["npu"] = "1.30.0"
+        pins.write_text(json.dumps(data), encoding="utf-8")
+        rc, findings = guard.check_tarball_pins(root=root)
+        self.assertEqual(rc, 1)
+        self.assertIn(
+            f"{pins}: tracked package 'npu' is not in packages",
+            "\n".join(findings),
+        )
+
+    def test_non_string_tracked_version_names_the_type_problem(self) -> None:
+        root = Path(self.temp.name)
+        pins = root / "scripts/ci/ort-nuget-pins.json"
+        pins.parent.mkdir(parents=True)
+        source = (ROOT / "scripts/ci/ort-nuget-pins.json").read_text(encoding="utf-8")
+        values: tuple[Any, ...] = (None, 1, [])
+        for value in values:
+            with self.subTest(value=value):
+                data = json.loads(source)
+                data["tracked"]["cpu"] = value
+                pins.write_text(json.dumps(data), encoding="utf-8")
+                rc, findings = guard.check_tarball_pins(root=root)
+                self.assertEqual(rc, 1)
+                self.assertIn(
+                    f"{pins}: tracked cpu version {value!r} is not a string",
+                    "\n".join(findings),
+                )
+
     def test_each_package_requires_tracked_anchor(self) -> None:
         root = Path(self.temp.name)
         pins = root / "scripts/ci/ort-nuget-pins.json"
@@ -782,6 +814,8 @@ class TestOrtGuard(unittest.TestCase):
 
     def test_renovate_tracks_each_ort_nuget_package(self) -> None:
         data = json.loads((ROOT / "renovate.json").read_text(encoding="utf-8"))
+        pins_text = (ROOT / "scripts/ci/ort-nuget-pins.json").read_text(encoding="utf-8")
+        pins = json.loads(pins_text)
         managers = [
             item
             for item in data["customManagers"]
@@ -791,9 +825,20 @@ class TestOrtGuard(unittest.TestCase):
             {item["depNameTemplate"] for item in managers},
             {"Microsoft.ML.OnnxRuntime", "Microsoft.ML.OnnxRuntime.Gpu.Linux"},
         )
+        expected_versions = {
+            "Microsoft.ML.OnnxRuntime": pins["tracked"]["cpu"],
+            "Microsoft.ML.OnnxRuntime.Gpu.Linux": pins["tracked"]["gpu"],
+        }
         for item in managers:
             self.assertEqual(item["datasourceTemplate"], "nuget")
-            self.assertIn("tracked", item["matchStrings"][0])
+            pattern = item["matchStrings"][0].replace("(?<currentValue>", "(?P<currentValue>")
+            match = re.compile(pattern).search(pins_text)
+            if match is None:
+                self.fail(f"{item['depNameTemplate']} matchStrings did not match the pin file")
+            self.assertEqual(
+                match.group("currentValue"),
+                expected_versions[item["depNameTemplate"]],
+            )
 
     def test_comments_and_unrelated_packages(self) -> None:
         workflow = Path(self.temp.name) / "test.yml"
