@@ -889,6 +889,9 @@ Contributed by luoye-cpu.
   ([Python package](docs/usage/python-package.md)).
 
 
+- Merge-queue fork admission: read-only reviewed-head admission verdict (`admit-fork`), `fork_reviewers` train policy, and post-enqueue `queue-audit` verification in `scripts/dev/merge_train_guard.py` (ADR-3610).
+
+
 - **The tester report states what executed (ADR-3381).** Report schema 4 adds `executed_dispatch` (the SIMD level the library reported for the default and the scalar-masked run of each fixture, checked against the host's expectation; a mismatch or a silent library fails the verdict), and `library` (library pair `libvmafx.so.1` or `libvmaf.so.3`, provenance digest, conformance mode). Schema 1 to 3 reports stay valid. The host flag table now follows the library's CPU rules (AVX2 needs FMA and BMI; `avx512icl` added).
 
 
@@ -1302,7 +1305,18 @@ Contributed by luoye-cpu.
   and refuses other presets (`recommend-saliency` exits with code 2 and a one-line error).
 
 
+- Remove the unimplemented `pkg/ai.Registry.InferDirect` stub, its
+  `ErrDirectInferNotImplemented` sentinel and its unit test. Q-132 settled on
+  the `vmafx-ort-runner` subprocess as the single ONNX integration, so
+  inference is exposed only through `Registry.Infer` (#2455).
+
+
 - **Run the MS-SSIM decimate and SSIMULACRA 2 PTLR bit-exactness checks on Windows.** The two Windows skips (`TODO(ms-ssim-mingw)`, `TODO(ssimulacra2-ptlr-mingw)`) are stale: the scalar references already get a correctly-rounded fma on every compiler — the PTLR test TU is compiled with `-mavx2 -mfma` (gcc inlines `fmaf` as hardware `vfmadd`; the binary contains no `fmaf` libcall), and the decimate scalar uses `vmaf_fmaf_exact`, whose double detour is correctly rounded on every in-range input we swept. Without `-mfma`, mingw-w64's static software `fmaf()` deviates from correctly-rounded on 28.1% of the tests' input grids (1-ulp errors) — the skips' premise was right about the libm, but the build and the decimate scalar had already routed around it. Both tests pass on Windows (`test_ms_ssim_decimate` 10/10, `test_ssimulacra2_simd` 13/13 including all five PTLR cases, MinGW-w64 gcc 16.2), so both skips are removed. Closes VMAFx/vmafx#2886.
+
+
+- **The four Coverage Gate Python shards share one pytest argument file.**
+  `scripts/ci/pytest-coverage-shard.args` replaces the repeated inline lists in
+  `tests-and-quality-gates.yml`.
 
 
 - Refresh dependency locks automatically on update branches; the DCO
@@ -1903,6 +1917,9 @@ Contributed by luoye-cpu.
 
 
 - **The Windows icx-cl and icpx builds no longer print an override warning on every compile.** The strict floating-point line of `intel-llvm-cl` is `/fp:precise /clang:-fno-fast-math /clang:-fcomplex-arithmetic=full /clang:-ffp-contract=off` instead of `/fp:precise /Qfma-`, and the SYCL compiles and device link of the MSVC build take the `-fno-fast-math -fcomplex-arithmetic=full` reset the Linux icpx already has. Same arithmetic: equal compiler front-end arguments apart from the complex-arithmetic token, equal predefined macros, byte-identical objects and device bitcode ([Research-2170](docs/research/2170-windows-strict-fp-spelling-2026-10-07.md), [ADR-2170](docs/adr/2170-warnings-are-errors-per-leg.md)).
+
+
+- **Lane briefs now carry the checks that missed three defects.** `.config/lane-brief.yaml` makes the lane launcher refuse a `task: fix` brief that lacks the isolated `mypy --no-site-packages --disable-error-code=import-not-found` command, and a `task: review` brief that lacks `grep the test tree for each changed literal` or `build-option change: meson setup`. `scripts/ci/tests/test_lane_brief_config.py` pins the lines and replays planted briefs against the launcher's reader; see [Lane brief requirements](docs/development/agent-reference.md).
 
 
 - **`M_PI` and `M_E` come from `<math.h>` on every platform (Netflix/vmaf
@@ -2907,6 +2924,21 @@ Contributed by luoye-cpu.
   contexts the CI tier does not owe, the pull-request-only contexts on a push or a
   dispatch, and a hardware lane whose switch is off, each named in the log
   ([ADR-3293](docs/adr/3293-aggregator-owed-contexts-must-succeed.md)).
+
+
+- **Same-head pull-request events queue instead of cancelling active merge-gate
+  runs.** `.github/workflows/required-aggregator.yml` and
+  `.github/workflows/rule-enforcement.yml` now enable `cancel-in-progress` only
+  on `pull_request` `synchronize` events: same-head `edited`, `reopened`, and
+  `ready_for_review` aggregator runs wait as pending and repeated pending
+  aggregator runs collapse to the newest, while each `edited` `Rules` run gets
+  its own concurrency group keyed on `github.run_id` (same-second edits sharing
+  an `updated_at` stamp fail closed when an aggregator run lists both `Rules`
+  runs; the later edit's own aggregator run queues behind the earlier one and
+  re-lists them after its own grace unless a third edit replaces that pending
+  run, per ADR-3551 and ADR-3557); a content guard fails superseded required
+  `Rules` jobs, enforced by
+  `scripts/ci/tests/test_master_concurrency_contract.py` (ADR-3557).
 
 
 - **The API generator's format test compares against the pinned
