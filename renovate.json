@@ -194,6 +194,14 @@
       "automerge": false
     },
     {
+      "description": "Group uv across pip_requirements and custom.regex into one pull request: uv generates every hash lock, its two pins (requirements/locks/tooling-tests.in and uv_version in requirements/locks/manifest.json) must move in one pull request (scripts/ci/check_python_dependency_locks.py refuses a mismatch, as on pull request 3484), and the lock refresh regenerates the locks after the bump, so it is reviewed rather than auto-merged.",
+      "matchPackageNames": [
+        "uv"
+      ],
+      "groupName": "uv (lock generator, all managers)",
+      "automerge": false
+    },
+    {
       "description": "Group clang-format across pre-commit and pip after their manager groups: scripts/codegen/tests/test_vmafx_api_layout.py requires the hook rev and tooling pin to agree.",
       "matchPackageNames": [
         "pre-commit/mirrors-clang-format",
@@ -814,6 +822,19 @@
       "datasourceTemplate": "custom.ubuntu-apt-snapshot",
       "depNameTemplate": "ubuntu-apt-snapshot",
       "versioningTemplate": "regex:^(?<major>[0-9]{8})T(?<minor>[0-9]{6})Z$"
+    },
+    {
+      "customType": "regex",
+      "description": "uv lock generator: requirements/locks/manifest.json's uv_version and requirements/locks/tooling-tests.in's uv== pin (pip_requirements) are one dependency. This manager reads uv_version with pep440 versioning so both copies share the same update type and group into one pull request; scripts/ci/check_python_dependency_locks.py refuses a manifest input whose uv pin differs from uv_version.",
+      "managerFilePatterns": [
+        "/^requirements/locks/manifest\\.json$/"
+      ],
+      "matchStrings": [
+        "\"uv_version\":\\s*\"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\""
+      ],
+      "datasourceTemplate": "pypi",
+      "depNameTemplate": "uv",
+      "versioningTemplate": "pep440"
     }
   ],
   "vulnerabilityAlerts": {

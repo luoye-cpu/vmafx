@@ -19,8 +19,10 @@ lock file with its source files and compilation arguments using a reviewed,
 pinned
 version of `uv` (`uv_version` in `requirements/locks/manifest.json`).
 Both `check` and `write` reject a manifest input whose `uv` pin differs from
-`uv_version`, so a Renovate PR that bumps the pin must update `uv_version` in
-the same change to pass.
+`uv_version`. Renovate moves the `requirements/locks/tooling-tests.in` pin and
+`uv_version` in one pull request through the
+`uv (lock generator, all managers)` group in `renovate.json`, guarded by
+`UvLockGeneratorGroup` in `scripts/ci/tests/test_renovate_file_patterns.py`.
 
 The checker recognizes `uv` by its case-insensitive, PEP 503-normalized package
 name. It checks `==` and `===` pins with optional extras, whitespace, and

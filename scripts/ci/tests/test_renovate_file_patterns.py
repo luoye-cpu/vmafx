@@ -514,6 +514,182 @@ class PythonCiVersionGroup(unittest.TestCase):
         )
 
 
+LOCK_MANIFEST = "requirements/locks/manifest.json"
+UV_GROUP = "uv (lock generator, all managers)"
+
+
+def uv_lock_generator_manager(config: dict[str, Any]) -> dict[str, Any] | None:
+    """The custom manager that owns manifest.json's uv_version, or None."""
+    managers = [
+        manager
+        for manager in config.get("customManagers", [])
+        if manager.get("depNameTemplate") == "uv"
+    ]
+    return managers[0] if len(managers) == 1 else None
+
+
+def _uv_manifest_finding(manager: dict[str, Any], manifest_text: str) -> str | None:
+    selectors = [re.compile(p[1:-1]) for p in manager.get("managerFilePatterns", [])]
+    if not any(s.search(LOCK_MANIFEST) for s in selectors):
+        return f"{LOCK_MANIFEST} is not selected by the manager"
+    patterns = [re.compile(to_python(m)) for m in manager.get("matchStrings", [])]
+    want = [str(json.loads(manifest_text)["uv_version"])]
+    got = [
+        m.groupdict().get("currentValue", "") for p in patterns for m in p.finditer(manifest_text)
+    ]
+    if got != want:
+        return f"{LOCK_MANIFEST}: manager reads {got}, manifest uv_version is {want}"
+    return None
+
+
+def _uv_group_finding(config: dict[str, Any], update_type: str) -> str | None:
+    pip_rules = matching_group_rules(
+        config,
+        {
+            "matchManagers": "pip_requirements",
+            "matchPackageNames": "uv",
+            "matchDepNames": "uv",
+            "matchUpdateTypes": update_type,
+        },
+    )
+    regex_rules = matching_group_rules(
+        config,
+        {
+            "matchManagers": "custom.regex",
+            "matchPackageNames": "uv",
+            "matchDepNames": "uv",
+            "matchUpdateTypes": update_type,
+        },
+    )
+    if not pip_rules or not regex_rules:
+        return f"uv ({update_type}): missing group rule (pip={pip_rules}, regex={regex_rules})"
+    pip_last = pip_rules[-1]
+    regex_last = regex_rules[-1]
+    pip_group = str(config["packageRules"][pip_last]["groupName"])
+    regex_group = str(config["packageRules"][regex_last]["groupName"])
+    if pip_last != regex_last or pip_group != UV_GROUP:
+        return (
+            f"uv ({update_type}): last group rules differ or are not {UV_GROUP!r} "
+            f"(pip={pip_group!r}#{pip_last}, regex={regex_group!r}#{regex_last})"
+        )
+    return None
+
+
+def uv_lock_generator_findings(config: dict[str, Any], read: Callable[[str], str]) -> list[str]:
+    """Every way the config fails to move both uv pins in one pull request."""
+    manager = uv_lock_generator_manager(config)
+    if manager is None:
+        return ["no single custom manager for uv"]
+    errors: list[str] = []
+    manifest_finding = _uv_manifest_finding(manager, read(LOCK_MANIFEST))
+    if manifest_finding is not None:
+        errors.append(manifest_finding)
+    for update_type in ("patch", "minor"):
+        group_finding = _uv_group_finding(config, update_type)
+        if group_finding is not None:
+            errors.append(group_finding)
+    return errors
+
+
+class UvLockGeneratorGroup(unittest.TestCase):
+    """Positive: the checked-in config has no findings and manifest.json carries
+    uv_version. Negative: a removed manager, a manager pattern that misses the
+    manifest, matchStrings that read nothing, a removed uv group rule and a uv
+    group rule placed before Python (patch) each fail. Boundary: a sibling
+    uv_version_note key in manifest.json is ignored."""
+
+    config: ClassVar[dict[str, Any]]
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        RenovateFilePatterns.setUpClass()
+        cls.config = RenovateFilePatterns.config
+
+    def findings(
+        self,
+        change: Callable[[dict[str, Any]], None] | None = None,
+        read: Callable[[str], str] | None = None,
+    ) -> list[str]:
+        config = json.loads(json.dumps(self.config))
+        if change is not None:
+            change(config)
+        reader = read or (lambda path: (ROOT / path).read_text(encoding="utf-8"))
+        return uv_lock_generator_findings(config, reader)
+
+    def test_checked_in_config_owns_uv_pins(self) -> None:
+        self.assertEqual(self.findings(), [])
+        manifest = json.loads((ROOT / LOCK_MANIFEST).read_text(encoding="utf-8"))
+        self.assertIn("uv_version", manifest)
+        self.assertRegex(manifest["uv_version"], r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
+    def test_missing_manager_fails(self) -> None:
+        def remove(config: dict[str, Any]) -> None:
+            config["customManagers"] = [
+                m for m in config["customManagers"] if m.get("depNameTemplate") != "uv"
+            ]
+
+        self.assertEqual(self.findings(remove), ["no single custom manager for uv"])
+
+    def test_manager_pattern_missing_manifest_fails(self) -> None:
+        def mispoint(config: dict[str, Any]) -> None:
+            manager = uv_lock_generator_manager(config)
+            assert manager is not None
+            manager["managerFilePatterns"] = ["/^requirements/locks/other\\.json$/"]
+
+        self.assertIn(f"{LOCK_MANIFEST} is not selected by the manager", self.findings(mispoint))
+
+    def test_match_strings_reading_nothing_fails(self) -> None:
+        def miss(config: dict[str, Any]) -> None:
+            manager = uv_lock_generator_manager(config)
+            assert manager is not None
+            manager["matchStrings"] = [
+                '"other_version":\\s*"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"'
+            ]
+
+        self.assertTrue(
+            any(e.startswith(f"{LOCK_MANIFEST}: manager reads []") for e in self.findings(miss))
+        )
+
+    def test_removed_uv_group_rule_splits_copies(self) -> None:
+        def ungroup(config: dict[str, Any]) -> None:
+            config["packageRules"] = [
+                r for r in config["packageRules"] if r.get("groupName") != UV_GROUP
+            ]
+
+        errors = self.findings(ungroup)
+        self.assertTrue(any(e.startswith("uv (patch):") for e in errors))
+        self.assertTrue(any(e.startswith("uv (minor):") for e in errors))
+
+    def test_uv_rule_before_python_patch_splits_copies(self) -> None:
+        def move_early(config: dict[str, Any]) -> None:
+            uv_rules = [r for r in config["packageRules"] if r.get("groupName") == UV_GROUP]
+            rest = [r for r in config["packageRules"] if r.get("groupName") != UV_GROUP]
+            patch_idx = next(
+                i for i, r in enumerate(rest) if r.get("groupName") == "Python (patch)"
+            )
+            config["packageRules"] = [*rest[:patch_idx], *uv_rules, *rest[patch_idx:]]
+
+        errors = self.findings(move_early)
+        self.assertTrue(any(e.startswith("uv (patch):") for e in errors))
+        self.assertTrue(any(e.startswith("uv (minor):") for e in errors))
+
+    def test_manifest_lookalike_key_is_ignored(self) -> None:
+        real = json.loads((ROOT / LOCK_MANIFEST).read_text(encoding="utf-8"))
+        planted = json.dumps(
+            {
+                "uv_version_note": "1.2.3",
+                "uv_version": real["uv_version"],
+                "locks": real["locks"],
+            },
+            indent=2,
+        )
+        self.assertIn('"uv_version_note": "1.2.3"', planted)
+        self.assertEqual(
+            self.findings(read=lambda path: planted if path == LOCK_MANIFEST else ""),
+            [],
+        )
+
+
 RUST_PINS = {
     CONFIG: re.compile(r'^RUST_VERSION="([^"]*)"', re.MULTILINE),
     "rust-toolchain.toml": re.compile(r'^channel = "([^"]*)"', re.MULTILINE),

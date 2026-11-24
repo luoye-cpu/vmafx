@@ -1,0 +1,1 @@
+- **Renovate updates the `uv` pin and the lock manifest `uv_version` in the same pull request.** A custom regex manager tracks `uv_version` in `requirements/locks/manifest.json` alongside `uv` in `requirements/locks/tooling-tests.in` under one `uv (lock generator, all managers)` group so lock verification and refresh no longer fail on a split bump.
