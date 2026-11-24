@@ -32,6 +32,21 @@ truth for VMAF correctness. They MUST pass on every PR. No skips, no excuses.
 
 ## netflix-golden
 
+The build step compiles every object, then links only `tools/vmaf` and any test
+binaries when no matching Builds matrix row is active. On `ubuntu-26.04`, the
+`Ubuntu gcc` and `Ubuntu clang` full-tier rows match this job's Meson options;
+when `c_core` is true and the PR is in full tier, their `ninja install` covers
+the omitted test links. Option comparison in `scripts/ci/heavy_link_targets.py`
+merges project `default_options` from `core/meson.build` with
+`core/meson_options.txt`. Unknown Meson setup flags or unparseable setup lines
+make a row unequal rather than ignored. Each heavy build step also stops with
+exit 2 if `link-targets.txt` yields an empty target list before `ninja` runs.
+[ADR-3625](../../adr/3625-heavy-job-link-profile.md) records the link profile
+decision. The step emits a `::notice::` line from `heavy_link_targets.py` with
+object, link, and twin counts. Local replay:
+`python3 scripts/ci/heavy_link_targets.py --job netflix-golden --build-dir
+core/build --tier-full false --c-core true`.
+
 ```text
 Measured max 42.4m (2026-10-23); step caps sum 80 (5+28+5+22+20), limit 85 covers sum plus 1.25x rest.
 Restore-only; the save below runs only after a successful install.
@@ -210,6 +225,14 @@ ubuntu runner doesn't have onnxruntime available via pkg-config.
 
 ## dnn
 
+The build step compiles every object, then links `tools/vmaf` plus the `dnn` test
+suite's dependencies when the `Ubuntu gcc+DNN` or `Ubuntu clang+DNN` light-tier
+matrix rows are active under `c_core`. Other test executables stay on the
+matrix rows. The `::notice::` summary records how many tests were linked here
+versus left to the matrix. Local replay:
+`python3 scripts/ci/heavy_link_targets.py --job dnn --build-dir core/build
+--tier-full false --c-core true`.
+
 ```text
 The limit is the apt step's 20-minute cap plus 1.25 times the longest
 healthy run of the other steps: 27.4 min over 38 successful jobs
@@ -342,6 +365,14 @@ this job's inputs, not optional; so are ffmpeg and its libx265.
 ```
 
 ## mcp-smoke
+
+The build step compiles every object, then links `tools/vmaf`, every
+`src/libvmaf.so*` and `src/libvmafx.so*` shared library used by the pack step,
+and every `build_by_default` test binary (no matching Builds matrix row). Named
+MCP tests still run via `run_meson_test.py` and only rebuild their dependencies.
+The `::notice::` line reports `twin=none`. Local replay:
+`python3 scripts/ci/heavy_link_targets.py --job mcp-smoke --build-dir
+core/build-mcp --tier-full false --c-core false`.
 
 ```text
 The limit is the apt step's 20-minute cap plus 1.25 times the longest

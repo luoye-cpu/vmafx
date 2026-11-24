@@ -13,10 +13,10 @@
 # The shard runner and the selection are unchanged from the unsharded suite:
 #
 #   python3 scripts/ci/run_pytest_shard.py --shard I/N -- \
-#     python/test/ -v -m "not slow" --tb=short \
-#     --timeout=600 --timeout-method=thread \
-#     --ignore=python/test/resource \
-#     --deselect python/test/command_line_test.py::CommandLineTest
+#     @scripts/ci/pytest-coverage-shard.args
+#
+# The argument file is the single owner of the pytest selection (the same file
+# the four unsharded master steps use), so a future selector edit lands once.
 #
 # The outer `timeout` only keeps a wedged vmaf subprocess from eating the job
 # budget before gcovr runs; it execs the shard runner so its signal still
@@ -38,7 +38,4 @@ cd "${REPO_ROOT}" || exit 1
 
 exec timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py \
   --shard "$2" -- \
-  python/test/ -v -m "not slow" --tb=short \
-  --timeout=600 --timeout-method=thread \
-  --ignore=python/test/resource \
-  --deselect python/test/command_line_test.py::CommandLineTest
+  @scripts/ci/pytest-coverage-shard.args

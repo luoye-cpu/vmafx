@@ -92,13 +92,25 @@ jobs:
       - name: Build (CPU, release)
         if: steps.impact.outputs.golden_harness == 'true'
         working-directory: core
+        env:
+          TIER_FULL: ${{ needs.tier.outputs.full }}
+          C_CORE: ${{ steps.impact.outputs.c_core }}
         run: |
           # shellcheck disable=SC2046  # the helper prints one option per line, split on purpose
           meson setup build -Denable_cuda=false -Denable_sycl=false \
             -Denable_zimg=true \
             -Denable_float=true -Denable_avx512=true --buildtype=release \
             -Dwerror=true $(../scripts/ci/werror-args.sh true)
-          meson compile -C build
+          if ! python3 ../scripts/ci/heavy_link_targets.py --job netflix-golden \
+            --build-dir build --tier-full "$TIER_FULL" --c-core "$C_CORE" \
+            >"${RUNNER_TEMP}/link-targets.txt" 2>"${RUNNER_TEMP}/link-summary.txt"; then
+            cat "${RUNNER_TEMP}/link-summary.txt" >&2
+            exit 2
+          fi
+          mapfile -t targets < "${RUNNER_TEMP}/link-targets.txt"
+          if [ "${#targets[@]}" -eq 0 ]; then echo "::error::heavy-link-targets printed no targets"; exit 2; fi
+          ninja -C build "${targets[@]}"
+          echo "::notice::$(cat "${RUNNER_TEMP}/link-summary.txt") (ADR-3625)"
 
       - name: Restore Netflix vmaf_resource fixtures
         id: fixtures
@@ -449,12 +461,24 @@ jobs:
       - name: Build libvmaf (dnn enabled)
         if: steps.impact.outputs.tiny_ai == 'true'
         working-directory: core
+        env:
+          TIER_FULL: ${{ needs.tier.outputs.full }}
+          C_CORE: ${{ steps.impact.outputs.c_core }}
         run: |
           # shellcheck disable=SC2046  # the helper prints one option per line, split on purpose
           meson setup build -Denable_cuda=false -Denable_sycl=false \
             -Denable_dnn=enabled --buildtype=release \
             -Dwerror=true $(../scripts/ci/werror-args.sh true)
-          meson compile -C build
+          if ! python3 ../scripts/ci/heavy_link_targets.py --job dnn --build-dir build \
+            --tier-full "$TIER_FULL" --c-core "$C_CORE" \
+            >"${RUNNER_TEMP}/link-targets.txt" 2>"${RUNNER_TEMP}/link-summary.txt"; then
+            cat "${RUNNER_TEMP}/link-summary.txt" >&2
+            exit 2
+          fi
+          mapfile -t targets < "${RUNNER_TEMP}/link-targets.txt"
+          if [ "${#targets[@]}" -eq 0 ]; then echo "::error::heavy-link-targets printed no targets"; exit 2; fi
+          ninja -C build "${targets[@]}"
+          echo "::notice::$(cat "${RUNNER_TEMP}/link-summary.txt") (ADR-3625)"
       - name: Run meson dnn suite
         if: steps.impact.outputs.tiny_ai == 'true'
         working-directory: core
@@ -806,6 +830,10 @@ jobs:
 
       - name: Build libvmaf (full MCP transport matrix)
         working-directory: core
+        env:
+          TIER_FULL: ${{ needs.tier.outputs.full }}
+          # mcp-smoke has no equivalent libvmaf-build-matrix row; keep every test link.
+          C_CORE: "false"
         run: |
           # shellcheck disable=SC2046  # the helper prints one option per line, split on purpose
           meson setup build-mcp \
@@ -814,7 +842,16 @@ jobs:
             -Denable_mcp_uds=true -Denable_mcp_stdio=true \
             --buildtype=release \
             -Dwerror=true $(../scripts/ci/werror-args.sh true)
-          meson compile -C build-mcp
+          if ! python3 ../scripts/ci/heavy_link_targets.py --job mcp-smoke \
+            --build-dir build-mcp --tier-full "$TIER_FULL" --c-core "$C_CORE" \
+            >"${RUNNER_TEMP}/link-targets.txt" 2>"${RUNNER_TEMP}/link-summary.txt"; then
+            cat "${RUNNER_TEMP}/link-summary.txt" >&2
+            exit 2
+          fi
+          mapfile -t targets < "${RUNNER_TEMP}/link-targets.txt"
+          if [ "${#targets[@]}" -eq 0 ]; then echo "::error::heavy-link-targets printed no targets"; exit 2; fi
+          ninja -C build-mcp "${targets[@]}"
+          echo "::notice::$(cat "${RUNNER_TEMP}/link-summary.txt") (ADR-3625)"
 
       - name: Pack the vmaf CLI for the vmaf-tune suite
         # ADR-1528 (design notes)
