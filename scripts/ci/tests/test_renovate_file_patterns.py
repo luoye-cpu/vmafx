@@ -529,9 +529,17 @@ def uv_lock_generator_manager(config: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _uv_manifest_finding(manager: dict[str, Any], manifest_text: str) -> str | None:
-    selectors = [re.compile(p[1:-1]) for p in manager.get("managerFilePatterns", [])]
-    if not any(s.search(LOCK_MANIFEST) for s in selectors):
+    if manager.get("datasourceTemplate") != "pypi":
+        return "uv manager datasourceTemplate must be pypi"
+    selectors = manager.get("managerFilePatterns", [])
+    if len(selectors) != 1:
+        return "uv manager needs exactly one managerFilePatterns entry"
+    selector = re.compile(selectors[0][1:-1])
+    if not selector.search(LOCK_MANIFEST):
         return f"{LOCK_MANIFEST} is not selected by the manager"
+    for other in ("requirements/locks/other.json", "requirements/locks/sub/manifest.json"):
+        if selector.search(other):
+            return f"uv manager also selects {other}"
     patterns = [re.compile(to_python(m)) for m in manager.get("matchStrings", [])]
     want = [str(json.loads(manifest_text)["uv_version"])]
     got = [
@@ -543,35 +551,34 @@ def _uv_manifest_finding(manager: dict[str, Any], manifest_text: str) -> str | N
 
 
 def _uv_group_finding(config: dict[str, Any], update_type: str) -> str | None:
-    pip_rules = matching_group_rules(
-        config,
-        {
-            "matchManagers": "pip_requirements",
-            "matchPackageNames": "uv",
-            "matchDepNames": "uv",
-            "matchUpdateTypes": update_type,
-        },
-    )
-    regex_rules = matching_group_rules(
-        config,
-        {
-            "matchManagers": "custom.regex",
-            "matchPackageNames": "uv",
-            "matchDepNames": "uv",
-            "matchUpdateTypes": update_type,
-        },
-    )
-    if not pip_rules or not regex_rules:
-        return f"uv ({update_type}): missing group rule (pip={pip_rules}, regex={regex_rules})"
-    pip_last = pip_rules[-1]
-    regex_last = regex_rules[-1]
-    pip_group = str(config["packageRules"][pip_last]["groupName"])
-    regex_group = str(config["packageRules"][regex_last]["groupName"])
-    if pip_last != regex_last or pip_group != UV_GROUP:
-        return (
-            f"uv ({update_type}): last group rules differ or are not {UV_GROUP!r} "
-            f"(pip={pip_group!r}#{pip_last}, regex={regex_group!r}#{regex_last})"
+    rules = config["packageRules"]
+    shared = {index for index, rule in enumerate(rules) if rule.get("groupName") == UV_GROUP}
+    matches = {}
+    for manager, path in (
+        ("pip_requirements", "requirements/locks/tooling-tests.in"),
+        ("custom.regex", LOCK_MANIFEST),
+    ):
+        indices = matching_group_rules(
+            config,
+            {
+                "matchManagers": manager,
+                "matchFileNames": path,
+                "matchDatasources": "pypi",
+                "matchPackageNames": "uv",
+                "matchDepNames": "uv",
+                "matchUpdateTypes": update_type,
+            },
         )
+        shared.intersection_update(indices)
+        matches[manager] = indices
+    if not shared:
+        return f"uv ({update_type}): missing shared {UV_GROUP!r} rule"
+    group_index = min(shared)
+    for manager, indices in matches.items():
+        for index in indices:
+            group = rules[index]["groupName"]
+            if index > group_index and group != UV_GROUP:
+                return f"uv ({update_type}): later {manager} rule overrides the uv group with {group!r}"
     return None
 
 
@@ -584,7 +591,7 @@ def uv_lock_generator_findings(config: dict[str, Any], read: Callable[[str], str
     manifest_finding = _uv_manifest_finding(manager, read(LOCK_MANIFEST))
     if manifest_finding is not None:
         errors.append(manifest_finding)
-    for update_type in ("patch", "minor"):
+    for update_type in ("patch", "minor", "major"):
         group_finding = _uv_group_finding(config, update_type)
         if group_finding is not None:
             errors.append(group_finding)
@@ -637,6 +644,67 @@ class UvLockGeneratorGroup(unittest.TestCase):
             manager["managerFilePatterns"] = ["/^requirements/locks/other\\.json$/"]
 
         self.assertIn(f"{LOCK_MANIFEST} is not selected by the manager", self.findings(mispoint))
+
+    def manager_findings(self, **changes: Any) -> list[str]:
+        def change(config: dict[str, Any]) -> None:
+            manager = uv_lock_generator_manager(config)
+            assert manager is not None
+            manager.update(changes)
+
+        return self.findings(change)
+
+    def test_manager_requires_one_selector(self) -> None:
+        selectors = [r"/^requirements/locks/manifest\.json$/", r"/^another\.json$/"]
+        for patterns in ([], selectors):
+            with self.subTest(patterns=patterns):
+                self.assertIn(
+                    "uv manager needs exactly one managerFilePatterns entry",
+                    self.manager_findings(managerFilePatterns=patterns),
+                )
+
+    def test_selector_cannot_match_sibling(self) -> None:
+        self.assertIn(
+            "uv manager also selects requirements/locks/other.json",
+            self.manager_findings(managerFilePatterns=[r"/^requirements/locks/[^/]+\.json$/"]),
+        )
+
+    def test_selector_cannot_match_nested_manifest(self) -> None:
+        self.assertIn(
+            "uv manager also selects requirements/locks/sub/manifest.json",
+            self.manager_findings(
+                managerFilePatterns=[r"/^requirements/locks/(?:.*/)?manifest\.json$/"]
+            ),
+        )
+
+    def test_manager_requires_pypi(self) -> None:
+        self.assertIn(
+            "uv manager datasourceTemplate must be pypi",
+            self.manager_findings(datasourceTemplate="npm"),
+        )
+
+    def test_later_pypi_group_cannot_override_uv(self) -> None:
+        for manager, path in (
+            ("custom.regex", LOCK_MANIFEST),
+            ("pip_requirements", "requirements/locks/tooling-tests.in"),
+        ):
+
+            def override(config: dict[str, Any], manager: str = manager, path: str = path) -> None:
+                config["packageRules"].append(
+                    {
+                        "matchManagers": [manager],
+                        "matchDatasources": ["pypi"],
+                        "matchPackageNames": ["uv"],
+                        "matchFileNames": [path],
+                        "matchUpdateTypes": ["major"],
+                        "groupName": "another group",
+                    }
+                )
+
+            with self.subTest(manager=manager):
+                self.assertIn(
+                    f"uv (major): later {manager} rule overrides the uv group with 'another group'",
+                    self.findings(override),
+                )
 
     def test_match_strings_reading_nothing_fails(self) -> None:
         def miss(config: dict[str, Any]) -> None:

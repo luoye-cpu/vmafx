@@ -18,7 +18,7 @@ The central authority is `requirements/locks/manifest.json`, which pairs every
 lock file with its source files and compilation arguments using a reviewed,
 pinned
 version of `uv` (`uv_version` in `requirements/locks/manifest.json`).
-Both `check` and `write` reject a manifest input whose `uv` pin differs from
+`check`, `bootstrap-uv`, and `write` reject a manifest input whose `uv` pin differs from
 `uv_version`. Renovate moves the `requirements/locks/tooling-tests.in` pin and
 `uv_version` in one pull request through the
 `uv (lock generator, all managers)` group in `renovate.json`, guarded by
@@ -83,6 +83,7 @@ CI Workflows & Dockerfiles                Local Workstation (make lint-tools, cy
 | --- | --- |
 | `make python-locks-check` | Validates that all lock files match their inputs and that every executed `pip install` in the repo uses `--require-hashes` or local `--no-deps`. Offline, fast. |
 | `make python-locks-write` | Networked refresh: runs the pinned `uv` compiler to update all lock files and re-stamp metadata headers. |
+| `python3 scripts/ci/check_python_dependency_locks.py bootstrap-uv --output FILE` | Compiles a temporary hash-pinned generator lock when the installed uv differs from the reviewed version. Removes FILE when the versions match. |
 | `make lint-tools` | Installs project linting tools (`ruff`, `black`, `mypy`) into `.venv` from `requirements/locks/dev-linters.txt` using `--require-hashes`. |
 | `make cythonize-deps` | Installs C-extension build dependencies (`Cython`, `numpy`, `setuptools`, `packaging`) from `requirements/locks/cythonize.txt` using `--require-hashes`. |
 | `python3 -m pip install --require-hashes -r requirements/locks/nox.txt` | Installs the reviewed Nox release and its transitive dependencies before running local package sessions. |
@@ -97,6 +98,12 @@ only live entries among the 30 exact paths in
 new operator grant. If the branch moves or is deleted, publication fails without
 overwriting it. The next input change runs refresh again; otherwise rerun it
 against the current tip.
+
+A uv bump changes `tooling-tests.in` and the manifest's `uv_version` while
+`tooling-tests.txt` still pins the old uv. The job installs that old uv, then
+`check_python_dependency_locks.py bootstrap-uv` uses it to compile the
+generator lock into a temporary hash-pinned file. The job installs the reviewed
+uv from that file and runs `write` to regenerate every lock with it.
 
 ## How to add or update a dependency
 

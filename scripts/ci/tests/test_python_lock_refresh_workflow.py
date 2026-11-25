@@ -88,17 +88,18 @@ def shape_findings(workflow: dict[str, Any], inputs: list[str]) -> list[str]:
 
 
 def guard_order_findings(texts: list[str]) -> list[str]:
-    """The guard runs before the write mode, which runs before the publish."""
+    """Require separate guard, bootstrap, regeneration and publish steps in order."""
     joined = [
         next((i for i, t in enumerate(texts) if marker in t), -1)
         for marker in (
             "lock_refresh_publish.py refuse-non-renovate",
+            "check_python_dependency_locks.py bootstrap-uv",
             "check_python_dependency_locks.py write",
             "lock_refresh_publish.py publish",
         )
     ]
-    if -1 in joined or joined != sorted(joined):
-        return ["guard, write and publish steps are missing or out of order"]
+    if -1 in joined or joined != sorted(set(joined)):
+        return ["guard, bootstrap, write and publish steps are missing or out of order"]
     return []
 
 
@@ -182,7 +183,18 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
             s for s in steps if "refuse" not in s.get("run", "")
         ]
         self.assertIn(
-            "guard, write and publish steps are missing or out of order",
+            "guard, bootstrap, write and publish steps are missing or out of order",
+            shape_findings(wf, self.inputs),
+        )
+
+    def test_planted_missing_bootstrap_is_reported(self) -> None:
+        """Negative: dropping the bootstrap step leaves the old generator installed."""
+        wf = self.planted()
+        wf["jobs"]["refresh-locks"]["steps"] = [
+            step for step in steps_of(wf) if "bootstrap-uv" not in step.get("run", "")
+        ]
+        self.assertIn(
+            "guard, bootstrap, write and publish steps are missing or out of order",
             shape_findings(wf, self.inputs),
         )
 

@@ -5,7 +5,8 @@
 
 The committed lock files are the install authority.  The manifest binds each
 lock to its source bytes and to one reviewed uv release; ``check`` is entirely
-offline, while ``write`` is the explicit networked refresh operation.
+offline. ``bootstrap-uv`` prepares a temporary generator lock for a version bump
+and ``write`` refreshes the committed locks.
 """
 
 from __future__ import annotations
@@ -1258,6 +1259,24 @@ def _nox_install_tokens(text: str) -> Iterable[tuple[int, list[str] | None]]:
                 yield from _scan_nox_call(sub, session_aliases, method_aliases)
 
 
+def _bootstrap_install_line(path: Path, text: str) -> int | None:
+    """Bind the temporary lock only to the install immediately after its producer."""
+    if path != Path(".github/workflows/python-lock-refresh.yml"):
+        return None
+    match = re.search(
+        r"^ +run: \|\n(?P<indent> +)set -euo pipefail\n"
+        r'(?P=indent)bootstrap="\$RUNNER_TEMP/uv-bootstrap\.txt"\n'
+        r"(?P=indent)python3 scripts/ci/check_python_dependency_locks\.py "
+        r'bootstrap-uv --output "\$bootstrap"\n'
+        r'(?P=indent)if \[ -s "\$bootstrap" \]; then\n'
+        r"(?P<install>(?P=indent) +python -m pip install --no-build-isolation "
+        r'--require-hashes -r "\$bootstrap")\n(?P=indent)fi$',
+        text,
+        re.MULTILINE,
+    )
+    return text.count("\n", 0, match.start("install")) + 1 if match else None
+
+
 def scan_install_commands(
     path: Path,
     text: str,
@@ -1282,13 +1301,17 @@ def scan_install_commands(
                 "hash-locked or local-source install policy"
             )
         return findings
+    bootstrap_line = _bootstrap_install_line(path, text)
     for line, command in logical_lines(text):
         stripped = command.lstrip()
         if not stripped or stripped.startswith("#"):
             continue
+        targets = (
+            valid_lock_outputs | {"$bootstrap"} if line == bootstrap_line else valid_lock_outputs
+        )
         for tokens in _pip_install_tokens(command):
             findings.extend(_system_install_findings(path, line, tokens))
-            if _is_secure_install(tokens, valid_lock_outputs, root=search_root, consumer_path=path):
+            if _is_secure_install(tokens, targets, root=search_root, consumer_path=path):
                 continue
             findings.append(
                 f"{path}:{line}: pip install must use --require-hashes with a lock file, "
@@ -2078,8 +2101,22 @@ def stamp_lock(
     temporary.replace(destination)
 
 
-def write(root: Path, uv_binary: str) -> int:
-    """Regenerate all manifest lockfiles using uv and verify the updated locks."""
+def compile_entry(root: Path, resolved_uv: str, entry: dict[str, Any], generated: Path) -> None:
+    """Compile one manifest entry, preserving uv's diagnostic on failure."""
+    compile_args = entry.get("compile_args")
+    if not isinstance(compile_args, list) or not all(isinstance(arg, str) for arg in compile_args):
+        raise ContractError(
+            f"manifest lock entry {entry['output']!r} compile_args must be a list of str"
+        )
+    command = ["pip", "compile", *compile_args, "-o", str(generated)]
+    result = _run_uv(resolved_uv, command, cwd=root)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise ContractError(f"uv failed for {entry['output']}: {detail}")
+
+
+def _generator_context(root: Path, uv_binary: str) -> tuple[str, dict[str, Any], str]:
+    """Resolve uv and check the reviewed input pins before executing it."""
     try:
         resolved_uv = resolve_executable(uv_binary, root=root)
     except CommandValidationError as error:
@@ -2088,7 +2125,80 @@ def write(root: Path, uv_binary: str) -> int:
     problems = check_uv_input_pins(root, manifest)
     if problems:
         raise ContractError("\n".join(problems))
-    actual = uv_version(resolved_uv)
+    return resolved_uv, manifest, uv_version(resolved_uv)
+
+
+def _generator_entry(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    entries = [e for e in manifest["locks"] if find_uv_input_pins(root, e["inputs"])]
+    if len(entries) != 1:
+        outputs = [e["output"] for e in entries]
+        raise ContractError(
+            f"expected exactly one lock entry with an exact uv input pin, found {outputs}"
+        )
+    return cast("dict[str, Any]", entries[0])
+
+
+def _check_bootstrap_pin(output: Path, version: str) -> None:
+    pin = f"uv=={version}"
+    try:
+        text = output.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ContractError(f"cannot read bootstrap lock {output}: {error}") from error
+    pins = [
+        requirement.split()
+        for _, requirement in _requirements_file_lines(text)
+        if re.match(r"^\s*uv(?![a-z0-9_.-])", requirement, re.IGNORECASE)
+    ]
+    if len(pins) == 1:
+        name, *hashes = pins[0]
+        if name == pin and hashes and all(HASH_RE.fullmatch(token) for token in hashes):
+            return
+    raise ContractError(f"{output}: expected {pin} with a sha256 artifact hash")
+
+
+def _check_bootstrap_destination(root: Path, manifest: dict[str, Any], output: Path) -> None:
+    """Keep generated data and same-version cleanup away from repository files."""
+    destination = output.parent.resolve() / output.name
+    root = root.resolve()
+    protected = [
+        MANIFEST_PATH,
+        *_manifest_input_paths(manifest),
+        *(e["output"] for e in manifest["locks"]),
+    ]
+    if output.resolve() in {(root / path).resolve() for path in protected}:
+        raise ContractError(
+            f"{output}: bootstrap output must be separate from the lock manifest, inputs and outputs"
+        )
+    if destination.is_relative_to(root) and (root / ".git").exists():
+        if destination.relative_to(root) in tracked_paths(root):
+            raise ContractError(f"{output}: bootstrap output must not replace a tracked file")
+
+
+def bootstrap_uv(root: Path, uv_binary: str, output: Path) -> int:
+    """Use the installed generator to prepare a temporary lock for the reviewed uv."""
+    resolved_uv, manifest, actual = _generator_context(root, uv_binary)
+    version = manifest["uv_version"]
+    _check_bootstrap_destination(root, manifest, output)
+    if actual == version:
+        output.unlink(missing_ok=True)
+        print(f"uv {actual} matches uv_version; no bootstrap")
+        return 0
+    entry = _generator_entry(root, manifest)
+    # Start fresh: uv can reuse pins from an existing output during compilation.
+    output.unlink(missing_ok=True)
+    try:
+        compile_entry(root, resolved_uv, entry, output.absolute())
+        _check_bootstrap_pin(output, version)
+    except BaseException:
+        output.unlink(missing_ok=True)
+        raise
+    print(f"bootstrap: uv {actual} compiled {entry['output']} for uv {version} into {output}")
+    return 0
+
+
+def write(root: Path, uv_binary: str) -> int:
+    """Regenerate all manifest lockfiles using uv and verify the updated locks."""
+    resolved_uv, manifest, actual = _generator_context(root, uv_binary)
     if actual != manifest["uv_version"]:
         raise ContractError(
             f"uv {actual} does not match reviewed generator {manifest['uv_version']}"
@@ -2098,20 +2208,8 @@ def write(root: Path, uv_binary: str) -> int:
         for index, raw_entry in enumerate(manifest["locks"]):
             if not isinstance(raw_entry, dict):
                 raise ContractError("manifest lock entry is not an object")
-            compile_args = raw_entry.get("compile_args")
-            if not isinstance(compile_args, list) or not all(
-                isinstance(arg, str) for arg in compile_args
-            ):
-                target = raw_entry.get("output", index)
-                raise ContractError(
-                    f"manifest lock entry {target!r} compile_args must be a list of str"
-                )
             generated = temp_root / f"{index}.txt"
-            command = ["pip", "compile", *compile_args, "-o", str(generated)]
-            result = _run_uv(resolved_uv, command, cwd=root)
-            if result.returncode != 0:
-                detail = result.stderr.strip() or result.stdout.strip()
-                raise ContractError(f"uv failed for {raw_entry['output']}: {detail}")
+            compile_entry(root, resolved_uv, raw_entry, generated)
             stamp_lock(root, manifest, raw_entry, generated)
             print(f"wrote {raw_entry['output']}")
     return check(root)
@@ -2138,7 +2236,10 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser("outputs", help="print the manifest lock outputs, one per line")
     subparsers.add_parser("inputs", help="print the manifest lock inputs, one per line")
     writer = subparsers.add_parser("write")
-    writer.add_argument("--uv", default=None)
+    bootstrap = subparsers.add_parser("bootstrap-uv", help="prepare a temporary lock for a uv bump")
+    bootstrap.add_argument("--output", type=Path, required=True)
+    for command in (writer, bootstrap):
+        command.add_argument("--uv", default=None)
     return parser.parse_args()
 
 
@@ -2146,8 +2247,10 @@ def main() -> int:
     args = parse_args()
     root = args.root.resolve()
     try:
-        if args.command == "write":
+        if args.command in ("write", "bootstrap-uv"):
             uv_bin = args.uv or find_default_uv(root)
+            if args.command == "bootstrap-uv":
+                return bootstrap_uv(root, uv_bin, args.output)
             return write(root, uv_bin)
         if args.command in ("outputs", "inputs"):
             listing = manifest_outputs(root) if args.command == "outputs" else manifest_inputs(root)

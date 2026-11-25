@@ -87,6 +87,17 @@ jobs:
           python -m pip install --require-hashes -r requirements/locks/package-build.txt
           python -m pip install --no-build-isolation --require-hashes \
             -r requirements/locks/tooling-tests.txt
+      - name: Bootstrap the reviewed uv when the bump changed it
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          bootstrap="$RUNNER_TEMP/uv-bootstrap.txt"
+          python3 scripts/ci/check_python_dependency_locks.py bootstrap-uv --output "$bootstrap"
+          if [ -s "$bootstrap" ]; then
+            python -m pip install --no-build-isolation --require-hashes -r "$bootstrap"
+          fi
       - name: Regenerate the locks from the manifest
         shell: bash
         run: |

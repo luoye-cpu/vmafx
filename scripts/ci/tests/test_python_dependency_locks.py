@@ -2338,6 +2338,176 @@ class UvInputPinTests(unittest.TestCase):
             self.checker.check_uv_input_pins(self.root, self.manifest)
 
 
+class UvBootstrapTests(unittest.TestCase):
+    """Bootstrap the reviewed generator without changing the manifest's lock outputs."""
+
+    def setUp(self) -> None:
+        self.checker = load_checker()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.output = self.root / "bootstrap.txt"
+        self.version = "0.12.18"
+        self.old = "0.12.17"
+        self.digest = "--hash=sha256:" + "a" * 64
+        self.compiled = f"uv=={self.version} {self.digest}\n"
+        write_uv_pin_fixture(self.root, {"tools.in": f"uv=={self.version}\n"}, self.version)
+        version_patch = mock.patch.object(self.checker, "uv_version", return_value=self.old)
+        self.installed = version_patch.start()
+        self.addCleanup(version_patch.stop)
+        compile_patch = mock.patch.object(self.checker, "_run_uv", side_effect=self.compile)
+        self.run_uv = compile_patch.start()
+        self.addCleanup(compile_patch.stop)
+
+    def compile(
+        self, binary: str, args: list[str], *, cwd: Path
+    ) -> subprocess.CompletedProcess[str]:
+        Path(args[args.index("-o") + 1]).write_text(self.compiled, encoding="utf-8")
+        return subprocess.CompletedProcess([binary, *args], 0, "", "")
+
+    def bootstrap(self) -> int:
+        return int(self.checker.bootstrap_uv(self.root, sys.executable, self.output))
+
+    def test_old_uv_compiles_the_generator_entry(self) -> None:
+        """Positive: use the discovered entry's arguments and emit a hash-pinned lock."""
+        manifest_path = self.root / self.checker.MANIFEST_PATH
+        manifest = self.checker.load_manifest(self.root)
+        args = ["tools.in", "--universal", "--generate-hashes"]
+        manifest["locks"][0]["compile_args"] = args
+        (self.root / "other.in").write_text("pyyaml\n", encoding="utf-8")
+        manifest["locks"].insert(
+            0, {"output": "other.txt", "inputs": ["other.in"], "compile_args": ["other.in"]}
+        )
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        self.assertEqual(self.bootstrap(), 0)
+        self.run_uv.assert_called_once_with(
+            self.installed.call_args.args[0],
+            ["pip", "compile", *args, "-o", str(self.output)],
+            cwd=self.root,
+        )
+        self.assertEqual(self.output.read_text(encoding="utf-8"), self.compiled)
+        self.assertFalse((self.root / "tooling-lock.txt").exists())
+
+    def test_workflow_install_requires_its_bootstrap_producer(self) -> None:
+        """Negative: a missing producer, reassignment or different consumer has no authority."""
+        path = Path(".github/workflows/python-lock-refresh.yml")
+        text = (ROOT / path).read_text(encoding="utf-8")
+        install = 'python -m pip install --no-build-isolation --require-hashes -r "$bootstrap"'
+        self.assertIn(install, text)
+        for workflow, script in (
+            (path, text.replace("bootstrap-uv --output", "outputs --output")),
+            (path, text.replace(install, 'bootstrap="unreviewed.txt"\n            ' + install)),
+            (path, text + "\n" + install),
+            (Path("other") / path, text),
+        ):
+            with self.subTest(workflow=workflow, script=script[-80:]):
+                findings = self.checker.scan_install_commands(workflow, script, root=ROOT)
+                self.assertTrue(any("pip install must use" in finding for finding in findings))
+
+    def test_previous_compiled_pin_fails(self) -> None:
+        """Negative: the previous uv pin cannot bootstrap the reviewed release."""
+        self.compiled = f"uv=={self.old} {self.digest}\n"
+        with self.assertRaisesRegex(self.checker.ContractError, "expected uv==0\\.12\\.18"):
+            self.bootstrap()
+        self.assertFalse(self.output.exists())
+
+    def test_missing_uv_hash_fails(self) -> None:
+        """Negative: another package's hash or an inline comment cannot authorize uv."""
+        self.compiled = f"uv=={self.version} # {self.digest}\nother==1 {self.digest}\n"
+        with self.assertRaisesRegex(self.checker.ContractError, "sha256 artifact hash"):
+            self.bootstrap()
+
+    def test_conflicting_compiled_uv_pins_fail(self) -> None:
+        """Negative: a hash for the reviewed version cannot authorize a conflicting uv pin."""
+        self.compiled += f"uv=={self.old} {self.digest}\n"
+        with self.assertRaisesRegex(self.checker.ContractError, "expected uv=="):
+            self.bootstrap()
+
+    def test_multiline_uv_hash_is_accepted(self) -> None:
+        """Boundary: recognize uv's backslash-continued artifact hashes."""
+        self.compiled = f"uv=={self.version} \\\n    {self.digest}\n"
+        self.assertEqual(self.bootstrap(), 0)
+        self.assertEqual(self.output.read_text(encoding="utf-8"), self.compiled)
+
+    def test_mismatched_input_refused_before_uv_runs(self) -> None:
+        """Negative: verify the input before invoking even uv --version."""
+        (self.root / "tools.in").write_text(f"uv=={self.old}\n", encoding="utf-8")
+        with self.assertRaisesRegex(self.checker.ContractError, "differs from uv_version"):
+            self.bootstrap()
+        self.installed.assert_not_called()
+        self.run_uv.assert_not_called()
+
+    def test_matching_version_removes_stale_output(self) -> None:
+        """Boundary: a matching generator skips compilation and clears stale output."""
+        self.installed.return_value = self.version
+        self.output.write_text("stale", encoding="utf-8")
+        self.assertEqual(self.bootstrap(), 0)
+        self.assertFalse(self.output.exists())
+        self.run_uv.assert_not_called()
+
+    def test_ambiguous_generator_entries_fail(self) -> None:
+        """Boundary: report both lock entries that carry an exact generator pin."""
+        manifest = self.checker.load_manifest(self.root)
+        manifest["locks"].append(dict(manifest["locks"][0], output="extra-lock.txt"))
+        (self.root / self.checker.MANIFEST_PATH).write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(self.checker.ContractError, "tooling-lock.txt.*extra-lock.txt"):
+            self.bootstrap()
+        self.run_uv.assert_not_called()
+
+    def test_no_generator_entry_fails(self) -> None:
+        """Boundary: report an empty candidate list when no entry pins uv."""
+        (self.root / "tools.in").write_text("uv>=0.1\n", encoding="utf-8")
+        with self.assertRaisesRegex(self.checker.ContractError, r"found \[\]"):
+            self.bootstrap()
+        self.run_uv.assert_not_called()
+
+    def test_manifest_output_cannot_be_bootstrap_destination(self) -> None:
+        """Negative: neither compilation nor stale-file cleanup can touch a manifest lock."""
+        self.output = self.root / "tooling-lock.txt"
+        self.output.write_text("committed", encoding="utf-8")
+        for version in (self.version, self.old):
+            with self.subTest(version=version):
+                self.installed.return_value = version
+                with self.assertRaisesRegex(self.checker.ContractError, "bootstrap output"):
+                    self.bootstrap()
+                self.assertEqual(self.output.read_text(encoding="utf-8"), "committed")
+        self.run_uv.assert_not_called()
+
+    def test_other_tracked_lock_is_protected(self) -> None:
+        """Negative: a tracked lock outside the Python manifest is also protected."""
+        (self.root / ".git").mkdir()
+        self.output = self.root / "Cargo.lock"
+        self.output.write_text("tracked", encoding="utf-8")
+        with mock.patch.object(self.checker, "tracked_paths", return_value=[Path("Cargo.lock")]):
+            with self.assertRaisesRegex(self.checker.ContractError, "tracked file"):
+                self.bootstrap()
+        self.assertEqual(self.output.read_text(encoding="utf-8"), "tracked")
+        self.run_uv.assert_not_called()
+
+    def test_bootstrap_cli_requires_output(self) -> None:
+        """Negative: missing --output is a usage error without a traceback."""
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "argv", [str(CHECKER), "bootstrap-uv"]),
+            redirect_stderr(stderr),
+        ):
+            with self.assertRaises(SystemExit) as raised:
+                self.checker.main()
+        self.assertNotEqual(raised.exception.code, 0)
+        self.assertIn("--output", stderr.getvalue())
+        self.assertNotIn("Traceback", stderr.getvalue())
+
+    def test_write_preserves_compile_failure_detail(self) -> None:
+        """Negative: write still names the failed lock and reports uv's stderr."""
+        self.installed.return_value = self.version
+        self.run_uv.side_effect = None
+        self.run_uv.return_value = subprocess.CompletedProcess([], 1, "stdout", "resolver failed")
+        with self.assertRaisesRegex(
+            self.checker.ContractError, r"^uv failed for tooling-lock\.txt: resolver failed$"
+        ):
+            self.checker.write(self.root, sys.executable)
+
+
 class UvExecutionAndCompileArgsTests(unittest.TestCase):
     """Verify uv execution through safe_subprocess and compile_args validation."""
 
