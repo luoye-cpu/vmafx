@@ -1575,3 +1575,4 @@ public authority; documentation never links into either local root.
 | [ADR-3611](3611-measurement-non-success-states.md) | Report measurement cells and wrapper runs that were not compared as non-success | Accepted | perf, bench, testing |
 | [ADR-3625](3625-heavy-job-link-profile.md) | Heavy CI job link profiles | Accepted | ci, build |
 | [ADR-3624](3624-landed-release-bot-self-coauthor.md) | Strip the release bot's own co-author line on landed commits | Accepted | ci |
+| [ADR-3628](3628-gitea-artifact-writer-fail-closed.md) | Refuse lossy rewrites in the Gitea artifact writer | Accepted | ci, gitea, yaml, tooling |
