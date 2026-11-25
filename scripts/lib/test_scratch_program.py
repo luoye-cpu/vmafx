@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Lusoris
 # SPDX-License-Identifier: EUPL-1.2
-"""scripts.lib.scratch_program waits out a held program file, and only that.
+"""Exercise scratch cleanup under Windows file deletion rules.
 
 The Windows failure is planted with a mock: an ``os.unlink`` that raises
 ``PermissionError`` for the program a given number of times, as Windows does
@@ -10,9 +10,12 @@ while Defender still holds a program that has just run.
 
 from __future__ import annotations
 
+import ast
 import contextlib
+import errno
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import unittest
@@ -21,9 +24,11 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
-from scripts.lib.scratch_program import ATTEMPTS, remove_program
+from scripts.lib.safe_subprocess import run as run_command  # noqa: E402
+from scripts.lib.scratch_program import ATTEMPTS, remove_program, remove_tree  # noqa: E402
 
 REAL_UNLINK = os.unlink
 
@@ -126,6 +131,115 @@ class TemporaryDirectoryCleanup(unittest.TestCase):
             scratch.cleanup()
         self.assertFalse(Path(scratch.name).exists())
         self.assertEqual(calls.count("harness"), 3)
+
+
+class ReadOnlyTreeRemoval(unittest.TestCase):
+    def setUp(self) -> None:
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.tree = Path(scratch.name) / "repo" / ".git"
+        self.pack = self.tree / "objects" / "pack" / "pack-1.pack"
+        self.loose = self.tree / "objects" / "2f" / "b242"
+        for path in (self.pack, self.loose):
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"object")
+            path.chmod(0o444)
+        (self.tree / "HEAD").write_text("ref: refs/heads/master\n", encoding="ascii")
+        self.enterContext(windows_rmtree())
+
+    @staticmethod
+    def windows_unlink(path: str) -> None:
+        if not Path(path).stat().st_mode & stat.S_IWUSR:
+            raise PermissionError(13, "Access is denied", path)
+        REAL_UNLINK(path)
+
+    def test_plain_rmtree_fails_on_a_read_only_object(self) -> None:
+        """Negative: plain rmtree fails on a read-only Git object on Windows."""
+        with (
+            mock.patch("os.unlink", self.windows_unlink),
+            self.assertRaises(PermissionError) as exc,
+        ):
+            shutil.rmtree(self.tree)
+        self.assertIn(Path(exc.exception.filename), (self.pack, self.loose))
+
+    def test_remove_tree_clears_the_read_only_bit(self) -> None:
+        """Positive: remove both read-only objects and the writable file."""
+        with mock.patch("os.unlink", self.windows_unlink):
+            remove_tree(self.tree)
+        self.assertFalse(self.tree.exists())
+
+    def test_a_file_that_stays_refused_is_raised(self) -> None:
+        """Boundary: a second permission failure reaches the caller."""
+        refused = mock.Mock(side_effect=PermissionError(13, "Access is denied", str(self.pack)))
+
+        def unlink(path: str) -> None:
+            if Path(path) == self.pack:
+                refused(path)
+            self.windows_unlink(path)
+
+        with mock.patch("os.unlink", unlink), self.assertRaises(PermissionError) as exc:
+            remove_tree(self.tree)
+        self.assertEqual(Path(exc.exception.filename), self.pack)
+        self.assertEqual(refused.call_count, 2)
+
+    def test_other_errors_are_not_retried(self) -> None:
+        """Boundary: a transient busy error still reaches the caller on its first occurrence."""
+        busy = OSError(errno.EBUSY, "Device or resource busy", str(self.pack))
+        attempts = mock.Mock(side_effect=[busy, None])
+
+        def unlink(path: str) -> None:
+            if Path(path) == self.pack:
+                attempts(path)
+            self.windows_unlink(path)
+
+        with mock.patch("os.unlink", unlink), self.assertRaises(OSError) as exc:
+            remove_tree(self.tree)
+        self.assertIs(exc.exception, busy)
+        attempts.assert_called_once_with(str(self.pack))
+
+
+def bare_git_rmtree_calls(source: str, name: str) -> list[str]:
+    """Report rmtree calls whose first argument contains a literal .git component."""
+    findings = []
+    for node in ast.walk(ast.parse(source, filename=name)):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        match node.func:
+            case ast.Name(id="rmtree") | ast.Attribute(value=ast.Name(id="shutil"), attr="rmtree"):
+                if any(
+                    isinstance(n, ast.Constant) and n.value == ".git"
+                    for n in ast.walk(node.args[0])
+                ):
+                    findings.append(f"{name}:{node.lineno}")
+    return findings
+
+
+class GitDirectoryRemovalScan(unittest.TestCase):
+    def test_no_bare_rmtree_of_a_git_directory(self) -> None:
+        """Positive: every tracked Python file uses the read-only-aware cleanup for .git."""
+        tracked = run_command(
+            ["git", "ls-files", "-z", "--", "*.py"],
+            allowed_executables=("git",),
+            cwd=ROOT,
+            capture_output=True,
+            max_output_bytes=1024 * 1024,
+            check=True,
+        )
+        findings = []
+        for entry in tracked.stdout.removesuffix(b"\0").split(b"\0"):
+            name = os.fsdecode(entry)
+            findings.extend(bare_git_rmtree_calls((ROOT / name).read_text(encoding="utf-8"), name))
+        self.assertFalse(findings, "\n".join(findings))
+
+    def test_the_scan_flags_a_planted_call(self) -> None:
+        """Negative and boundary: flag both rmtree spellings and leave unrelated calls alone."""
+        source = """shutil.rmtree(repo / ".git")
+remove_tree(repo / ".git")
+shutil.rmtree(tmp, ignore_errors=True)
+rmtree(
+    repo / '.git')
+"""
+        self.assertEqual(bare_git_rmtree_calls(source, "plant.py"), ["plant.py:1", "plant.py:4"])
 
 
 if __name__ == "__main__":

@@ -151,6 +151,11 @@ program from a temporary directory removes it with
 `scripts/lib/scratch_program.py` (`remove_program()`), which retries only that
 file, a bounded number of times, before the directory is cleaned up.
 
+Git writes object files read-only, and Windows refuses to delete a read-only
+file. Tests that remove a `.git` directory they created call `remove_tree()`
+from the same module. A scan in `scripts/lib/test_scratch_program.py` rejects
+bare `shutil.rmtree` calls on a `.git` path.
+
 CUDA is off in this lane. CUDA 13.3.1 shipped no `windows-arm64` packages and
 13.4.1 was the first release that does; the repository pin is now the CUDA
 release in `build-config.env`, and a CUDA-on-WoA leg is not part of this lane

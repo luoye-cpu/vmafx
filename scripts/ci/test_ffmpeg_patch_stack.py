@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.ci import ffmpeg_shared_series_fixture as shared_series
 from scripts.lib.safe_subprocess import run as run_command
+from scripts.lib.scratch_program import remove_tree
 
 SPEC = importlib.util.spec_from_file_location(
     "patch_stack", Path(__file__).with_name("ffmpeg_patch_stack.py")
@@ -711,7 +712,7 @@ class RealReplay(unittest.TestCase):
             STACK.maintain(plain, self.root / "plain-report", True, False)
 
     def test_refresh_outside_a_git_checkout_fails(self) -> None:
-        shutil.rmtree(self.repo / ".git")
+        remove_tree(self.repo / ".git")
         with self.assertRaisesRegex(RuntimeError, "not a Git checkout"):
             STACK.maintain(self.repo, self.output, True, False)
 

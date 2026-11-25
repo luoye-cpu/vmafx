@@ -1,6 +1,6 @@
 # Copyright 2026 Lusoris
 # SPDX-License-Identifier: EUPL-1.2
-"""Remove a program a test built and ran in a scratch directory.
+"""Clean up programs and directory trees created by tests.
 
 Microsoft Defender's real-time protection stays on on the Windows ARM64
 runner image (Tamper Protection keeps the image build from turning it off;
@@ -17,6 +17,9 @@ output name without an extension, so both spellings are tried. Everything
 else in the directory is left to the normal cleanup, whose errors still fail
 the test.
 
+Git writes object files read-only. Windows refuses to unlink a read-only
+file, so :func:`remove_tree` clears the read-only bit and retries once.
+
 Standard library only: suites import it as ``scripts.lib.scratch_program``
 with the repository root on ``sys.path``.
 """
@@ -24,6 +27,8 @@ with the repository root on ``sys.path``.
 from __future__ import annotations
 
 import os
+import shutil
+import stat
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -59,3 +64,15 @@ def remove_program(
     for candidate in (path, path.with_name(path.name + ".exe")):
         if os.path.lexists(candidate):
             _unlink(candidate, attempts, delay, remove)
+
+
+def remove_tree(path: Path) -> None:
+    """Remove a scratch tree, retrying a refused operation once after chmod."""
+
+    def retry(function: Callable[[str], object], failed_path: str, error: BaseException) -> None:
+        if not isinstance(error, PermissionError):
+            raise error
+        os.chmod(failed_path, stat.S_IREAD | stat.S_IWRITE)  # noqa: PTH101 -- rmtree supplies a str
+        function(failed_path)
+
+    shutil.rmtree(path, onexc=retry)

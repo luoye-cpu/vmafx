@@ -19,6 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 from scripts.lib.safe_subprocess import TextCommandResult  # noqa: E402
 from scripts.lib.safe_subprocess import run as run_command  # noqa: E402
+from scripts.lib.scratch_program import remove_tree  # noqa: E402
 
 SCRIPT = ROOT / "scripts" / "ci" / "ffmpeg-patches-surface-check.sh"
 HOOK_ID = "ffmpeg-patches-surface-docs"
@@ -321,7 +322,7 @@ class SurfaceOnlyModeTests(_FixtureTree, unittest.TestCase):
         """Outside a git tree, a find error on one doc root fails closed, not as a partial list."""
         with tempfile.TemporaryDirectory() as td:
             tmp = self._prepare_temp_worktree(Path(td), origin_master=False)
-            shutil.rmtree(tmp / ".git")
+            remove_tree(tmp / ".git")
             (tmp / "ffmpeg-patches" / "README.md").unlink()
 
             res = _run_script(
