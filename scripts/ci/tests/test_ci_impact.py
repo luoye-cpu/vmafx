@@ -292,6 +292,8 @@ class RoutingContract(unittest.TestCase):
             "requirements/locks/package-build.txt",
             "scripts/ci/trivy-linux-libc-dev.rego",
             "scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json",
+            "Dockerfile",
+            "scripts/ci/fixtures/trivy-negative.Dockerfile",
         ):
             with self.subTest(path=path):
                 self.assertIn(path, broad)
