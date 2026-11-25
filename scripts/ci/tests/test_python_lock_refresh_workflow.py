@@ -90,23 +90,33 @@ def shape_findings(workflow: dict[str, Any], inputs: list[str]) -> list[str]:
 
 
 def guard_order_findings(texts: list[str]) -> list[str]:
-    """Check step order and the install that consumes the bootstrap step's local variable."""
-    bootstrap = "check_python_dependency_locks.py bootstrap-uv"
-    markers = (
-        "lock_refresh_publish.py refuse-non-renovate",
-        "python -m pip install --require-hashes -r requirements/locks/package-build.txt",
-        bootstrap,
-        "check_python_dependency_locks.py write",
-        "lock_refresh_publish.py publish",
-    )
-    indices = [
-        next((i for i, text in enumerate(texts) if marker in text), -1) for marker in markers
-    ]
-    if -1 in indices or indices != sorted(set(indices)):
-        return [ORDER_FINDING]
-    after_bootstrap = texts[indices[2]].partition(bootstrap)[2]
+    """Check command order and keep the bootstrap install in its producer's shell."""
+    bootstrap = "python3 scripts/ci/check_python_dependency_locks.py bootstrap-uv"
     install = 'python -m pip install --no-build-isolation --require-hashes -r "$bootstrap"'
-    if install not in (line.strip() for line in after_bootstrap.splitlines()):
+    markers = (
+        "python3 scripts/ci/lock_refresh_publish.py refuse-non-renovate",
+        "python -m pip install --require-hashes -r requirements/locks/package-build.txt",
+        "python -m pip install --no-build-isolation --require-hashes -r requirements/locks/tooling-tests.txt",
+        bootstrap,
+        install,
+        "python3 scripts/ci/check_python_dependency_locks.py write",
+        "python3 scripts/ci/lock_refresh_publish.py publish",
+    )
+    positions: dict[str, tuple[int, int]] = {}
+    for step, text in enumerate(texts):
+        for line, command in lock_checker.logical_lines(text):
+            marker = (
+                command.partition(" --")[0]
+                if command.startswith("python3 scripts/ci/")
+                else command
+            )
+            if marker in markers:
+                if marker in positions:
+                    return [ORDER_FINDING]
+                positions[marker] = (step, line)
+    if sorted(positions, key=positions.__getitem__) != list(markers):
+        return [ORDER_FINDING]
+    if positions[bootstrap][0] != positions[install][0]:
         return [ORDER_FINDING]
     return []
 
@@ -211,6 +221,53 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
         bootstrap = next(i for i, s in enumerate(steps) if "bootstrap-uv" in s.get("run", ""))
         steps.insert(bootstrap + 1, tooling)
         wf["jobs"]["refresh-locks"]["steps"] = steps
+        self.assertIn(ORDER_FINDING, shape_findings(wf, self.inputs))
+
+    def detach_tooling_tests_install(self, wf: dict[str, Any]) -> tuple[dict[str, Any], str]:
+        """Remove only the continued tooling-tests install from the shared step."""
+        step = next(s for s in steps_of(wf) if "package-build.txt" in s.get("run", ""))
+        lines = step["run"].splitlines(keepends=True)
+        target = next(
+            i
+            for i, line in enumerate(lines)
+            if line.strip() == "-r requirements/locks/tooling-tests.txt"
+        )
+        self.assertGreater(target, 0)
+        self.assertEqual(
+            lines[target - 1].strip(),
+            "python -m pip install --no-build-isolation --require-hashes \\",
+        )
+        install = "".join(lines[target - 1 : target + 1])
+        del lines[target - 1 : target + 1]
+        step["run"] = "".join(lines)
+        return step, install
+
+    def test_planted_late_tooling_tests_install_is_reported(self) -> None:
+        """Negative: moving only the tooling-tests install after bootstrap restores old uv."""
+        wf = self.planted()
+        _, install = self.detach_tooling_tests_install(wf)
+        steps = steps_of(wf)
+        bootstrap = next(i for i, s in enumerate(steps) if "bootstrap-uv" in s.get("run", ""))
+        steps.insert(bootstrap + 1, {"run": install})
+        wf["jobs"]["refresh-locks"]["steps"] = steps
+        self.assertIn(ORDER_FINDING, shape_findings(wf, self.inputs))
+
+    def test_planted_missing_tooling_tests_install_is_reported(self) -> None:
+        """Negative: the package-build install cannot stand in for the tooling-tests install."""
+        wf = self.planted()
+        self.detach_tooling_tests_install(wf)
+        self.assertIn(ORDER_FINDING, shape_findings(wf, self.inputs))
+
+    def test_planted_swapped_installs_in_step_are_reported(self) -> None:
+        """Boundary: reversing the two installs within one step changes the command order."""
+        wf = self.planted()
+        step, install = self.detach_tooling_tests_install(wf)
+        lines = step["run"].splitlines(keepends=True)
+        package = next(
+            i for i, line in enumerate(lines) if "requirements/locks/package-build.txt" in line
+        )
+        lines.insert(package, install)
+        step["run"] = "".join(lines)
         self.assertIn(ORDER_FINDING, shape_findings(wf, self.inputs))
 
     def test_planted_missing_bootstrap_install_is_reported(self) -> None:

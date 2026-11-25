@@ -2157,13 +2157,50 @@ def _check_bootstrap_pin(output: Path, version: str) -> None:
     raise ContractError(f"{output}: expected {pin} with a sha256 artifact hash")
 
 
+def _git_metadata_dirs(root: Path) -> tuple[Path, Path]:
+    """Find the Git directory and common Git directory, including for linked worktrees."""
+    git_bin = resolve_executable("git", root=root)
+    result = run_command(
+        [
+            git_bin,
+            "-C",
+            str(root),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+        ],
+        allowed_executables=(git_bin,),
+        capture_output=True,
+        text=False,
+        check=False,
+        timeout_seconds=GIT_TIMEOUT_S,
+    )
+    if result.returncode == 0:
+        paths = [Path(os.fsdecode(line)) for line in result.stdout.splitlines()]
+        match paths:
+            case [git_dir, common_dir] if git_dir.is_absolute() and common_dir.is_absolute():
+                return git_dir, common_dir
+    raise ContractError(f"{root}: cannot determine Git metadata directories")
+
+
 def _check_bootstrap_destination(root: Path, manifest: dict[str, Any], output: Path) -> None:
-    """Keep generated data and same-version cleanup away from repository files."""
+    """Protect repository files, including a linked worktree's Git and common Git directories."""
     destination = output.parent.resolve() / output.name
     root = root.resolve()
     resolved_output = output.resolve()
-    metadata = (root / ".git").resolve()
-    if destination.is_relative_to(metadata) or resolved_output.is_relative_to(metadata):
+    dot_git = root / ".git"
+    metadata = [dot_git.resolve()]
+    if dot_git.exists():
+        try:
+            metadata.extend(path.resolve() for path in _git_metadata_dirs(root))
+        except (CommandValidationError, CommandOutputLimitExceeded, OSError) as error:
+            # CommandTimedOut inherits from OSError via TimeoutError.
+            raise ContractError(f"{root}: cannot determine Git metadata directories") from error
+    if any(
+        destination.is_relative_to(path) or resolved_output.is_relative_to(path)
+        for path in metadata
+    ):
         raise ContractError(f"{output}: bootstrap output must not be inside the Git metadata")
     protected = [
         MANIFEST_PATH,
@@ -2174,7 +2211,7 @@ def _check_bootstrap_destination(root: Path, manifest: dict[str, Any], output: P
         raise ContractError(
             f"{output}: bootstrap output must be separate from the lock manifest, inputs and outputs"
         )
-    if destination.is_relative_to(root) and (root / ".git").exists():
+    if destination.is_relative_to(root) and dot_git.exists():
         if destination.relative_to(root) in tracked_paths(root):
             raise ContractError(f"{output}: bootstrap output must not replace a tracked file")
 

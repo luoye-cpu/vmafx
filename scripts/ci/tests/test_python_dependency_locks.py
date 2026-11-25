@@ -24,6 +24,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from scripts.lib.safe_subprocess import (
+    BinaryCommandResult,
     CommandOutputLimitExceeded,
     CommandTimedOut,
     CommandValidationError,
@@ -2345,7 +2346,7 @@ class UvBootstrapTests(unittest.TestCase):
         self.checker = load_checker()
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
+        self.root = Path(tmp.name) / "wt"
         self.output = self.root / "bootstrap.txt"
         self.version = "0.12.18"
         self.old = "0.12.17"
@@ -2481,8 +2482,17 @@ class UvBootstrapTests(unittest.TestCase):
                 self.assertEqual(self.output.read_text(encoding="utf-8"), "committed")
         self.run_uv.assert_not_called()
 
-    def assert_git_metadata_survives(self, path: Path, contents: str) -> None:
-        path.write_text(contents, encoding="utf-8")
+    def linked_worktree(self) -> tuple[Path, Path]:
+        common = self.root.parent / "main" / ".git"
+        git_dir = common / "worktrees" / "wt"
+        git_dir.mkdir(parents=True)
+        (self.root / ".git").write_text(f"gitdir: {git_dir}\n", encoding="utf-8")
+        (git_dir / "HEAD").write_text("ref: refs/heads/topic\n", encoding="utf-8")
+        (common / "config").write_text("[core]\n\tbare = false\n", encoding="utf-8")
+        return git_dir, common
+
+    def assert_git_metadata_survives(self, path: Path) -> None:
+        contents = path.read_bytes()
         self.output = path
         with mock.patch.object(self.checker, "tracked_paths", return_value=[]):
             for version in (self.version, self.old):
@@ -2493,25 +2503,105 @@ class UvBootstrapTests(unittest.TestCase):
                         "bootstrap output must not be inside the Git metadata",
                     ):
                         self.bootstrap()
-                    self.assertEqual(path.read_text(encoding="utf-8"), contents)
+                    self.assertEqual(path.read_bytes(), contents)
         self.run_uv.assert_not_called()
 
     def test_main_checkout_git_metadata_survives(self) -> None:
         """Negative: bootstrap cannot remove or overwrite the main checkout's config."""
         metadata = self.root / ".git"
         metadata.mkdir()
-        self.assert_git_metadata_survives(metadata / "config", "[core]\n\tbare = false\n")
+        (metadata / "config").write_text("[core]\n\tbare = false\n", encoding="utf-8")
+        with mock.patch.object(
+            self.checker, "_git_metadata_dirs", return_value=(metadata, metadata)
+        ):
+            self.assert_git_metadata_survives(metadata / "config")
 
     def test_linked_worktree_git_metadata_survives(self) -> None:
         """Boundary: the worktree's .git pointer file is itself protected."""
-        self.assert_git_metadata_survives(self.root / ".git", "gitdir: ../main/.git/worktrees/wt\n")
+        dirs = self.linked_worktree()
+        with mock.patch.object(self.checker, "_git_metadata_dirs", return_value=dirs):
+            self.assert_git_metadata_survives(self.root / ".git")
+
+    def test_linked_worktree_head_survives(self) -> None:
+        """Negative: both bootstrap paths preserve HEAD in the separate Git directory."""
+        dirs = self.linked_worktree()
+        with mock.patch.object(self.checker, "_git_metadata_dirs", return_value=dirs):
+            self.assert_git_metadata_survives(dirs[0] / "HEAD")
+
+    def test_common_git_config_survives(self) -> None:
+        """Negative: traversing out of the checkout cannot replace shared Git config."""
+        dirs = self.linked_worktree()
+        with mock.patch.object(self.checker, "_git_metadata_dirs", return_value=dirs):
+            self.assert_git_metadata_survives(self.root / "../main/.git/config")
+
+    def test_unrelated_bootstrap_output_allowed(self) -> None:
+        """Positive: a temporary lock outside the checkout and Git directories is writable."""
+        dirs = self.linked_worktree()
+        self.output = self.root.parent / "runner-temp" / "uv-bootstrap.txt"
+        self.output.parent.mkdir()
+        with mock.patch.object(self.checker, "_git_metadata_dirs", return_value=dirs):
+            self.assertEqual(self.bootstrap(), 0)
+        self.assertEqual(self.output.read_text(encoding="utf-8"), self.compiled)
+
+    def test_git_metadata_lookup_failure_preserves_output(self) -> None:
+        """Negative: failed, timed-out or output-limited Git discovery preserves the output."""
+        git_dir, common = self.linked_worktree()
+        self.output = self.root.parent / "bootstrap.txt"
+        argv = ("git",)
+        stdout = bytes(git_dir) + b"\n" + bytes(common) + b"\n"
+        for outcome in (
+            BinaryCommandResult(argv, 1, stdout, b""),
+            CommandTimedOut(argv, self.checker.GIT_TIMEOUT_S, b"", b""),
+            CommandOutputLimitExceeded(argv, len(stdout), stdout, b""),
+        ):
+            with (
+                self.subTest(outcome=outcome),
+                mock.patch.object(self.checker, "run_command", side_effect=[outcome]),
+            ):
+                self.output.write_text("stale", encoding="utf-8")
+                self.run_uv.reset_mock()
+                with self.assertRaisesRegex(
+                    self.checker.ContractError, "cannot determine Git metadata directories"
+                ):
+                    self.bootstrap()
+                self.assertEqual(self.output.read_text(encoding="utf-8"), "stale")
+                self.run_uv.assert_not_called()
+
+    def test_invalid_git_metadata_response_refused(self) -> None:
+        """Negative: Git must report exactly two absolute paths."""
+        directory = bytes(self.root) + b"\n"
+        for stdout in (directory, directory * 3, directory + b"relative\n"):
+            with (
+                self.subTest(stdout=stdout),
+                mock.patch.object(
+                    self.checker,
+                    "run_command",
+                    return_value=BinaryCommandResult(("git",), 0, stdout, b""),
+                ),
+                self.assertRaisesRegex(
+                    self.checker.ContractError, "cannot determine Git metadata directories"
+                ),
+            ):
+                self.checker._git_metadata_dirs(self.root)
+
+    def test_real_git_metadata_directories(self) -> None:
+        """Boundary: Git locates HEAD and config in the current repository layout."""
+        git_dir, common = self.checker._git_metadata_dirs(ROOT)
+        self.assertTrue((git_dir / "HEAD").is_file())
+        self.assertTrue((common / "config").is_file())
 
     def test_other_tracked_lock_is_protected(self) -> None:
         """Negative: a tracked lock outside the Python manifest is also protected."""
         (self.root / ".git").mkdir()
         self.output = self.root / "Cargo.lock"
         self.output.write_text("tracked", encoding="utf-8")
-        with mock.patch.object(self.checker, "tracked_paths", return_value=[Path("Cargo.lock")]):
+        metadata = self.root / ".git"
+        with (
+            mock.patch.object(
+                self.checker, "_git_metadata_dirs", return_value=(metadata, metadata)
+            ),
+            mock.patch.object(self.checker, "tracked_paths", return_value=[Path("Cargo.lock")]),
+        ):
             with self.assertRaisesRegex(self.checker.ContractError, "tracked file"):
                 self.bootstrap()
         self.assertEqual(self.output.read_text(encoding="utf-8"), "tracked")
