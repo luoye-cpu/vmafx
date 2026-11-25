@@ -2389,6 +2389,45 @@ class UvBootstrapTests(unittest.TestCase):
         self.assertEqual(self.output.read_text(encoding="utf-8"), self.compiled)
         self.assertFalse((self.root / "tooling-lock.txt").exists())
 
+    def test_stale_tooling_lock_regenerates_after_bootstrap(self) -> None:
+        """A manifest bump can refresh the tooling lock that supplied the old uv."""
+
+        def pinned_version(path: Path) -> str:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            (pin,) = [line.split()[0] for line in lines if line.startswith("uv==")]
+            return pin.removeprefix("uv==")
+
+        def compile_input(
+            binary: str, args: list[str], *, cwd: Path
+        ) -> subprocess.CompletedProcess[str]:
+            version = pinned_version(cwd / args[2])
+            output = Path(args[args.index("-o") + 1])
+            output.write_text(f"uv=={version} \\\n    {self.digest}\n", encoding="utf-8")
+            return subprocess.CompletedProcess([binary, *args], 0, "", "")
+
+        manifest = self.checker.load_manifest(self.root)
+        entry = manifest["locks"][0]
+        tooling_lock = self.root / entry["output"]
+        tooling_input = self.root / entry["inputs"][0]
+        tooling_input.write_text(f"uv=={self.old}\n", encoding="utf-8")
+        tooling_lock.write_text(f"uv=={self.old} \\\n    {self.digest}\n", encoding="utf-8")
+        self.checker.stamp_lock(self.root, dict(manifest, uv_version=self.old), entry, tooling_lock)
+        tooling_input.write_text(f"uv=={self.version}\n", encoding="utf-8")
+
+        self.installed.return_value = pinned_version(tooling_lock)
+        self.run_uv.side_effect = compile_input
+        with self.assertRaises(self.checker.ContractError) as raised:
+            self.checker.write(self.root, sys.executable)
+        self.assertIn(self.old, str(raised.exception))
+        self.assertIn(self.version, str(raised.exception))
+
+        self.assertEqual(self.bootstrap(), 0)
+        self.installed.return_value = pinned_version(self.output)
+        self.assertEqual(self.checker.write(self.root, sys.executable), 0)
+        lock_lines = tooling_lock.read_text(encoding="utf-8").splitlines()
+        self.assertIn(f"# vmafx-uv-version: {self.version}", lock_lines)
+        self.assertEqual(pinned_version(tooling_lock), self.version)
+
     def test_workflow_install_requires_its_bootstrap_producer(self) -> None:
         """Negative: a missing producer, reassignment or different consumer has no authority."""
         path = Path(".github/workflows/python-lock-refresh.yml")
