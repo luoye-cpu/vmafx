@@ -125,6 +125,7 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
         """Positive: outputs come from the checker, the subject is the DCO subject."""
         text = "\n".join(run_texts(self.workflow))
         self.assertIn("check_python_dependency_locks.py outputs", text)
+        self.assertIn(".pre-commit-config.yaml", text)
         self.assertIn("--check-strays-when-unchanged", text)
         self.assertIn('-- "${outputs[@]}"', text)
         self.assertNotIn("requirements/locks/*.txt", text)

@@ -243,7 +243,7 @@ the Renovate exemption above or the Python lock refresh class below applies.
 
 The Python lock refresh class ([ADR-3560](../adr/3560-python-lock-refresh.md))
 permits a signed release-bot commit with the exact refresh subject when every
-changed path has a live entry among the 30 exact paths in
+changed path has a live entry among the 31 exact paths in
 `.config/lint-exceptions.d/dco-python-lock-refresh.toml`. Each entry is Category
 D, entered 2026-11-18 and expires 2027-03-18. An absent or expired entry refuses
 the path. A new lock output needs a new operator grant before an entry is added.
@@ -266,7 +266,7 @@ API page (100 entries), with valid filenames and statuses `added`, `removed`,
 `modified`, `renamed`, `copied`,
 `changed`, or `unchanged`. Renames require a previous filename, and the gate
 checks any supplied previous filename. Every reported path must have a live grant
-among the 30 paths. Missing configuration, missing, ambiguous, malformed or
+among the 31 paths. Missing configuration, missing, ambiguous, malformed or
 incomplete forge evidence, and `TierError`, `OSError`, `ValueError`,
 `RecursionError`, `KeyError`, `TypeError`, or `OverflowError` from the forge read
 keep the line for the attribution check to refuse. The gate prints a `dco:`

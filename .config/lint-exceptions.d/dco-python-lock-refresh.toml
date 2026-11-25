@@ -213,3 +213,10 @@ category = "D"
 entered = 2026-11-18
 reason = "Category D, 120-day interval. Grant vmafx-renovate-python-lock-refresh; ADR-3560. Remove when the hosted refresh limitation no longer applies."
 expires = 2027-03-18
+
+[[exception]]
+path = ".pre-commit-config.yaml"
+category = "D"
+entered = 2026-11-18
+reason = "Category D, 120-day interval. Grant vmafx-renovate-python-lock-refresh; ADR-3560. The writer syncs tooling-lock pins in Python hooks; remove when the hosted refresh limitation no longer applies."
+expires = 2027-03-18

@@ -80,7 +80,7 @@ CI Workflows & Dockerfiles                Local Workstation (make lint-tools, cy
 | Command | Purpose |
 | --- | --- |
 | `make python-locks-check` | Validates that all lock files match their inputs and that every executed `pip install` in the repo uses `--require-hashes` or local `--no-deps`. Offline, fast. |
-| `make python-locks-write` | Networked refresh: runs the pinned `uv` compiler to update all lock files and re-stamp metadata headers. |
+| `make python-locks-write` | Networked refresh: runs the pinned `uv` compiler to update all lock files, re-stamp metadata headers, and sync tooling-lock pins in Python hooks. |
 | `make lint-tools` | Installs project linting tools (`ruff`, `black`, `mypy`) into `.venv` from `requirements/locks/dev-linters.txt` using `--require-hashes`. |
 | `make cythonize-deps` | Installs C-extension build dependencies (`Cython`, `numpy`, `setuptools`, `packaging`) from `requirements/locks/cythonize.txt` using `--require-hashes`. |
 | `python3 -m pip install --require-hashes -r requirements/locks/nox.txt` | Installs the reviewed Nox release and its transitive dependencies before running local package sessions. |
@@ -89,12 +89,12 @@ CI Workflows & Dockerfiles                Local Workstation (make lint-tools, cy
 
 [ADR-3560](../adr/3560-python-lock-refresh.md) records automatic refresh when a
 dependency-update branch changes a manifest input. The workflow publishes
-manifest outputs as a signed-off release-bot commit. The DCO exemption covers
-only live entries among the 30 exact paths in
-`.config/lint-exceptions.d/dco-python-lock-refresh.toml`; a new output needs a
-new operator grant. If the branch moves or is deleted, publication fails without
-overwriting it. The next input change runs refresh again; otherwise rerun it
-against the current tip.
+manifest outputs and a changed `.pre-commit-config.yaml` as a signed-off
+release-bot commit. The DCO exemption covers only live entries among the 31
+exact paths in `.config/lint-exceptions.d/dco-python-lock-refresh.toml`; a new
+output needs a new operator grant. If the branch moves or is deleted,
+publication fails without overwriting it. The next input change runs refresh
+again; otherwise rerun it against the current tip.
 
 ## How to add or update a dependency
 
@@ -118,7 +118,11 @@ against the current tip.
    This invokes `scripts/ci/check_python_dependency_locks.py write` with the
    reviewed
    `uv` release. It compiles each lock target in a temporary directory, writes
-   the SHA-256 fingerprint header, and verifies all locks.
+   the SHA-256 fingerprint header, and verifies all locks. It also moves every
+   exact pin of a `requirements/locks/tooling-tests.txt` package in a Python
+   hook's `additional_dependencies` to the lock version, changing only the
+   version token; a non-exact pin of such a package is refused instead of
+   guessed.
 
    The fingerprint (`# vmafx-input-sha256:`) covers the compile arguments and
    every input file byte for byte, with one exception: in a `pyproject.toml`

@@ -61,6 +61,39 @@ PIP_NAME_RE = re.compile(
 )
 PYTHON_NAME_RE = re.compile(r"(?:^|[/\\])(?:python(?:3|[0-9.]*)?|py)(?:\.exe)?$", re.IGNORECASE)
 LOCK_HEADER = "# VMAFx hash lock; regenerate with: make python-locks-write"
+TOOLING_HOOK_LOCK = Path("requirements/locks/tooling-tests.txt")
+PRE_COMMIT_CONFIG = Path(".pre-commit-config.yaml")
+# Every package whose exact pin in a Python hook's additional_dependencies
+# mirrors requirements/locks/tooling-tests.txt. The writer, this constant and
+# the Renovate skip rule in renovate.json must name the same set; the tooling
+# tests fail otherwise.
+TOOLING_HOOK_PACKAGES = frozenset(
+    {
+        "bandit",
+        "cfgv",
+        "colorama",
+        "distlib",
+        "filelock",
+        "flawfinder",
+        "identify",
+        "iniconfig",
+        "nodeenv",
+        "packaging",
+        "platformdirs",
+        "pluggy",
+        "pre-commit",
+        "pygments",
+        "pytest",
+        "pytest-timeout",
+        "python-discovery",
+        "pyyaml",
+        "virtualenv",
+    }
+)
+HOOK_PIN_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)((?:\[[A-Za-z0-9_,.-]+\])?)==([^ \t,;\"'\]\\]+)"
+)
+HOOK_RANGE_RE = re.compile(r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)\s*(===|==|>=|<=|~=|!=|<|>)")
 OPTIONS_WITH_VALUES = {
     "-b",
     "--build",
@@ -470,6 +503,155 @@ def _manifest_input_paths(manifest: dict[str, Any]) -> list[str]:
         for path in entry["inputs"]:
             seen.setdefault(path, None)
     return list(seen)
+
+
+def _package_key(name: str) -> str:
+    """Return the PEP 503 key used for comparing distribution names."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def read_lock_pins(text: str) -> dict[str, str]:
+    """Return the exact ``name==version`` pins of one hash lock."""
+    pins: dict[str, str] = {}
+    for line in text.splitlines():
+        match = re.match(r"^([A-Za-z0-9_.-]+)==([^ \t\\;]+)", line)
+        if match is not None:
+            pins[_package_key(match.group(1))] = match.group(2)
+    return pins
+
+
+def _dependency_value_spans(lines: list[str]) -> list[tuple[int, int, int]]:
+    """Return (line, start, end) spans that hold an additional_dependencies value."""
+    spans: list[tuple[int, int, int]] = []
+    for index, line in enumerate(lines):
+        body = line.rstrip("\r\n")
+        match = re.match(r"(?P<indent>[ \t]*)additional_dependencies\s*:\s*(?P<rest>.*)$", body)
+        if match is None:
+            continue
+        rest = match.group("rest")
+        if rest and not rest.startswith("#"):
+            spans.append((index, match.start("rest"), len(body)))
+            continue
+        key_indent = len(match.group("indent"))
+        following = index + 1
+        while following < len(lines):
+            body = lines[following].rstrip("\r\n")
+            stripped = body.lstrip(" ")
+            indent = len(body) - len(stripped)
+            if not body.strip():
+                following += 1
+                continue
+            if indent <= key_indent:
+                break
+            if stripped.startswith("-"):
+                spans.append((following, indent, len(body)))
+            following += 1
+    return spans
+
+
+def _sync_hook_segment(
+    segment: str, lock_pins: dict[str, str], where: str, changes: list[str]
+) -> str:
+    """Rewrite only lock-tied exact pins in one hook dependency span."""
+    for match in HOOK_RANGE_RE.finditer(segment):
+        name, operator = match.group(1), match.group(2)
+        if operator != "==" and _package_key(name) in TOOLING_HOOK_PACKAGES:
+            raise ContractError(
+                f"{where}: {name}{operator} is not an exact '==' lock pin; "
+                "refusing to guess the intended version"
+            )
+
+    def replace(match: re.Match[str]) -> str:
+        name, extras, version = match.group(1), match.group(2), match.group(3)
+        key = _package_key(name)
+        if key not in TOOLING_HOOK_PACKAGES:
+            return match.group(0)
+        lock_version = lock_pins.get(key)
+        if lock_version is None:
+            raise ContractError(f"{where}: {name} is not present in {TOOLING_HOOK_LOCK}")
+        if version == lock_version:
+            return match.group(0)
+        changes.append(f"{where}: {name}{extras}=={version} -> {lock_version}")
+        return f"{name}{extras}=={lock_version}"
+
+    return HOOK_PIN_RE.sub(replace, segment)
+
+
+def _mask_hook_versions(config_text: str) -> str:
+    """Replace every lock-tied pin version with a placeholder for structure comparison."""
+    lines = config_text.splitlines(keepends=True)
+    spans = _dependency_value_spans(lines)
+    for index, start, end in spans:
+        line = lines[index]
+        segment = HOOK_PIN_RE.sub(
+            lambda match: (
+                f"{match.group(1)}{match.group(2)}==<version>"
+                if _package_key(match.group(1)) in TOOLING_HOOK_PACKAGES
+                else match.group(0)
+            ),
+            line[start:end],
+        )
+        lines[index] = line[:start] + segment + line[end:]
+    return "".join(lines)
+
+
+def sync_tooling_hook_pins(config_text: str, lock_text: str) -> tuple[str, list[str]]:
+    """Move every lock-tied exact hook pin to the tooling lock version.
+
+    Only the version token of an ``additional_dependencies`` entry changes.
+    A non-exact pin of a lock-tied package is refused instead of guessed.
+    """
+    lock_pins = read_lock_pins(lock_text)
+    lines = config_text.splitlines(keepends=True)
+    spans = _dependency_value_spans(lines)
+    changes: list[str] = []
+    for index, start, end in spans:
+        line = lines[index]
+        segment = _sync_hook_segment(line[start:end], lock_pins, str(PRE_COMMIT_CONFIG), changes)
+        lines[index] = line[:start] + segment + line[end:]
+    updated = "".join(lines)
+    if _mask_hook_versions(config_text) != _mask_hook_versions(updated):
+        raise ContractError(
+            f"{PRE_COMMIT_CONFIG}: the lock refresh would change more than a pin version"
+        )
+    fixed, second_changes = _sync_hook_pins_second_pass(updated, lock_pins)
+    if second_changes or fixed != updated:
+        raise ContractError(f"{PRE_COMMIT_CONFIG}: hook pin rewrite is not a fixed point")
+    return updated, changes
+
+
+def _sync_hook_pins_second_pass(
+    config_text: str, lock_pins: dict[str, str]
+) -> tuple[str, list[str]]:
+    """Re-run the span rewrite without the guard, to prove the result is stable."""
+    lines = config_text.splitlines(keepends=True)
+    spans = _dependency_value_spans(lines)
+    changes: list[str] = []
+    for index, start, end in spans:
+        line = lines[index]
+        segment = _sync_hook_segment(line[start:end], lock_pins, str(PRE_COMMIT_CONFIG), changes)
+        lines[index] = line[:start] + segment + line[end:]
+    return "".join(lines), changes
+
+
+def tooling_hook_pin_findings(root: Path) -> list[str]:
+    """Report stale or unsafe tooling-lock pins in the Python hook config."""
+    config = root / PRE_COMMIT_CONFIG
+    lock = root / TOOLING_HOOK_LOCK
+    if not config.is_file() or not lock.is_file():
+        return []
+    try:
+        config_text = config.read_text(encoding="utf-8")
+        lock_text = lock.read_text(encoding="utf-8")
+        _, stale = sync_tooling_hook_pins(config_text, lock_text)
+    except (OSError, UnicodeDecodeError, ContractError) as error:
+        return [f"{PRE_COMMIT_CONFIG}: {error}"]
+    if not stale:
+        return []
+    return [
+        f"{PRE_COMMIT_CONFIG}: {len(stale)} tooling hook pin(s) are stale; "
+        "run make python-locks-write"
+    ]
 
 
 def _requirements_file_lines(text: str) -> Iterator[tuple[int, str]]:
@@ -1987,6 +2169,7 @@ def check(root: Path) -> int:
 
         all_tracked = tracked_paths(root)
         problems.extend(_scan_guides(root, all_tracked))
+        problems.extend(tooling_hook_pin_findings(root))
 
         for relative in tracked_consumer_paths(root, all_paths=all_tracked):
             try:
@@ -2114,6 +2297,16 @@ def write(root: Path, uv_binary: str) -> int:
                 raise ContractError(f"uv failed for {raw_entry['output']}: {detail}")
             stamp_lock(root, manifest, raw_entry, generated)
             print(f"wrote {raw_entry['output']}")
+    config = root / PRE_COMMIT_CONFIG
+    if config.is_file() and (root / TOOLING_HOOK_LOCK).is_file():
+        config_text = config.read_text(encoding="utf-8")
+        lock_text = (root / TOOLING_HOOK_LOCK).read_text(encoding="utf-8")
+        updated, changes = sync_tooling_hook_pins(config_text, lock_text)
+        if changes:
+            temporary = config.with_suffix(config.suffix + ".tmp")
+            temporary.write_text(updated, encoding="utf-8")
+            temporary.replace(config)
+            print(f"updated {PRE_COMMIT_CONFIG}: {len(changes)} lock-tied hook pin(s)")
     return check(root)
 
 

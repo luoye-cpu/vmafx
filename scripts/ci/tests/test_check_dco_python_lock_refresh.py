@@ -142,8 +142,9 @@ class PythonLockOpenerTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
 
     def test_positive_each_listed_path_alone_passes(self) -> None:
-        """Each of the 30 independently granted paths passes alone."""
-        for path in lock_checker.manifest_outputs(ROOT):  # Bound: 30 manifest outputs.
+        """Each of the 31 independently granted paths passes alone."""
+        granted = (*lock_checker.manifest_outputs(ROOT), ".pre-commit-config.yaml")
+        for path in granted:  # Bound: 31 grants; the stale grant catches removals.
             with self.subTest(path=path):
                 tmp, repo = self.fresh()
                 self.addCleanup(tmp.cleanup)
@@ -320,14 +321,14 @@ class PythonLockOpenerTest(unittest.TestCase):
         )
         self.assert_refused(res.returncode, res.stdout + res.stderr, sha)
 
-    def test_repository_wiring_has_30_exact_category_d_entries(self) -> None:
+    def test_repository_wiring_has_31_exact_category_d_entries(self) -> None:
         """Every entry is unique, exact, and has the granted dates."""
         path = ROOT / ".config/lint-exceptions.d" / f"{RULE}.toml"
         entries = tomllib.loads(path.read_text(encoding="utf-8"))["exception"]
         paths = [entry["path"] for entry in entries]
-        self.assertEqual(len(paths), 30)
-        self.assertEqual(len(set(paths)), 30)
-        for entry in entries:  # Bound: 30 entries, asserted above.
+        self.assertEqual(len(paths), 31)
+        self.assertEqual(len(set(paths)), 31)
+        for entry in entries:  # Bound: 31 entries, asserted above.
             self.assertFalse(set(entry["path"]) & set("*?["))
             self.assertEqual(entry["category"], "D")
             self.assertEqual(entry["entered"], dt.date(2026, 11, 18))
@@ -341,7 +342,7 @@ class PythonLockOpenerTest(unittest.TestCase):
         entries = tomllib.loads(path.read_text(encoding="utf-8"))["exception"]
         self.assertEqual(
             {entry["path"] for entry in entries},
-            set(lock_checker.manifest_outputs(ROOT)),
+            set(lock_checker.manifest_outputs(ROOT)) | {".pre-commit-config.yaml"},
             "A new lock output needs a new operator grant before an entry is added.",
         )
 

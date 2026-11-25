@@ -14,7 +14,10 @@ stale. The hosted dependency updater cannot run repository post-upgrade commands
 ## Decision
 
 The refresh workflow regenerates manifest outputs on dependency-update branches
-and publishes them in a signed-off release-bot commit. A shared publisher also
+and publishes them in a signed-off release-bot commit. The same writer moves
+every exact pin of a tooling-lock package in a Python hook's
+`additional_dependencies` to the lock version (issue #3656); the workflow then
+publishes `.pre-commit-config.yaml` when that changed. A shared publisher also
 serves the asset lock workflow. The DCO exception requires the exact refresh
 subject, release-bot identity, dependency-bot opener, and only paths with live
 entries in `.config/lint-exceptions.d/dco-python-lock-refresh.toml`.
@@ -42,7 +45,7 @@ missing, ambiguous, malformed or incomplete forge evidence, and `TierError`,
 notice.
 
 The 2026-11-18 operator answer `vmafx-renovate-python-lock-refresh` grants the
-following 30 exact paths. A new lock output needs a new operator grant before an
+following 31 exact paths. A new lock output needs a new operator grant before an
 entry is added.
 
 - `requirements/locks/build.txt`
@@ -75,6 +78,7 @@ entry is added.
 - `tools/vmaf-roi-score/requirements-dev-lock.txt`
 - `tools/ensemble-training-kit/requirements-dev-lock.txt`
 - `requirements/locks/twine.txt`
+- `.pre-commit-config.yaml`
 
 ## Alternatives considered
 

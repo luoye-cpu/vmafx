@@ -112,11 +112,13 @@ jobs:
             echo "::error::python-lock-refresh: the manifest names no lock output" >&2
             exit 1
           fi
+          # The writer also moves tooling-lock pins in Python hooks (issue #3656).
+          outputs+=(".pre-commit-config.yaml")
           python3 scripts/ci/lock_refresh_publish.py publish \
             --label python-lock-refresh \
             --check-strays-when-unchanged \
             --subject "chore(deps): refresh Python dependency locks" \
             --body-line "Regenerate the manifest lock outputs of requirements/locks/manifest.json" \
-            --body-line "after a Renovate edit of their inputs (ADR-3560)." \
+            --body-line "and sync tooling-lock pins in Python hooks after a Renovate edit of their inputs (ADR-3560)." \
             --current-message "python-lock-refresh: the manifest locks are already current" \
             -- "${outputs[@]}"

@@ -14,7 +14,7 @@ In ``--landed`` mode, ADR-3555 also strips a single exact ``vmafx-release-bot[bo
 ADR-3560 adds a second class for the signed Python lock refresh commit with the exact
 subject and author on a Renovate PR. Every changed path must have a live, path-exact
 ``dco-python-lock-refresh`` exception. In ``--landed`` mode the squash must change at
-least one of the 30 live grant paths. Other paths must be manifest inputs, or the
+least one of the 31 live grant paths. Other paths must be manifest inputs, or the
 manifest itself if valid parent and squash copies read from local Git objects
 differ only in the top-level ``uv_version`` value. The new value must be an exact
 release. Missing or invalid objects, malformed or duplicate-key JSON, and any
