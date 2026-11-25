@@ -1,6 +1,6 @@
 # Copyright 2026 Lusoris
 # SPDX-License-Identifier: EUPL-1.2
-"""Clean up programs and directory trees created by tests.
+"""Clean up scratch programs, files and directory trees.
 
 Microsoft Defender's real-time protection stays on on the Windows ARM64
 runner image (Tamper Protection keeps the image build from turning it off;
@@ -19,7 +19,8 @@ the test.
 
 Git writes object files read-only. Windows refuses to unlink a read-only
 file, so :func:`remove_file` and :func:`remove_tree` clear the read-only
-bit and retry the refused operation once.
+bit and retry a refused unlink or rmdir once. Tree removal also checks that
+the root is gone.
 
 Standard library only: suites import it as ``scripts.lib.scratch_program``
 with the repository root on ``sys.path``.
@@ -27,6 +28,7 @@ with the repository root on ``sys.path``.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import stat
@@ -80,12 +82,16 @@ def remove_file(path: Path) -> None:
         _retry_read_only(path, path.unlink)
 
 
+def _retry_deletion(
+    function: Callable[..., object], failed_path: str, error: BaseException
+) -> None:
+    if not isinstance(error, PermissionError) or function not in (os.unlink, os.rmdir):
+        raise error
+    _retry_read_only(Path(failed_path), lambda: function(failed_path))
+
+
 def remove_tree(path: Path) -> None:
-    """Remove a scratch tree, retrying a refused operation once after chmod."""
-
-    def retry(function: Callable[[str], object], failed_path: str, error: BaseException) -> None:
-        if not isinstance(error, PermissionError):
-            raise error
-        _retry_read_only(Path(failed_path), lambda: function(failed_path))
-
-    shutil.rmtree(path, onexc=retry)
+    """Retry a refused unlink or rmdir once after chmod and verify that the tree is gone."""
+    shutil.rmtree(path, onexc=_retry_deletion)
+    if os.path.lexists(path):
+        raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), str(path))

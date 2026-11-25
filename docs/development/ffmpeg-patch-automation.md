@@ -157,8 +157,10 @@ tag's name, so the hook at every commit and push reads the commit from disk.
   most ten minutes), and a ref moves only after its commit was fetched and
   verified, so parallel hooks share one entry.
 - **Self-repair:** an empty or corrupt cache directory, or a ref whose objects
-  are gone, is dropped and fetched again. A cached commit that differs from the
-  pin is not repaired silently; delete the directory below to discard it.
+  are gone, is dropped and fetched again. A missing cache directory is expected
+  on first use. Any other removal failure stops the run with the error.
+  A cached commit that differs from the pin is not repaired silently; delete
+  the directory below to discard it.
 
 To clear the cache, remove `<cache root>/vmafx/ffmpeg-patch-stack/`.
 

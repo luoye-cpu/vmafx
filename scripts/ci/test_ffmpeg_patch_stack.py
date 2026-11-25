@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -119,6 +119,38 @@ class FailingCheckoutCleanup(tempfile.TemporaryDirectory[str]):
         """Raise the error observed when a background writer races the removal."""
         super().cleanup()
         raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), self.name)
+
+
+class SourceCacheReset(unittest.TestCase):
+    def setUp(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.replay = Mock(spec=STACK.Replay)
+        self.cache = STACK.SourceCache(self.replay, root, "local-fixture")
+
+    def test_reset_creates_a_missing_cache(self) -> None:
+        """Positive: first use creates the parent and initializes source.git."""
+        self.replay.run_git.side_effect = lambda *args: self.cache.repo.mkdir()
+        self.assertFalse(self.cache.repo.exists())
+        self.cache.reset()
+        self.replay.run_git.assert_called_once_with(
+            ["-C", str(self.cache.repo.parent)], "init", "--quiet", "--bare", "source.git"
+        )
+        self.assertTrue(self.cache.repo.is_dir())
+
+    def test_reset_propagates_removal_errors_before_init(self) -> None:
+        """Negative: failed removal of an existing cache stops initialization."""
+        self.cache.repo.mkdir(parents=True)
+        for error in (
+            OSError(errno.EBUSY, os.strerror(errno.EBUSY), str(self.cache.repo)),
+            FileNotFoundError(
+                errno.ENOENT, os.strerror(errno.ENOENT), str(self.cache.repo / "obj")
+            ),
+        ):
+            with self.subTest(error=error), patch.object(STACK, "remove_tree", side_effect=error):
+                with self.assertRaises(OSError) as exc:
+                    self.cache.reset()
+                self.assertIs(exc.exception, error)
+                self.replay.run_git.assert_not_called()
 
 
 class RealReplay(unittest.TestCase):
@@ -385,10 +417,10 @@ class RealReplay(unittest.TestCase):
         """Recover a failure receipt when report deletion already removed the old one."""
 
         def fail_report_cleanup(path: Path, *, ignore_errors: bool = False) -> None:
-            if path.name.startswith("vmafx-ffmpeg-report-"):
-                (path / "receipt.json").unlink()
-                raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), str(path))
-            shutil.rmtree(path, ignore_errors=ignore_errors)
+            if not path.name.startswith("vmafx-ffmpeg-report-"):
+                self.fail(f"unexpected cleanup path: {path}")
+            (path / "receipt.json").unlink()
+            raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), str(path))
 
         with (
             patch.object(STACK.tempfile, "tempdir", str(self.root)),

@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.lib.safe_subprocess import run as run_command  # noqa: E402
 from scripts.lib.scratch_program import (  # noqa: E402
     ATTEMPTS,
+    _retry_deletion,
     remove_file,
     remove_program,
     remove_tree,
@@ -187,6 +188,62 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
         self.assertEqual(Path(exc.exception.filename), self.pack)
         self.assertEqual(refused.call_count, 2)
 
+    def test_non_deletion_permission_errors_are_raised(self) -> None:
+        """Negative: only deletion callbacks may chmod and retry."""
+        for function in (os.lstat, os.open, os.scandir, os.path.islink, os.close):
+            with self.subTest(function=function.__name__), mock.patch("os.chmod") as chmod:
+                refused = PermissionError(errno.EACCES, "Access is denied", str(self.tree))
+                with self.assertRaises(PermissionError) as exc:
+                    _retry_deletion(function, str(self.tree), refused)
+                self.assertIs(exc.exception, refused)
+                chmod.assert_not_called()
+
+    def test_refused_root_lstat_reaches_the_caller(self) -> None:
+        """Negative: a refused root lstat stops the walk before deletion."""
+        real_lstat = os.lstat
+        refused = PermissionError(errno.EACCES, "Access is denied", str(self.tree))
+        refused_once = False
+
+        def lstat(path: str | Path, *args: Any, **kwargs: Any) -> os.stat_result:
+            nonlocal refused_once
+            if Path(path) == self.tree and not refused_once:
+                refused_once = True
+                raise refused
+            return real_lstat(path, *args, **kwargs)
+
+        with mock.patch("os.lstat", lstat), mock.patch("os.chmod") as chmod:
+            with self.assertRaises(PermissionError) as exc:
+                remove_tree(self.tree)
+        self.assertIs(exc.exception, refused)
+        self.assertTrue(self.tree.is_dir())
+        chmod.assert_not_called()
+
+    def test_child_vanishing_during_unlink_allows_removal(self) -> None:
+        """Boundary: a child gone before unlink completes does not block removal."""
+        self.loose.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+        def unlink(path: str) -> None:
+            if Path(path) == self.loose:
+                REAL_UNLINK(path)
+                raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
+            self.windows_unlink(path)
+
+        with mock.patch("os.unlink", unlink):
+            remove_tree(self.tree)
+        self.assertFalse(self.tree.exists())
+
+    def test_rmtree_leaving_the_tree_raises_enotempty(self) -> None:
+        """Boundary: an incomplete walk names the remaining root."""
+        with mock.patch.object(shutil, "rmtree"), self.assertRaises(OSError) as exc:
+            remove_tree(self.tree)
+        self.assertEqual(exc.exception.errno, errno.ENOTEMPTY)
+        self.assertEqual(exc.exception.filename, str(self.tree))
+
+    def test_missing_tree_raises(self) -> None:
+        """Boundary: a missing root reaches the caller."""
+        with self.assertRaises(FileNotFoundError):
+            remove_tree(self.tree / "absent")
+
     def test_other_errors_are_not_retried(self) -> None:
         """Boundary: a transient busy error still reaches the caller on its first occurrence."""
         busy = OSError(errno.EBUSY, "Device or resource busy", str(self.pack))
@@ -237,9 +294,18 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
         unlink.assert_called_once_with(self.pack)
 
     def test_remove_file_raises_for_a_missing_file(self) -> None:
-        """Boundary: removing a missing file raises FileNotFoundError."""
-        with self.assertRaises(FileNotFoundError):
-            remove_file(self.pack.with_name("missing.pack"))
+        """Boundary: a missing file raises the first unlink error without chmod."""
+        path = self.pack.with_name("missing.pack")
+        missing = FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path))
+        with (
+            mock.patch("os.unlink", side_effect=missing) as unlink,
+            mock.patch("os.chmod") as chmod,
+            self.assertRaises(FileNotFoundError) as exc,
+        ):
+            remove_file(path)
+        self.assertIs(exc.exception, missing)
+        unlink.assert_called_once_with(path)
+        chmod.assert_not_called()
 
 
 def bare_git_rmtree_calls(source: str, name: str) -> list[str]:

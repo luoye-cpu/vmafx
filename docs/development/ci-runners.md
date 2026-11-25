@@ -154,6 +154,8 @@ file, a bounded number of times, before the directory is cleaned up.
 Git writes object files read-only, and Windows refuses to delete a read-only
 file. Tests use `remove_tree()` for a `.git` directory, a bare repository or its
 `objects` directory and `remove_file()` for a single Git object file.
+Only refused deletions get a retry, and `remove_tree()` checks that the root
+is gone.
 The scan in `scripts/lib/test_scratch_program.py` rejects
 bare `shutil.rmtree` calls with these path literals.
 
