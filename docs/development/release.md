@@ -848,7 +848,7 @@ provenance does not verify is never published.
 Every workflow that creates a GitHub release or publishes release assets
 attaches build-provenance bundles as `*.intoto.jsonl` files (ADR-3316). This
 satisfies the OpenSSF Scorecard Signed-Releases check requirement (scorecard
-v5.6.0), which scores a release 10 when a release asset name ends in
+v5.7.0), which scores a release 10 when a release asset name ends in
 `.intoto.jsonl` (compared to 8 for cryptographic signature bundles alone).
 
 The `.intoto.jsonl` asset contains the normalized single-line in-toto SLSA
