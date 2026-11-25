@@ -154,6 +154,8 @@ file, a bounded number of times, before the directory is cleaned up.
 Git writes object files read-only, and Windows refuses to delete a read-only
 file. Tests use `remove_tree()` for a `.git` directory, a bare repository or its
 `objects` directory and `remove_file()` for a single Git object file.
+If a permission error prevents symlink deletion, both helpers propagate it
+without changing permissions or retrying.
 The `ReadOnlyTreeRemoval` tests in `scripts/lib/test_scratch_program.py` check
 that only permission failures on deletion get a retry and that `remove_tree()`
 verifies the root is gone. The `SourceCacheReset` tests in

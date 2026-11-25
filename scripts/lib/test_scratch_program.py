@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.lib.safe_subprocess import run as run_command  # noqa: E402
 from scripts.lib.scratch_program import (  # noqa: E402
     ATTEMPTS,
+    path_absent,
     remove_file,
     remove_program,
     remove_tree,
@@ -348,6 +349,135 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
             remove_file(self.pack)
         self.assertFalse(self.pack.exists())
         self.assertTrue(self.loose.is_file())
+
+    def assert_refused_symlink(self, remove: Callable[[Path], None]) -> None:
+        scratch = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        outside = scratch / "outside.txt"
+        outside.touch()
+        outside.chmod(0o444)
+        link = scratch / "tree" / "sub" / "link"
+        link.parent.mkdir(parents=True)
+        try:
+            link.symlink_to(outside)
+        except OSError as error:
+            self.skipTest(f"cannot create a symlink: {error}")
+        refused = PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(link))
+        attempts = 0
+
+        def unlink(path: str | Path, *, dir_fd: int | None = None) -> None:
+            nonlocal attempts
+            if Path(path).name == link.name:
+                attempts += 1
+                raise refused
+            REAL_UNLINK(path, dir_fd=dir_fd)
+
+        with mock.patch("os.unlink", unlink), self.assertRaises(PermissionError) as exc:
+            remove(link)
+        self.assertIs(exc.exception, refused)
+        self.assertEqual(exc.exception.filename, str(link))
+        self.assertEqual(stat.S_IMODE(outside.stat().st_mode), 0o444)
+        self.assertEqual(attempts, 1)
+
+    def test_remove_tree_preserves_refused_symlink(self) -> None:
+        for walker in ("windows", "fd"):
+            with self.subTest(walker=walker):
+                if walker == "fd" and not HAS_FD_WALKER:
+                    self.skipTest(FD_WALKER_REASON)
+                with windows_rmtree() if walker == "windows" else contextlib.nullcontext():
+                    self.assert_refused_symlink(lambda link: remove_tree(link.parent.parent))
+
+    def test_remove_file_preserves_refused_symlink(self) -> None:
+        self.assert_refused_symlink(remove_file)
+
+    def test_path_absent_counts_a_dangling_symlink_as_present(self) -> None:
+        target = self.tree / "missing"
+        self.assertTrue(path_absent(target))
+        link = self.tree / "link"
+        try:
+            link.symlink_to(target)
+        except OSError as error:
+            self.skipTest(f"cannot create a symlink: {error}")
+        self.assertFalse(path_absent(link))
+
+    def test_failed_retry_lstat_preserves_unlink_refusal(self) -> None:
+        missing = self.tree / "missing"
+        refused = PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(missing))
+        with (
+            mock.patch("os.unlink", side_effect=refused) as unlink,
+            mock.patch("os.chmod") as chmod,
+            self.assertRaises(PermissionError) as exc,
+        ):
+            remove_file(missing)
+        self.assertIs(exc.exception, refused)
+        unlink.assert_called_once_with(missing)
+        chmod.assert_not_called()
+
+    @unittest.skipUnless(HAS_FD_WALKER, FD_WALKER_REASON)
+    def test_fd_close_errors_annotate_first_failure(self) -> None:
+        class _RetryFailure(BaseException):
+            pass
+
+        root = self.tree / "isolated"
+        child = root / "sub" / "object"
+        child.parent.mkdir(parents=True)
+        child.touch()
+        failure = _RetryFailure()
+        close_error = OSError(errno.EIO, os.strerror(errno.EIO))
+        real_open, real_close = os.open, os.close
+        pending: set[int] = set()
+
+        def open_dir(path: str, flags: int, *, dir_fd: int | None) -> int:
+            fd = real_open(path, flags, dir_fd=dir_fd)
+            pending.add(fd)
+            return fd
+
+        def close(fd: int) -> None:
+            real_close(fd)
+            pending.remove(fd)
+            raise close_error
+
+        try:
+            with (
+                mock.patch("os.open", open_dir),
+                mock.patch("os.close", close),
+                mock.patch("os.unlink", side_effect=PermissionError()),
+                mock.patch("os.chmod", side_effect=failure),
+                self.assertRaises(_RetryFailure) as exc,
+            ):
+                remove_tree(root)
+            self.assertIs(exc.exception, failure)
+            self.assertFalse(pending)
+            self.assertEqual(len(failure.__notes__), 2)
+            for note, directory in zip(failure.__notes__, (child.parent, root), strict=True):
+                self.assertIn("close", note)
+                self.assertIn(str(directory), note)
+                self.assertIn(str(close_error), note)
+        finally:
+            for fd in pending:
+                real_close(fd)
+
+    def test_chmod_failure_keeps_explicit_cause(self) -> None:
+        cause = ValueError("cause of chmod failure")
+        failure = OSError(errno.EIO, os.strerror(errno.EIO), str(self.loose))
+
+        def chmod(path: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+            raise failure from cause
+
+        for walker in ("windows", "fd"):
+            with self.subTest(walker=walker):
+                if walker == "fd" and not HAS_FD_WALKER:
+                    self.skipTest(FD_WALKER_REASON)
+                refused = PermissionError()
+                with (
+                    windows_rmtree() if walker == "windows" else contextlib.nullcontext(),
+                    mock.patch("os.unlink", side_effect=refused),
+                    mock.patch("os.chmod", chmod),
+                    self.assertRaises(OSError) as exc,
+                ):
+                    remove_tree(self.loose.parent)
+                self.assertIs(exc.exception, failure)
+                self.assertIs(exc.exception.__cause__, cause)
+                self.assertIs(exc.exception.__context__, refused)
 
     def test_plain_unlink_fails_on_a_read_only_object(self) -> None:
         """Negative: Windows refuses a plain unlink of the read-only pack."""

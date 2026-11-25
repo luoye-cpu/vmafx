@@ -160,6 +160,18 @@ class SourceCacheReset(unittest.TestCase):
         self.assertIs(exc.exception, missing)
         self.replay.run_git.assert_not_called()
 
+    def test_reset_propagates_missing_child_when_root_is_absent(self) -> None:
+        self.assertFalse(self.cache.repo.exists())
+        child = self.cache.repo / "obj"
+        missing = FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(child))
+        with (
+            patch.object(STACK, "remove_tree", side_effect=missing),
+            self.assertRaises(FileNotFoundError) as exc,
+        ):
+            self.cache.reset()
+        self.assertIs(exc.exception, missing)
+        self.replay.run_git.assert_not_called()
+
     def test_reset_propagates_removal_errors_before_init(self) -> None:
         """Negative: failed removal of an existing cache stops initialization."""
         self.cache.repo.mkdir(parents=True)

@@ -19,8 +19,8 @@ the test.
 
 Git writes object files read-only. Windows refuses to unlink a read-only
 file, so :func:`remove_file` and :func:`remove_tree` clear the read-only
-bit and retry a refused unlink or rmdir once. Tree removal also checks that
-the root is gone.
+bit and retry a refused unlink or rmdir once if lstat identifies a non-symlink.
+Tree removal also checks that the root is gone.
 
 Standard library only: suites import it as ``scripts.lib.scratch_program``
 with the repository root on ``sys.path``.
@@ -53,7 +53,8 @@ def _unlink(path: Path, attempts: int, delay: float, unlink: Callable[[Path], No
         time.sleep(delay)
 
 
-def _root_absent(path: Path) -> bool:
+def path_absent(path: Path) -> bool:
+    """Return true only for a missing directory entry. Propagate other lstat errors."""
     try:
         os.lstat(path)
     except FileNotFoundError:
@@ -73,13 +74,30 @@ def remove_program(
         raise ValueError(f"attempts must be at least 1, not {attempts}")
     remove = unlink if unlink is not None else os.unlink
     for candidate in (path, path.with_name(path.name + ".exe")):
-        if not _root_absent(candidate):
+        if not path_absent(candidate):
             _unlink(candidate, attempts, delay, remove)
 
 
-def _retry_read_only(path: Path, operation: Callable[[], object]) -> None:
-    path.chmod(stat.S_IREAD | stat.S_IWRITE)
+def _retry_read_only(path: Path, operation: Callable[[], object]) -> bool:
+    """Retry only a verified non-symlink, returning false if it cannot be verified.
+
+    Use only on scratch trees since the public onexc callback supplies no dir_fd
+    to guard against path replacement between lstat and chmod.
+    """
+    try:
+        mode = os.lstat(path).st_mode
+    except OSError:
+        return False
+    if stat.S_ISLNK(mode):
+        return False
+    writable = stat.S_IREAD | stat.S_IWRITE
+    chmod = os.chmod
+    if chmod in os.supports_follow_symlinks:
+        chmod(path, writable, follow_symlinks=False)
+    else:
+        chmod(path, writable)
     operation()
+    return True
 
 
 def remove_file(path: Path) -> None:
@@ -87,7 +105,8 @@ def remove_file(path: Path) -> None:
     try:
         path.unlink()
     except PermissionError:
-        _retry_read_only(path, path.unlink)
+        if not _retry_read_only(path, path.unlink):
+            raise
 
 
 class _CallbackError(Exception):
@@ -98,22 +117,29 @@ class _CallbackError(Exception):
         self.error = error
 
 
-def _retry_deletion(
-    function: Callable[..., object], failed_path: str, error: BaseException
-) -> None:
-    if not isinstance(error, PermissionError) or function not in (os.unlink, os.rmdir):
-        raise _CallbackError(error)
-    try:
-        _retry_read_only(Path(failed_path), lambda: function(failed_path))
-    except BaseException as retry_error:
-        raise _CallbackError(retry_error) from retry_error
-
-
 def remove_tree(path: Path) -> None:
     """Retry a refused unlink or rmdir once after chmod and verify that the tree is gone."""
+    first_error: BaseException | None = None
+
+    def onexc(function: Callable[..., object], failed_path: str, error: BaseException) -> None:
+        nonlocal first_error
+        if first_error is not None:
+            first_error.add_note(f"{function.__name__}({failed_path!r}): {error}")
+            return
+        if isinstance(error, PermissionError) and function in (os.unlink, os.rmdir):
+            try:
+                if _retry_read_only(Path(failed_path), lambda: function(failed_path)):
+                    return
+            except BaseException as retry_error:
+                error = retry_error
+        first_error = error
+        raise _CallbackError(error)
+
     try:
-        shutil.rmtree(path, onexc=_retry_deletion)
+        shutil.rmtree(path, onexc=onexc)
     except _CallbackError as wrapped:
-        raise wrapped.error from None
-    if not _root_absent(path):
+        first_error = wrapped.error
+    if first_error is not None:
+        raise first_error
+    if not path_absent(path):
         raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), str(path))
