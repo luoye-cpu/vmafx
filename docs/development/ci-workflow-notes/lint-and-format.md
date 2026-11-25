@@ -1,8 +1,8 @@
 # Design notes: lint-and-format.yml
 
 These notes were moved out of `.github/workflows/lint-and-format.yml` so the
-workflow stays under the 64 KiB input bound of the praetor engine. They are the
-workflow's original comments, grouped by job, unchanged.
+workflow stays under the 64 KiB input bound of the praetor engine. They are
+grouped by job.
 
 ## general
 
@@ -379,10 +379,12 @@ ubuntu-26.04 it crosses 10 minutes, so the job was cancelled at the
 ceiling mid-build and the aggregator read that as a failure. The
 build itself passes with zero warnings; locally it takes about
 3m20s. Sibling jobs in this file already sit at 25 and 30 minutes.
-The master push checks the render, whose order is read from
-history (ADR-2197); a pull request does not. Not
-`push && 0 || 1`: 0 is falsy in an expression, so that form
-always gave 1 and the render check found a shallow history.
+The master push and merge group need full history for the render check
+(ADR-2197, ADR-3627). Merge groups also need the event base SHA to limit
+the search for a render commit. The base must be a full commit ID that
+is an ancestor of the group head, otherwise the check fails. The
+fetch-depth expression puts the 0 in the fallback branch because 0 is
+falsy in GitHub Actions expressions.
 make docs-fragments-check validates docs/hardware-reports against
 their schema (jsonschema, check-hardware-reports.py) and reads
 docs/credits.yaml (PyYAML, scripts/docs/credits_lib.py, ADR-2485).
@@ -392,6 +394,8 @@ master tip may wait for it. The check passes a current render,
 warns while one is owed for less than 24 hours, and is red for an
 older owed render or a last render that is not the render of its
 fragments.
+The merge-group step checks the last render commit in the group on that
+commit's own tree. It skips groups without a render commit.
 make docs-fragments-check above runs without vl-convert-python and
 compares the chart SVGs with their recorded hashes; this step
 renders them again with the hash-locked renderer (ADR-1508).

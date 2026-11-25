@@ -4,8 +4,9 @@
 """Tests for the scheduled render pull request opener (ADR-3373).
 
 Verifies author and cross-repository filtering for open PRs, auto-merge arming
-on parent==base early exit, detection of untracked files in rendered paths,
-and required environment validation.
+on parent==base early exit, merge-queue skip and GraphQL fallback handling,
+detection of untracked files in rendered paths, and required environment
+validation.
 """
 
 from __future__ import annotations
@@ -79,6 +80,24 @@ if cmd == "pr":
 
 if cmd == "api":
     endpoint = argv[1] if len(argv) > 1 else ""
+    if endpoint == "graphql":
+        gql_path = state / "graphql.json"
+        cfg = json.loads(gql_path.read_text(encoding="utf-8")) if gql_path.exists() else {}
+        rc = int(cfg.get("returncode", 0))
+        if rc != 0:
+            sys.exit(rc)
+        data = {
+            "data": {
+                "repository": {
+                    "pullRequest": {"isInMergeQueue": cfg.get("isInMergeQueue", False)}
+                }
+            }
+        }
+        if "--jq" in argv:
+            eval_jq(data, argv[argv.index("--jq") + 1])
+        else:
+            print(json.dumps(data))
+        sys.exit(0)
     if "branches" in endpoint:
         branch_path = state / "branch.json"
         data = (
@@ -169,7 +188,7 @@ class OpenRenderPrTest(unittest.TestCase):
         self.runner_temp.mkdir()
         self.app_slug = "vmafx-release-bot"
         self.token = TEST_TOKEN
-        self.github_repository = "VMAFx/vmafx"
+        self.github_repository = "vidiko/vmafx"
         self.render_branch = "render-docs"
         self.push_url = (
             f"https://x-access-token:{self.token}@github.com/{self.github_repository}.git"
@@ -216,8 +235,64 @@ class OpenRenderPrTest(unittest.TestCase):
             return []
         return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line]
 
+    def make_calls(self) -> list[list[str]]:
+        log = self.state_dir / "make.log"
+        if not log.exists():
+            return []
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line]
+
+    def graphql_calls(self) -> list[list[str]]:
+        return [
+            c
+            for c in self.gh_calls()
+            if len(c) >= MIN_CALL_LEN and c[0] == "api" and c[1] == "graphql"
+        ]
+
+    def own_pr_record(self, number: int = 42) -> dict[str, object]:
+        return {
+            "number": number,
+            "author": {"login": f"{self.app_slug}[bot]"},
+            "isCrossRepository": False,
+        }
+
     def set_prs(self, prs: list[dict[str, object]]) -> None:
         (self.state_dir / "prs.json").write_text(json.dumps(prs), encoding="utf-8")
+
+    def set_merge_queue(self, *, queued: bool = False, returncode: int = 0) -> None:
+        (self.state_dir / "graphql.json").write_text(
+            json.dumps({"isInMergeQueue": queued, "returncode": returncode}),
+            encoding="utf-8",
+        )
+
+    def stage_own_open_pr_with_render_diff(
+        self, number: int = 42, parent_sha: str = "different-sha"
+    ) -> None:
+        self.set_prs([self.own_pr_record(number)])
+        (self.state_dir / "branch.json").write_text(
+            json.dumps({"commit": {"parents": [{"sha": parent_sha}]}}),
+            encoding="utf-8",
+        )
+        (self.state_dir / "make_action.py").write_text(
+            "from pathlib import Path\n"
+            "Path('CHANGELOG.md').write_text('rendered\\n', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+
+    def assert_existing_pr_rendered_and_pushed(
+        self, res: subprocess.CompletedProcess[str], number: int = 42
+    ) -> None:
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("auto-merge armed", res.stdout)
+        self.assertEqual(len(self.graphql_calls()), 1)
+        self.assertTrue(any("docs-render" in c for c in self.make_calls()))
+        bare_branches = git("-C", str(self.bare_repo), "branch")
+        self.assertIn(self.render_branch, bare_branches)
+        calls = self.gh_calls()
+        self.assertEqual([c for c in calls if c[:2] == ["pr", "create"]], [])
+        merge_calls = [
+            c for c in calls if c[:2] == ["pr", "merge"] and "--auto" in c and str(number) in c
+        ]
+        self.assertTrue(merge_calls, f"gh pr merge --auto was not called: {calls}")
 
     def run_script(
         self,
@@ -249,8 +324,9 @@ class OpenRenderPrTest(unittest.TestCase):
         for key in remove_env:
             env.pop(key, None)
 
+        script_path = Path(os.environ.get("OPEN_RENDER_PR_SCRIPT", SCRIPT))
         return subprocess.run(  # noqa: S603 -- fixed argv, fixture repo
-            [BASH, str(SCRIPT)],
+            [BASH, str(script_path)],
             cwd=self.repo,
             env=env,
             capture_output=True,
@@ -368,6 +444,69 @@ class OpenRenderPrTest(unittest.TestCase):
 
         bare_branches = git("-C", str(self.bare_repo), "branch")
         self.assertNotIn(self.render_branch, bare_branches)
+
+    def test_case_f_own_pr_in_merge_queue_skips_render_and_push(self) -> None:
+        # Case f: own open PR in merge queue -> exit 0 with skip line, no render, push or merge.
+        self.stage_own_open_pr_with_render_diff(number=42)
+        self.set_merge_queue(queued=True)
+
+        res = self.run_script(render_due=True)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn(
+            "render pull request #42 is in the merge queue; it lands the render, not re-pushing",
+            res.stdout,
+        )
+
+        gql = self.graphql_calls()
+        self.assertEqual(len(gql), 1, gql)
+        self.assertIn("o=vidiko", gql[0])
+        self.assertIn("n=vmafx", gql[0])
+        self.assertIn("p=42", gql[0])
+
+        calls = self.gh_calls()
+        self.assertEqual([c for c in calls if c[:2] == ["pr", "merge"]], [])
+        self.assertEqual([c for c in calls if c[:2] == ["pr", "create"]], [])
+        self.assertEqual(self.make_calls(), [])
+        self.assertEqual((self.repo / "CHANGELOG.md").read_text(encoding="utf-8"), "initial\n")
+        bare_branches = git("-C", str(self.bare_repo), "branch")
+        self.assertNotIn(self.render_branch, bare_branches)
+
+    def test_case_g_own_pr_not_in_merge_queue_renders_and_pushes(self) -> None:
+        # Case g: own open PR, not in merge queue, parent != base -> renders, pushes, arms merge.
+        self.stage_own_open_pr_with_render_diff(number=42)
+        self.set_merge_queue(queued=False)
+
+        res = self.run_script(render_due=True)
+        self.assert_existing_pr_rendered_and_pushed(res, number=42)
+
+    def test_case_h_merge_queue_query_failure_warns_and_continues(self) -> None:
+        # Case h: GraphQL query exits non-zero -> stderr names failure, continues render + push.
+        self.stage_own_open_pr_with_render_diff(number=42)
+        self.set_merge_queue(returncode=1)
+
+        res = self.run_script(render_due=True)
+        self.assertIn("merge-queue GraphQL query failed for pull request #42", res.stderr)
+        self.assert_existing_pr_rendered_and_pushed(res, number=42)
+
+    def test_case_i_no_open_pr_skips_merge_queue_graphql_query(self) -> None:
+        # Case i: no open PR -> GraphQL merge-queue query is never called.
+        self.set_prs([])
+        (self.state_dir / "prs_after_create.json").write_text(
+            json.dumps([self.own_pr_record(42)]),
+            encoding="utf-8",
+        )
+        (self.state_dir / "make_action.py").write_text(
+            "from pathlib import Path\n"
+            "Path('CHANGELOG.md').write_text('rendered\\n', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        self.set_merge_queue(queued=True)
+
+        res = self.run_script(render_due=True)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(self.graphql_calls(), [], f"unexpected graphql call: {self.gh_calls()}")
+        bare_branches = git("-C", str(self.bare_repo), "branch")
+        self.assertIn(self.render_branch, bare_branches)
 
     def test_case_d_untracked_adr_tag_file_triggers_commit_and_push(self) -> None:
         # Case d: make docs-render creates only an untracked docs/adr/by-tag/x.md -> commit + push path taken.
