@@ -2270,8 +2270,7 @@ class FailClosedCIContract(unittest.TestCase):
         script = script_path.read_text(encoding="utf-8")
         logical = re.sub(r"\\[ \t]*\n", " ", script)
         match = re.search(r"(?m)^exec[ \t]+(.+)$", logical)
-        self.assertIsNotNone(match, script)
-        self.assertIsNotNone(match)
+        assert match is not None, script
         command = match.group(1)
         argfile = "@scripts/ci/pytest-coverage-shard.args"
         self.assertEqual(command.count(argfile), 1, command)
