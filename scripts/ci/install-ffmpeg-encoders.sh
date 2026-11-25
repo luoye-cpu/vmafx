@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copyright 2026 luoye-cpu
+# Copyright 2026 Lusoris
 # SPDX-License-Identifier: EUPL-1.2
 #
 # Install the encoder runtimes the shared fix series' `-qpfile` checks need on
@@ -34,6 +34,9 @@ set +a
 # SVT-AV1's CMake install may choose lib/ or lib64/ for its .pc file; make both
 # visible to FFmpeg's configure probe and to the fail-closed checks below.
 export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib64/pkgconfig:${PKG_CONFIG_PATH:-}"
+if [ -n "${GITHUB_ENV:-}" ]; then
+  printf 'PKG_CONFIG_PATH=%s\n' "$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+fi
 
 # Reuse the runner's cached apt archives / retry config, same as every other
 # Ubuntu step in this workflow.

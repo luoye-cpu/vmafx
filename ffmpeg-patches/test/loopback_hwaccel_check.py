@@ -15,9 +15,9 @@ pointed at:
   the same number of frames the encode produced (assertion: the loopback path
   itself works).
 * ``software frames are refused by hwdownload``: feeding the same software
-  ``[dec:0]`` source into a ``hwdownload`` filtergraph must fail. That is the
-  baseline proof that "no -hwaccel == system-memory frames", rather than an
-  assumption.
+  ``[dec:0]`` source into a ``hwdownload`` filtergraph must fail with
+  libavfilter's hardware-frames-reference diagnostic. That is the baseline
+  proof that "no -hwaccel == system-memory frames", rather than an assumption.
 * ``unrecognised -hwaccel name``: ``-hwaccel <nonsense> -dec 0:0`` must exit
   non-zero with the patch's own stderr line
   ``Unrecognized hwaccel for a loopback decoder``. Stock FFmpeg would silently
@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -51,7 +52,9 @@ ROOT = Path(__file__).resolve().parents[2]
 WIDTH, HEIGHT, FRAMES = 576, 324, 6
 NEEDLE_HWACCEL = "Unrecognized hwaccel for a loopback decoder"
 NEEDLE_HWFMT = "Unrecognised hwaccel output format"
-NEEDLE_HWDOWNLOAD = "Impossible to convert between the formats"
+# libavfilter/vf_hwdownload.c refuses a software frame because it has no
+# hardware-frames reference; it does not reach the format-negotiation path.
+NEEDLE_HWDOWNLOAD = "hardware frames reference"
 # fftools/ffmpeg_hw.c and fftools/ffmpeg_dec.c print these when a device cannot be opened.
 NEEDLES_BAD_DEVICE = ("Device creation failed", "Hardware device setup failed")
 LOOPBACK_STATS = re.compile(r"Output stream #1:0 \(video\): (\d+) frames encoded")
@@ -178,6 +181,11 @@ def prepare_clip(
     return enc
 
 
+def _ordinary_rejection(result: subprocess.CompletedProcess[str]) -> bool:
+    """A deliberate non-zero exit, not a timeout, launch failure or signal death."""
+    return result.returncode > 0 and result.returncode not in (124, 127)
+
+
 def check_refused_option(
     args: argparse.Namespace,
     enc: Path,
@@ -189,7 +197,7 @@ def check_refused_option(
     result = run(args, loopback_cmd(args.ffmpeg, enc, hw, "[dec:0]copy[f]"))
     rows.append(
         (
-            "ok" if result.returncode != 0 and needle in result.stderr else "FAIL",
+            "ok" if _ordinary_rejection(result) and needle in result.stderr else "FAIL",
             label,
             result.stderr[-300:],
         )
@@ -200,7 +208,7 @@ def check_hwdownload(args: argparse.Namespace, enc: Path, rows: list[tuple[str, 
     hwdown = run(args, loopback_cmd(args.ffmpeg, enc, [], "[dec:0]hwdownload[f]"))
     rows.append(
         (
-            "ok" if hwdown.returncode > 0 and NEEDLE_HWDOWNLOAD in hwdown.stderr else "FAIL",
+            "ok" if _ordinary_rejection(hwdown) and NEEDLE_HWDOWNLOAD in hwdown.stderr else "FAIL",
             "software loopback frames are refused by hwdownload",
             hwdown.stderr[-300:],
         )
@@ -223,23 +231,46 @@ def check_software_round_trip(
 
 
 def probe_gpu_device(args: argparse.Namespace, rows: list[tuple[str, str, str]]) -> str:
-    probe = run(
-        args,
-        [
-            args.ffmpeg,
-            "-hide_banner",
-            "-nostdin",
-            "-init_hw_device",
-            f"{args.hwaccel}=probe:0",
-            "-f",
-            "lavfi",
-            "-i",
-            "nullsrc=s=64x64:d=1",
-            "-f",
-            "null",
-            "-",
-        ],
-    )
+    with tempfile.NamedTemporaryFile(
+        suffix=".yuv", prefix="loopback-gpu-probe-", delete=False
+    ) as handle:
+        handle.write(b"\0" * (64 * 64 * 3 // 2))
+        raw = Path(handle.name)
+    try:
+        probe = run(
+            args,
+            [
+                args.ffmpeg,
+                "-hide_banner",
+                "-nostdin",
+                "-init_hw_device",
+                f"{args.hwaccel}=probe:0",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "yuv420p",
+                "-s",
+                "64x64",
+                "-i",
+                str(raw),
+                "-frames:v",
+                "1",
+                "-f",
+                "null",
+                "-",
+            ],
+        )
+    finally:
+        raw.unlink(missing_ok=True)
+    if probe.returncode in (124, 127) or probe.returncode < 0:
+        rows.append(
+            (
+                "FAIL",
+                f"gpu probe of {args.hwaccel} could not run",
+                probe.stderr[-300:],
+            )
+        )
+        return "error"
     if probe.returncode != 0:
         if args.require_gpu:
             rows.append(
@@ -319,11 +350,11 @@ def check_bad_device(args: argparse.Namespace, enc: Path, rows: list[tuple[str, 
 def check_gpu_branch(
     args: argparse.Namespace, enc: Path, rows: list[tuple[str, str, str]], sw_frames: int
 ) -> str:
+    check_bad_device(args, enc, rows)
     state = probe_gpu_device(args, rows)
     if state != "ok":
         return state
     check_gpu_round_trip(args, enc, rows, sw_frames)
-    check_bad_device(args, enc, rows)
     return "ok"
 
 

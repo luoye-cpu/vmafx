@@ -30,6 +30,13 @@ def fail(text):
     raise SystemExit(1)
 
 
+def reject(text):
+    sys.stderr.write(text + "\\n")
+    if os.environ.get("STUB_REFUSED_SIGNAL"):
+        os.kill(os.getpid(), 11)
+    raise SystemExit(int(os.environ.get("STUB_REFUSED_RC", "1")))
+
+
 def value(flag):
     try:
         return args[args.index(flag) + 1]
@@ -51,17 +58,29 @@ if "-dec" not in args and value("-c:v") == "libx264":
     raise SystemExit(0)
 
 if "-init_hw_device" in args:
-    raise SystemExit(0 if os.environ.get("STUB_GPU") else 1)
+    if os.environ.get("STUB_GPU"):
+        raise SystemExit(0)
+    raise SystemExit(int(os.environ.get("STUB_GPU_RC", "1")))
 
 if "-dec" in args and "-" not in args[: args.index("-dec")]:
     # FFmpeg's scheduler refuses a loopback decoder fed by its own filtergraph's output.
     fail("[SchFilterGraph] Transcoding graph has a cycle")
 
 if value("-hwaccel").startswith("no-such"):
-    fail("Unrecognized hwaccel for a loopback decoder: " + value("-hwaccel"))
+    reject(
+        os.environ.get(
+            "STUB_HWACCEL_TEXT",
+            "Unrecognized hwaccel for a loopback decoder: " + value("-hwaccel"),
+        )
+    )
 
 if value("-hwaccel_output_format").startswith("no-such"):
-    fail("Unrecognised hwaccel output format: " + value("-hwaccel_output_format"))
+    reject(
+        os.environ.get(
+            "STUB_HWFMT_TEXT",
+            "Unrecognised hwaccel output format: " + value("-hwaccel_output_format"),
+        )
+    )
 
 if value("-hwaccel_device").startswith("/no/such"):
     if os.environ.get("STUB_BAD_DEVICE_SIGNAL"):
@@ -70,10 +89,17 @@ if value("-hwaccel_device").startswith("/no/such"):
     fail(os.environ.get("STUB_BAD_DEVICE_TEXT", "Device creation failed: -2."))
 
 if "hwdownload" in value("-filter_complex"):
+    text = os.environ.get(
+        "STUB_HWDOWNLOAD_TEXT",
+        "A hardware frames reference is required to download",
+    )
     if os.environ.get("STUB_HWDOWNLOAD_SIGNAL"):
-        sys.stderr.write("Impossible to convert between the formats\\n")
+        sys.stderr.write(text + "\\n")
         os.kill(os.getpid(), 11)
-    fail(os.environ.get("STUB_HWDOWNLOAD_TEXT", "Impossible to convert between the formats"))
+    if os.environ.get("STUB_HWDOWNLOAD_RC"):
+        sys.stderr.write(text + "\\n")
+        raise SystemExit(int(os.environ["STUB_HWDOWNLOAD_RC"]))
+    fail(text)
 
 frames = os.environ.get("STUB_LOOPBACK_FRAMES", "6")
 sys.stderr.write("frame=    6 fps=0.0 q=-1.0 size=N/A time=00:00:00.24 bitrate=N/A\\n")
@@ -166,6 +192,41 @@ class LoopbackHwaccelCheckTest(unittest.TestCase):
         result = self.run_checker(env={"STUB_HWDOWNLOAD_SIGNAL": "1"})
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("FAIL software loopback frames are refused by hwdownload", result.stdout)
+
+    def test_hwdownload_timeout_is_a_fail(self) -> None:
+        result = self.run_checker(env={"STUB_HWDOWNLOAD_RC": "124"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL software loopback frames are refused by hwdownload", result.stdout)
+
+    def test_refused_option_signal_death_is_a_fail(self) -> None:
+        result = self.run_checker(env={"STUB_REFUSED_SIGNAL": "1"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL loopback refuses an unrecognised -hwaccel name", result.stdout)
+
+    def test_refused_option_timeout_is_a_fail(self) -> None:
+        result = self.run_checker(env={"STUB_REFUSED_RC": "124"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL loopback refuses an unrecognised -hwaccel name", result.stdout)
+
+    def test_unknown_hwaccel_needs_the_patch_diagnostic(self) -> None:
+        result = self.run_checker(env={"STUB_HWACCEL_TEXT": "Option not found"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL loopback refuses an unrecognised -hwaccel name", result.stdout)
+
+    def test_unknown_output_format_needs_the_patch_diagnostic(self) -> None:
+        result = self.run_checker(env={"STUB_HWFMT_TEXT": "Option not found"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL loopback refuses an unrecognised -hwaccel_output_format", result.stdout)
+
+    def test_gpu_probe_timeout_is_a_fail(self) -> None:
+        result = self.run_checker(env={"STUB_GPU_RC": "124"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL gpu probe of cuda could not run", result.stdout)
+
+    def test_gpu_probe_launch_failure_is_a_fail(self) -> None:
+        result = self.run_checker(env={"STUB_GPU_RC": "127"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL gpu probe of cuda could not run", result.stdout)
 
     def test_missing_fixture_is_a_fail_row(self) -> None:
         (self.yuv / "src01_hrc01_576x324.yuv").unlink()

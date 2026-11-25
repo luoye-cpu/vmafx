@@ -211,15 +211,20 @@ jobs:
           summary="$RUNNER_TEMP/loopback-hwaccel-summary.txt"
           echo "## FFmpeg loopback decoder \`-hwaccel\` checks (issue #3351)" \
             | tee -a "$GITHUB_STEP_SUMMARY"
+          set +e
           python3 ffmpeg-patches/test/loopback_hwaccel_check.py \
             --ffmpeg "$GITHUB_WORKSPACE/ffmpeg/ffmpeg" \
             --summary-out "$summary"
+          check_rc=$?
+          set -e
           # Hosted runners have no GPU, and we deliberately do NOT pass
           # --require-gpu: the checker then prints an explicit SKIP line plus
           # substitute evidence and exits 0. The SKIP in the step summary is
           # the proof the check RAN — an absent GPU must read as a visible
-          # skip, never as a silent pass.
+          # skip, never as a silent pass. Cat the summary even when the
+          # checker failed: set -e must not hide the failing rows.
           cat "$summary" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$check_rc"
 
   # Build-only: FFmpeg with SYCL patch (no GPU hardware on runners)
   ffmpeg-sycl-work:
