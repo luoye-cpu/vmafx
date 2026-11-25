@@ -516,6 +516,7 @@ class PythonCiVersionGroup(unittest.TestCase):
 
 LOCK_MANIFEST = "requirements/locks/manifest.json"
 UV_GROUP = "uv (lock generator, all managers)"
+UV_SELECTOR_FINDING = "uv manager selector must be the exact anchored manifest path"
 
 
 def uv_lock_generator_manager(config: dict[str, Any]) -> dict[str, Any] | None:
@@ -528,20 +529,16 @@ def uv_lock_generator_manager(config: dict[str, Any]) -> dict[str, Any] | None:
     return managers[0] if len(managers) == 1 else None
 
 
-def _uv_manifest_finding(manager: dict[str, Any], manifest_text: str) -> str | None:
+def _uv_manifest_finding(manager: dict[str, Any], manifest_text: str, version: str) -> str | None:
     if manager.get("datasourceTemplate") != "pypi":
         return "uv manager datasourceTemplate must be pypi"
     selectors = manager.get("managerFilePatterns", [])
     if len(selectors) != 1:
         return "uv manager needs exactly one managerFilePatterns entry"
-    selector = re.compile(selectors[0][1:-1])
-    if not selector.search(LOCK_MANIFEST):
-        return f"{LOCK_MANIFEST} is not selected by the manager"
-    for other in ("requirements/locks/other.json", "requirements/locks/sub/manifest.json"):
-        if selector.search(other):
-            return f"uv manager also selects {other}"
+    if selectors[0] != r"/^requirements/locks/manifest\.json$/":
+        return UV_SELECTOR_FINDING
     patterns = [re.compile(to_python(m)) for m in manager.get("matchStrings", [])]
-    want = [str(json.loads(manifest_text)["uv_version"])]
+    want = [version]
     got = [
         m.groupdict().get("currentValue", "") for p in patterns for m in p.finditer(manifest_text)
     ]
@@ -550,7 +547,7 @@ def _uv_manifest_finding(manager: dict[str, Any], manifest_text: str) -> str | N
     return None
 
 
-def _uv_group_finding(config: dict[str, Any], update_type: str) -> str | None:
+def _uv_group_finding(config: dict[str, Any], update_type: str, version: str) -> str | None:
     rules = config["packageRules"]
     shared = {index for index, rule in enumerate(rules) if rule.get("groupName") == UV_GROUP}
     matches = {}
@@ -567,6 +564,8 @@ def _uv_group_finding(config: dict[str, Any], update_type: str) -> str | None:
                 "matchPackageNames": "uv",
                 "matchDepNames": "uv",
                 "matchUpdateTypes": update_type,
+                "matchCurrentValue": version,
+                "matchCurrentVersion": version,
             },
         )
         shared.intersection_update(indices)
@@ -588,11 +587,13 @@ def uv_lock_generator_findings(config: dict[str, Any], read: Callable[[str], str
     if manager is None:
         return ["no single custom manager for uv"]
     errors: list[str] = []
-    manifest_finding = _uv_manifest_finding(manager, read(LOCK_MANIFEST))
+    manifest_text = read(LOCK_MANIFEST)
+    version = str(json.loads(manifest_text)["uv_version"])
+    manifest_finding = _uv_manifest_finding(manager, manifest_text, version)
     if manifest_finding is not None:
         errors.append(manifest_finding)
     for update_type in ("patch", "minor", "major"):
-        group_finding = _uv_group_finding(config, update_type)
+        group_finding = _uv_group_finding(config, update_type, version)
         if group_finding is not None:
             errors.append(group_finding)
     return errors
@@ -643,7 +644,7 @@ class UvLockGeneratorGroup(unittest.TestCase):
             assert manager is not None
             manager["managerFilePatterns"] = ["/^requirements/locks/other\\.json$/"]
 
-        self.assertIn(f"{LOCK_MANIFEST} is not selected by the manager", self.findings(mispoint))
+        self.assertIn(UV_SELECTOR_FINDING, self.findings(mispoint))
 
     def manager_findings(self, **changes: Any) -> list[str]:
         def change(config: dict[str, Any]) -> None:
@@ -664,15 +665,24 @@ class UvLockGeneratorGroup(unittest.TestCase):
 
     def test_selector_cannot_match_sibling(self) -> None:
         self.assertIn(
-            "uv manager also selects requirements/locks/other.json",
+            UV_SELECTOR_FINDING,
             self.manager_findings(managerFilePatterns=[r"/^requirements/locks/[^/]+\.json$/"]),
         )
 
     def test_selector_cannot_match_nested_manifest(self) -> None:
         self.assertIn(
-            "uv manager also selects requirements/locks/sub/manifest.json",
+            UV_SELECTOR_FINDING,
             self.manager_findings(
                 managerFilePatterns=[r"/^requirements/locks/(?:.*/)?manifest\.json$/"]
+            ),
+        )
+
+    def test_selector_cannot_match_archived_manifest(self) -> None:
+        """Negative: even an optional literal archive directory widens the selector."""
+        self.assertIn(
+            UV_SELECTOR_FINDING,
+            self.manager_findings(
+                managerFilePatterns=[r"/^requirements/locks/(?:archive/)?manifest\.json$/"]
             ),
         )
 
@@ -680,6 +690,28 @@ class UvLockGeneratorGroup(unittest.TestCase):
         self.assertIn(
             "uv manager datasourceTemplate must be pypi",
             self.manager_findings(datasourceTemplate="npm"),
+        )
+
+    def test_current_value_rule_cannot_split_uv_pins(self) -> None:
+        """Negative: a later pip rule for this version overrides all three update types."""
+        version = json.loads((ROOT / LOCK_MANIFEST).read_text(encoding="utf-8"))["uv_version"]
+
+        def override(config: dict[str, Any]) -> None:
+            config["packageRules"].append(
+                {
+                    "matchManagers": ["pip_requirements"],
+                    "matchPackageNames": ["uv"],
+                    "matchCurrentValue": version,
+                    "groupName": "split",
+                }
+            )
+
+        self.assertEqual(
+            self.findings(override),
+            [
+                f"uv ({kind}): later pip_requirements rule overrides the uv group with 'split'"
+                for kind in ("patch", "minor", "major")
+            ],
         )
 
     def test_later_pypi_group_cannot_override_uv(self) -> None:

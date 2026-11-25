@@ -2450,15 +2450,23 @@ class UvBootstrapTests(unittest.TestCase):
         manifest = self.checker.load_manifest(self.root)
         manifest["locks"].append(dict(manifest["locks"][0], output="extra-lock.txt"))
         (self.root / self.checker.MANIFEST_PATH).write_text(json.dumps(manifest), encoding="utf-8")
-        with self.assertRaisesRegex(self.checker.ContractError, "tooling-lock.txt.*extra-lock.txt"):
-            self.bootstrap()
+        for version in (self.version, self.old):
+            with self.subTest(installed=version):
+                self.installed.return_value = version
+                with self.assertRaisesRegex(
+                    self.checker.ContractError, "tooling-lock.txt.*extra-lock.txt"
+                ):
+                    self.bootstrap()
         self.run_uv.assert_not_called()
 
     def test_no_generator_entry_fails(self) -> None:
         """Boundary: report an empty candidate list when no entry pins uv."""
         (self.root / "tools.in").write_text("uv>=0.1\n", encoding="utf-8")
-        with self.assertRaisesRegex(self.checker.ContractError, r"found \[\]"):
-            self.bootstrap()
+        for version in (self.version, self.old):
+            with self.subTest(installed=version):
+                self.installed.return_value = version
+                with self.assertRaisesRegex(self.checker.ContractError, r"found \[\]"):
+                    self.bootstrap()
         self.run_uv.assert_not_called()
 
     def test_manifest_output_cannot_be_bootstrap_destination(self) -> None:
@@ -2472,6 +2480,31 @@ class UvBootstrapTests(unittest.TestCase):
                     self.bootstrap()
                 self.assertEqual(self.output.read_text(encoding="utf-8"), "committed")
         self.run_uv.assert_not_called()
+
+    def assert_git_metadata_survives(self, path: Path, contents: str) -> None:
+        path.write_text(contents, encoding="utf-8")
+        self.output = path
+        with mock.patch.object(self.checker, "tracked_paths", return_value=[]):
+            for version in (self.version, self.old):
+                with self.subTest(installed=version):
+                    self.installed.return_value = version
+                    with self.assertRaisesRegex(
+                        self.checker.ContractError,
+                        "bootstrap output must not be inside the Git metadata",
+                    ):
+                        self.bootstrap()
+                    self.assertEqual(path.read_text(encoding="utf-8"), contents)
+        self.run_uv.assert_not_called()
+
+    def test_main_checkout_git_metadata_survives(self) -> None:
+        """Negative: bootstrap cannot remove or overwrite the main checkout's config."""
+        metadata = self.root / ".git"
+        metadata.mkdir()
+        self.assert_git_metadata_survives(metadata / "config", "[core]\n\tbare = false\n")
+
+    def test_linked_worktree_git_metadata_survives(self) -> None:
+        """Boundary: the worktree's .git pointer file is itself protected."""
+        self.assert_git_metadata_survives(self.root / ".git", "gitdir: ../main/.git/worktrees/wt\n")
 
     def test_other_tracked_lock_is_protected(self) -> None:
         """Negative: a tracked lock outside the Python manifest is also protected."""

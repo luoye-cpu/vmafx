@@ -36,6 +36,8 @@ SHA_RE = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 FORCE_RE = re.compile(r"(?:^|\s)(?:--force\S*|-f|\+HEAD\S*)(?:\s|$)")
 GENERATOR_RE = re.compile(r"pip-compile|uv\s+pip\s+compile|uv\s+lock")
 
+ORDER_FINDING = "guard, tooling install, bootstrap, bootstrap install, write and publish are missing or out of order"
+
 
 def load(path: Path) -> dict[str, Any]:
     """Parse a workflow; YAML 1.1 reads the ``on`` key as ``True``, so fold it back."""
@@ -88,18 +90,24 @@ def shape_findings(workflow: dict[str, Any], inputs: list[str]) -> list[str]:
 
 
 def guard_order_findings(texts: list[str]) -> list[str]:
-    """Require separate guard, bootstrap, regeneration and publish steps in order."""
-    joined = [
-        next((i for i, t in enumerate(texts) if marker in t), -1)
-        for marker in (
-            "lock_refresh_publish.py refuse-non-renovate",
-            "check_python_dependency_locks.py bootstrap-uv",
-            "check_python_dependency_locks.py write",
-            "lock_refresh_publish.py publish",
-        )
+    """Check step order and the install that consumes the bootstrap step's local variable."""
+    bootstrap = "check_python_dependency_locks.py bootstrap-uv"
+    markers = (
+        "lock_refresh_publish.py refuse-non-renovate",
+        "python -m pip install --require-hashes -r requirements/locks/package-build.txt",
+        bootstrap,
+        "check_python_dependency_locks.py write",
+        "lock_refresh_publish.py publish",
+    )
+    indices = [
+        next((i for i, text in enumerate(texts) if marker in text), -1) for marker in markers
     ]
-    if -1 in joined or joined != sorted(set(joined)):
-        return ["guard, bootstrap, write and publish steps are missing or out of order"]
+    if -1 in indices or indices != sorted(set(indices)):
+        return [ORDER_FINDING]
+    after_bootstrap = texts[indices[2]].partition(bootstrap)[2]
+    install = 'python -m pip install --no-build-isolation --require-hashes -r "$bootstrap"'
+    if install not in (line.strip() for line in after_bootstrap.splitlines()):
+        return [ORDER_FINDING]
     return []
 
 
@@ -182,10 +190,7 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
         wf["jobs"]["refresh-locks"]["steps"] = [
             s for s in steps if "refuse" not in s.get("run", "")
         ]
-        self.assertIn(
-            "guard, bootstrap, write and publish steps are missing or out of order",
-            shape_findings(wf, self.inputs),
-        )
+        self.assertIn(ORDER_FINDING, shape_findings(wf, self.inputs))
 
     def test_planted_missing_bootstrap_is_reported(self) -> None:
         """Negative: dropping the bootstrap step leaves the old generator installed."""
@@ -193,10 +198,29 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
         wf["jobs"]["refresh-locks"]["steps"] = [
             step for step in steps_of(wf) if "bootstrap-uv" not in step.get("run", "")
         ]
-        self.assertIn(
-            "guard, bootstrap, write and publish steps are missing or out of order",
-            shape_findings(wf, self.inputs),
+        self.assertIn(ORDER_FINDING, shape_findings(wf, self.inputs))
+
+    def test_planted_late_tooling_install_is_reported(self) -> None:
+        """Negative: installing the tooling lock after bootstrap can restore the old uv."""
+        wf = self.planted()
+        steps = steps_of(wf)
+        tooling = next(
+            s for s in steps if s.get("name") == "Install the pinned uv from the tooling lock"
         )
+        steps.remove(tooling)
+        bootstrap = next(i for i, s in enumerate(steps) if "bootstrap-uv" in s.get("run", ""))
+        steps.insert(bootstrap + 1, tooling)
+        wf["jobs"]["refresh-locks"]["steps"] = steps
+        self.assertIn(ORDER_FINDING, shape_findings(wf, self.inputs))
+
+    def test_planted_missing_bootstrap_install_is_reported(self) -> None:
+        """Negative: compiling the bootstrap lock alone leaves the old uv installed."""
+        wf = self.planted()
+        step = next(s for s in steps_of(wf) if "bootstrap-uv" in s.get("run", ""))
+        step["run"] = "\n".join(
+            line for line in step["run"].splitlines() if '-r "$bootstrap"' not in line
+        )
+        self.assertIn(ORDER_FINDING, shape_findings(wf, self.inputs))
 
     def test_boundary_both_lock_workflows_publish_through_the_shared_script(self) -> None:
         """Boundary: neither workflow runs git commit or git push itself."""

@@ -46,6 +46,7 @@ except ImportError:
     yaml = None
 
 MANIFEST_PATH = Path("requirements/locks/manifest.json")
+PATH_LOOKUP_ERRORS = (ValueError, OSError)
 GIT_TIMEOUT_S = 60
 # 10x the slowest cold-cache uv pip compile of the manifest: 10.6 s.
 SUBPROCESS_TIMEOUT_S = 120
@@ -751,7 +752,7 @@ def _escapes_search_root(
         resolved = (base_dir / clean_val).resolve()
         search_root_resolved = search_root.resolve()
         return not str(resolved).startswith(str(search_root_resolved))
-    except (ValueError, OSError):
+    except PATH_LOOKUP_ERRORS:
         return True
 
 
@@ -776,7 +777,7 @@ def _exists_beside(base: Path, clean_val: str) -> bool:
     """True when ``base / clean_val`` exists (an unusable path counts as absent)."""
     try:
         return (base / clean_val).exists()
-    except (ValueError, OSError):
+    except PATH_LOOKUP_ERRORS:
         return False
 
 
@@ -1351,7 +1352,7 @@ def _is_repo_local_target(target: str, root: Path | None = None) -> bool:
     search_root = _resolve_search_root(root)
     try:
         return (search_root / clean).exists()
-    except (ValueError, OSError):
+    except PATH_LOOKUP_ERRORS:
         return False
 
 
@@ -2160,12 +2161,16 @@ def _check_bootstrap_destination(root: Path, manifest: dict[str, Any], output: P
     """Keep generated data and same-version cleanup away from repository files."""
     destination = output.parent.resolve() / output.name
     root = root.resolve()
+    resolved_output = output.resolve()
+    metadata = (root / ".git").resolve()
+    if destination.is_relative_to(metadata) or resolved_output.is_relative_to(metadata):
+        raise ContractError(f"{output}: bootstrap output must not be inside the Git metadata")
     protected = [
         MANIFEST_PATH,
         *_manifest_input_paths(manifest),
         *(e["output"] for e in manifest["locks"]),
     ]
-    if output.resolve() in {(root / path).resolve() for path in protected}:
+    if resolved_output in {(root / path).resolve() for path in protected}:
         raise ContractError(
             f"{output}: bootstrap output must be separate from the lock manifest, inputs and outputs"
         )
@@ -2179,11 +2184,11 @@ def bootstrap_uv(root: Path, uv_binary: str, output: Path) -> int:
     resolved_uv, manifest, actual = _generator_context(root, uv_binary)
     version = manifest["uv_version"]
     _check_bootstrap_destination(root, manifest, output)
+    entry = _generator_entry(root, manifest)
     if actual == version:
         output.unlink(missing_ok=True)
         print(f"uv {actual} matches uv_version; no bootstrap")
         return 0
-    entry = _generator_entry(root, manifest)
     # Start fresh: uv can reuse pins from an existing output during compilation.
     output.unlink(missing_ok=True)
     try:
