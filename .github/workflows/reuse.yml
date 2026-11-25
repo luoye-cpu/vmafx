@@ -5,12 +5,15 @@
 #
 # Edited here (praetor keeps an edited copy, --force included): both actions
 # are pinned to a commit like every other workflow of this repository, where
-# praetor renders release tags (cordanaLLM/praetor#899; ADR-2784).
+# praetor renders release tags (tekmora/praetor#899; ADR-2784).
 name: REUSE
 
 'on':
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+    branches: ['master']
   push:
     branches: ['master']
 

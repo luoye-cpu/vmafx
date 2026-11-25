@@ -8,6 +8,8 @@
 #   apt-install-cached.sh configure
 #       write the retry/timeout apt config only (for steps that add a repo
 #       before installing)
+#   apt-install-cached.sh drop-sources
+#       remove runner Microsoft/Azure sources before another installer refreshes
 #   apt-install-cached.sh refresh
 #       configure retry/timeout settings, drop pre-provisioned Microsoft/Azure
 #       apt sources, and refresh apt package lists
@@ -15,10 +17,15 @@
 #       configure, drop Microsoft/Azure apt sources, refresh apt lists, restore
 #       the archive cache, install every non-comment line of LIST, and copy the
 #       archives back for the save step
+#
+# This script is kept instead of cache-apt-pkgs-action because that action
+# skips and ignores apt index refresh errors on GitHub runners, restores
+# packages without running their install scripts, and runs unsigned prebuilt
+# binaries; see docs/adr/3609-keep-apt-cache-sweep.md for the revisit trigger.
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 configure | refresh | install LIST [APT_ARGS...]" >&2
+  echo "usage: $0 configure | drop-sources | refresh | install LIST [APT_ARGS...]" >&2
   exit 64
 }
 
@@ -27,14 +34,23 @@ write_apt_config() {
     sudo tee /etc/apt/apt.conf.d/80ci-retries >/dev/null
 }
 
-refresh_apt_lists() {
-  write_apt_config
+drop_sources() {
   # The hosted runner ships pre-provisioned Microsoft/Azure apt
   # sources (packages.microsoft.com) that intermittently 403 /
   # "no longer signed", failing apt index refreshes with exit 100.
   # vmaf needs none of them — drop them first. See
   # T-CI-APT-MS-REPO-FLAKE (same fix as the Coverage Gate).
-  sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+  local sources="${APT_SOURCES_DIR:-/etc/apt/sources.list.d}"
+  local -a privilege=()
+  if ((EUID != 0)); then
+    privilege=(sudo)
+  fi
+  "${privilege[@]}" rm -f "$sources"/*microsoft* "$sources"/*azure*
+}
+
+refresh_apt_lists() {
+  write_apt_config
+  drop_sources
   sudo apt-get --error-on=any -o Acquire::Retries=3 update
 }
 
@@ -66,6 +82,10 @@ case "$1" in
   configure)
     [ $# -eq 1 ] || usage
     write_apt_config
+    ;;
+  drop-sources)
+    [ $# -eq 1 ] || usage
+    drop_sources
     ;;
   refresh)
     [ $# -eq 1 ] || usage
