@@ -69,9 +69,13 @@ class EndToEndTests(unittest.TestCase):
         (self.dir / "test_sample.py").write_text(SAMPLE_TESTS, encoding="utf-8")
         (self.dir / "pytest.ini").write_text("[pytest]\nmarkers =\n    slow\n", encoding="utf-8")
 
-    def run_shard(self, shard: str, path: str | None = None) -> subprocess.CompletedProcess[str]:
+    def run_shard(
+        self, shard: str, path: str | None = None, runner_args: list[str] | None = None
+    ) -> subprocess.CompletedProcess[str]:
         command = [sys.executable, str(SCRIPT), "--shard", shard, "--"]
-        command += [path or str(self.dir), "-v", "-p", "no:cacheprovider", "-m", "not slow"]
+        if runner_args is None:
+            runner_args = [path or str(self.dir), "-v", "-p", "no:cacheprovider", "-m", "not slow"]
+        command += runner_args
         return subprocess.run(  # noqa: S603 -- fixed argv of this interpreter, no shell
             command,
             capture_output=True,
@@ -92,6 +96,17 @@ class EndToEndTests(unittest.TestCase):
             ran += passed
         self.assertEqual(sorted(ran), sorted(f"test_item_{n}" for n in range(ITEMS)))
         self.assertNotIn("test_slow_item", ran)
+
+    def test_argfile_at_path_honours_not_slow_marker(self) -> None:
+        """Assert an @argfile after -- reaches pytest with "not slow" kept as one argument."""
+        argfile = self.dir / "shard.args"
+        lines = [str(self.dir / "test_sample.py"), "-v", "-p", "no:cacheprovider", "-m", "not slow"]
+        argfile.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        result = self.run_shard("1/1", runner_args=[f"@{argfile}"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        ran = PASSED.findall(result.stdout)
+        self.assertEqual(sorted(ran), sorted(f"test_item_{n}" for n in range(ITEMS)))
+        self.assertNotIn("test_slow_item", result.stdout)
 
     def test_empty_shard_fails_instead_of_running_everything(self) -> None:
         result = self.run_shard(f"{ITEMS + 1}/{ITEMS + 1}")

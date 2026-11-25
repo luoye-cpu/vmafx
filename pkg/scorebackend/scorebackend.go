@@ -21,7 +21,8 @@
 // Scope note: score_backend.py also hosts NRProxyBackend (the ADR-0624 /
 // ADR-0615 no-reference ONNX pre-scorer). That half is not ported here — it
 // needs a multi-input ONNX Runtime session, which the Go tree does not yet
-// have (see pkg/fast's proxy blocker and pkg/ai.Registry.InferDirect).
+// have (see pkg/fast's proxy blocker; pkg/ai exposes only the single-input
+// Registry.Infer seam).
 package scorebackend
 
 import (

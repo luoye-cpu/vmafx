@@ -12,7 +12,7 @@ import re
 import shutil
 import tempfile
 import tokenize
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,10 +23,19 @@ Finding = tuple[int, str, str]
 # Covers tracked .py (<= 220,626 B), C/C++ (<= 841,275 B), and untagged blobs
 # copied before shebang inspection (<= 30,810,303 B); git_bytes shares it.
 MAX_SOURCE_BYTES = 64 * 1_048_576
+LS_TREE_RECORD_RE = re.compile(
+    r"(100644 blob|100755 blob|120000 blob|160000 commit) "
+    r"([0-9a-f]{40}(?:[0-9a-f]{24})?)\t(.+)",
+    flags=re.DOTALL,
+)
 
 
 class ToolError(RuntimeError):
     """A scanner or git is missing or failed."""
+
+
+class TreeListingError(ToolError):
+    """A git ls-tree invocation exited non-zero."""
 
 
 def tool(name: str) -> str:
@@ -88,26 +97,60 @@ def renames(git: str, root: Path, base: str, ref: str) -> dict[str, str]:
     return {fields[index + 2]: fields[index + 1] for index in range(0, len(fields) - 2, 3)}
 
 
-def revision_modes(git: str, root: Path, ref: str) -> dict[str, str]:
-    """Read bounded tree output, accepting only well-formed supported mode/type pairs."""
-    status, output = git_output(git, ["ls-tree", "-r", "-z", ref], root)
+def _ls_tree_args(ref: str, pathspecs: Sequence[str] | None) -> list[str] | None:
+    """Build the git ls-tree argument list, or None for an explicit empty pathspec sequence."""
+    if pathspecs is None:
+        return ["ls-tree", "-r", "-z", ref]
+    if any(not spec for spec in pathspecs):
+        raise ToolError(f"empty pathspec in git ls-tree against {ref}")
+    if not pathspecs:
+        return None
+    return ["ls-tree", "-r", "-z", "--full-tree", ref, "--", *pathspecs]
+
+
+def revision_entries(
+    git: str,
+    root: Path,
+    ref: str,
+    *,
+    pathspecs: Sequence[str] | None = None,
+) -> dict[str, tuple[str, str]]:
+    """Read bounded tree output into ``{path: (mode, oid)}`` for supported mode/type pairs."""
+    args = _ls_tree_args(ref, pathspecs)
+    if args is None:
+        status, _ = git_output(git, ["ls-tree", "-d", "-z", "--full-tree", ref], root)
+        if status != 0:
+            raise TreeListingError(f"git ls-tree against {ref} failed")
+        return {}
+    status, output = git_output(git, args, root)
     if status != 0:
-        raise ToolError(f"git ls-tree against {ref} failed")
+        raise TreeListingError(f"git ls-tree against {ref} failed")
     if output and not output.endswith("\0"):
         raise ToolError(f"unterminated git ls-tree record against {ref}")
-    modes = {}
-    pattern = (
-        r"(100644 blob|100755 blob|120000 blob|160000 commit) [0-9a-f]{40}(?:[0-9a-f]{24})?\t(.+)"
-    )
+    entries: dict[str, tuple[str, str]] = {}
     for record in output.split("\0")[:-1]:
-        match = re.fullmatch(pattern, record, flags=re.DOTALL)
+        match = LS_TREE_RECORD_RE.fullmatch(record)
         if match is None:
             raise ToolError(f"malformed git ls-tree record against {ref}")
-        mode_type, name = match.groups()
-        if name in modes:
+        mode_type, oid, name = match.groups()
+        if name in entries:
             raise ToolError(f"duplicate git ls-tree path against {ref}: {name}")
-        modes[name] = mode_type.split(" ", 1)[0]
-    return modes
+        entries[name] = (mode_type.split(" ", 1)[0], oid)
+    return entries
+
+
+def revision_modes(
+    git: str,
+    root: Path,
+    ref: str,
+    *,
+    pathspecs: Sequence[str] | None = None,
+) -> dict[str, str]:
+    """Read bounded tree output, accepting only well-formed supported mode/type pairs."""
+    return {
+        name: mode
+        for name, (mode, _) in revision_entries(git, root, ref, pathspecs=pathspecs).items()
+    }
 
 
 def revision_bytes(

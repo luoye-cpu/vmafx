@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Copyright 2026 Lusoris
 # SPDX-License-Identifier: EUPL-1.2
-"""Check the rendered changelog, ADR index and rebase notes on a master push (ADR-3295).
+"""Check the rendered changelog, ADR index and rebase notes (ADR-3295, ADR-3627).
 
 A pull request carries fragments, never the render (ADR-2197). Since ADR-3295
 the render lands as its own render-only pull request after a batch, so master
@@ -15,20 +15,25 @@ window bounded and the last render exact:
 3. The first first-parent commit after it starts the owed render. Older than
    the bound (24 hours by default): red. Within it: green with a warning.
 
-With ``--open-after-hours H`` the script judges nothing and decides instead
-whether the scheduled render workflow (``.github/workflows/docs-render-pr.yml``,
-ADR-3373) opens or refreshes the render pull request: it prints
-``open=true`` once a render has been owed for H hours or more (or no commit
-carries a render), ``open=false`` otherwise, and ``owed_since=<sha>``, and
-exits 0.
+With ``--group-base SHA`` the script checks the last first-parent render
+commit in ``SHA..HEAD`` on its own tree. ``SHA`` must be a full commit ID that
+is an ancestor of ``HEAD``, otherwise the check fails. A group without a render
+passes.
+
+With ``--open-after-hours H`` the script decides whether the render workflow
+(``.github/workflows/docs-render-pr.yml``, ADR-3373) opens or refreshes the
+render pull request. It prints ``open=true`` when a render has been owed for
+at least H hours or the last render is inexact, and ``open=false`` otherwise.
+It also prints ``owed_since=<sha>`` (empty when current) and exits 0.
 
 Usage: check_render_on_master.py [--root DIR] [--bound-hours H] [--now EPOCH]
-       [--open-after-hours H]
+       [--group-base SHA | --open-after-hours H]
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 import tempfile
@@ -56,6 +61,7 @@ GIT_TIMEOUT_S = 120
 RENDER_TIMEOUT_S = 900
 DEFAULT_BOUND_HOURS = 24.0
 TITLE = "ADR-3295 rendered docs"
+FULL_COMMIT_ID_RE = re.compile(r"\A(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 
 
 @dataclass(frozen=True)
@@ -122,10 +128,19 @@ def render_check_at(root: Path, commit: str) -> tuple[bool, str]:
         git(root, "worktree", "prune")
 
 
-def last_render_commit(root: Path) -> str:
-    """The last first-parent commit of HEAD that touched a rendered file, or ''."""
+def last_render_commit(root: Path, revision: str = "HEAD") -> str:
+    """The last first-parent commit in a revision or range that touched a rendered file."""
     out = git(
-        root, "log", "--first-parent", "-n", "1", "--format=%H", "HEAD", "--", *RENDERED_PATHS
+        root,
+        "log",
+        "--first-parent",
+        "-n",
+        "1",
+        "--format=%H",
+        "--end-of-options",
+        revision,
+        "--",
+        *RENDERED_PATHS,
     )
     return out.strip()
 
@@ -178,14 +193,59 @@ def judge(root: Path, now: float, bound_hours: float) -> Verdict:
     return Verdict(verdict.status, (output, *verdict.lines))
 
 
-def owed_age_hours(root: Path, now: float) -> tuple[str, float] | None:
-    """The first commit of the owed render and its age in hours, or None when
-    the render at HEAD is current. With no render commit at all the owed render
-    starts at the root commit."""
-    passed, _ = render_check(root)
-    if passed:
+def merge_group_base_error(root: Path, base: str) -> str | None:
+    """Return an `::error` line when `base` is not a full ancestor commit ID of `HEAD`."""
+    if not base:
+        return f"::error title={TITLE}::missing merge-group base SHA"
+    if FULL_COMMIT_ID_RE.fullmatch(base) is None:
+        return f"::error title={TITLE}::merge-group base {base!r} is not a full commit ID"
+    result = run_command(
+        ["git", "-C", str(root), "merge-base", "--is-ancestor", "--end-of-options", base, "HEAD"],
+        allowed_executables=("git",),
+        env=git_environment(),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout_seconds=GIT_TIMEOUT_S,
+    )
+    if result.returncode == 0:
         return None
-    render = last_render_commit(root)
+    if result.returncode == 1:
+        return f"::error title={TITLE}::merge-group base {base[:12]} is not an ancestor of HEAD"
+    stderr_lines = result.stderr.strip().splitlines()
+    first_line = stderr_lines[0] if stderr_lines else "no stderr output"
+    return (
+        f"::error title={TITLE}::git merge-base --is-ancestor failed for "
+        f"{base[:12]} (rc {result.returncode}): {first_line}"
+    )
+
+
+def judge_merge_group(root: Path, base: str) -> Verdict:
+    """Check the last render in the group against the fragments in its own tree.
+
+    `base` must be a full commit ID that is an ancestor of `HEAD`.
+    """
+    error = merge_group_base_error(root, base)
+    if error is not None:
+        return Verdict(1, (error,))
+    render = last_render_commit(root, f"{base}..HEAD")
+    if not render:
+        return Verdict(0, ("check_render_on_master: no render commit in the merge group",))
+    exact, output = render_check_at(root, render)
+    if exact:
+        return Verdict(0, (f"check_render_on_master: merge-group render {render[:12]} is exact",))
+    return Verdict(
+        1,
+        (
+            output,
+            f"::error title={TITLE}::merge-group render commit {render[:12]} is not the render "
+            "of its fragments. Re-render after the group's preceding changes land.",
+        ),
+    )
+
+
+def owed_age_hours(root: Path, now: float, render: str) -> tuple[str, float]:
+    """The first commit of the owed render and its age, starting at the root without a render."""
     if render:
         first = first_commit_after(root, render)
     else:
@@ -199,37 +259,67 @@ def owed_age_hours(root: Path, now: float) -> tuple[str, float] | None:
 
 
 def decide_pull_request(root: Path, now: float, open_after_hours: float) -> Verdict:
-    """Whether the scheduled render workflow opens or refreshes the render pull
-    request (ADR-3373): once the owed render is `open_after_hours` old."""
-    owed = owed_age_hours(root, now)
-    if owed is None:
+    """Open once a render is overdue or the last render was inexact on its own tree."""
+    passed, _ = render_check(root)
+    if passed:
         return Verdict(0, ("open=false", "owed_since="))
-    sha, age = owed
-    decision = "true" if age >= open_after_hours else "false"
+    render = last_render_commit(root)
+    sha, age = owed_age_hours(root, now, render)
+    due = age >= open_after_hours
+    if render and not due:
+        exact, _ = render_check_at(root, render)
+        due = not exact
+    decision = "true" if due else "false"
     return Verdict(0, (f"open={decision}", f"owed_since={sha}", f"owed_hours={age:.1f}"))
 
 
+def _bind_group_base_arg(argv: list[str]) -> list[str]:
+    """Bind `--group-base <value>` as `--group-base=<value>` so `-` values reach validation."""
+    bound: list[str] = []
+    skip_next = False
+    end_of_opts = False
+    for index, arg in enumerate(argv):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--":
+            end_of_opts = True
+        if not end_of_opts and arg == "--group-base" and index + 1 < len(argv):
+            bound.append(f"--group-base={argv[index + 1]}")
+            skip_next = True
+            continue
+        bound.append(arg)
+    return bound
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse the master check, merge-group check or render workflow decision mode."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     parser.add_argument("--bound-hours", type=float, default=DEFAULT_BOUND_HOURS)
     parser.add_argument("--now", type=float, default=None, help="epoch seconds (tests)")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--group-base", metavar="SHA", help="check renders in SHA..HEAD")
+    mode.add_argument(
         "--open-after-hours",
         type=float,
         default=None,
         help="decide whether to open the render pull request instead of judging (ADR-3373)",
     )
-    return parser.parse_args(argv)
+    return parser.parse_args(_bind_group_base_arg(argv))
 
 
 def main(argv: list[str]) -> int:
+    """Print the selected mode's verdict and return its exit status."""
     args = parse_args(argv)
+    root = args.root.resolve()
     now = time.time() if args.now is None else args.now
-    if args.open_after_hours is not None:
-        verdict = decide_pull_request(args.root.resolve(), now, args.open_after_hours)
+    if args.group_base is not None:
+        verdict = judge_merge_group(root, args.group_base)
+    elif args.open_after_hours is not None:
+        verdict = decide_pull_request(root, now, args.open_after_hours)
     else:
-        verdict = judge(args.root.resolve(), now, args.bound_hours)
+        verdict = judge(root, now, args.bound_hours)
     for line in verdict.lines:
         if line:
             print(line)
