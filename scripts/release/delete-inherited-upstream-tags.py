@@ -28,7 +28,6 @@ from scripts.lib.safe_subprocess import CommandFailed
 from scripts.lib.safe_subprocess import run as run_command
 
 REPO = "vidiko/vmafx"
-UPSTREAM_URL = "https://github.com/Netflix/vmaf"
 TIMEOUT_SECONDS = 120
 PEELED_SUFFIX = "^{}"
 TAG_PREFIX = "refs/tags/"
