@@ -1,9 +1,19 @@
 # PR-body deliverables validator (pre-push hook)
 
-To check a PR body before pushing, run `make pr-check PR=<number>` or install
-the pre-push hook with `make hooks-install`. Both run the same parser as the
-CI gate, so a malformed body is caught locally instead of after a 3-10 minute
-CI cycle.
+To check a PR body before pushing, run `make pr-check PR=<number>`, run
+`make pr-check BODY=<file> [TITLE=<text>]` (`TITLE` defaults to the `HEAD`
+commit subject when empty), or install the pre-push hook with
+`make hooks-install`. The title and body path are passed to the gates
+literally without `make` or shell expansion, and `PR` must be a positive
+decimal number. PR mode diffs the PR's base and head revisions, fetching them
+from `origin` when missing, and fails when it cannot. In PR mode, the FFmpeg
+surface gate also runs its tree checks against the PR head tree rather than the
+local checkout; the head-tree check reads raw blobs, so archive attributes in
+the PR cannot hide or rewrite inputs. `make pr-check` runs the
+deliverables, `docs/state.md`
+touch and `ffmpeg-patches` surface gates (`scripts/ci/pr-body-gates.sh`),
+while the pre-push hook runs the deliverables parser, catching a malformed
+body before a 3-10 minute CI cycle.
 
 The [rule-enforcement workflow][rule-yml] runs a **deep-dive deliverables
 checklist** gate (ADR-0108) on every non-draft PR. The parser is strict: a
@@ -12,6 +22,27 @@ that drifts by one character, fails the gate. For the user-facing syntax
 (checkbox forms, opt-out sentences) read the
 [PR body sentinel guide](pr-body-sentinel-guide.md); this page covers the
 validator's internals and the hook.
+
+## Numeric claims in drafts
+
+Before posting a PR body or reply, compare its numeric tokens with one or more
+evidence files:
+
+```sh
+python3 scripts/ci/draft_claims.py draft.md evidence.md [more-evidence.md ...]
+```
+
+The check reports tokens missing from the evidence and exits 1; unreadable or
+over-1-MiB files and invalid usage exit 2. It ignores Markdown link destinations
+(bare targets without whitespace up to three nested or escaped parenthesis
+pairs, or `<...>` targets, plus optional single-line titles) that directly
+follow a single-line link label in square brackets (one level of nested
+bracket pairs, none directly followed by `(`), and single digits, and
+normalizes thousands separators; malformed or more deeply nested targets,
+parentheses after an escaped or unmatched `]`, and links whose `[` follows an
+odd number of backslashes remain checked. Evidence files
+are checked separately. A match confirms token presence only; verify that the
+evidence supports each claim in context.
 
 ## What it checks
 

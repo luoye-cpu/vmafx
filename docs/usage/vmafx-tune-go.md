@@ -581,7 +581,8 @@ ports: `features` (shape `[N, 6]`) and `codec` (shape `[N, 14]`), as recorded
 in its sidecar's `"input_names"`. The only ONNX inference seam in the Go tree,
 `pkg/ai.Registry.Infer`, serialises a single flat `[]float64` to the
 `vmafx-ort-runner` subprocess and has no wire format for a second port.
-`Registry.InferDirect`, the CGO path, is an explicit Stage-2 stub.
+There is no direct-CGO stub in `pkg/ai`; Q-132 settled on the subprocess
+runner as the single ONNX integration.
 
 Flattening the two ports into one 20-D vector is not a workaround.
 `vmaftune/proxy.py` documents that exact mistake: the graph's first dense layer
@@ -596,9 +597,10 @@ Any one of these unblocks it:
    matching `pkg/ai.Registry.InferNamed`. The runner is in-tree since
    ADR-1134 ([vmafx-ort-runner.md](vmafx-ort-runner.md)), so this is a
    protocol extension rather than an external dependency.
-2. Promoting `pkg/ai.Registry.InferDirect` onto a CGO ONNX Runtime binding
-   (for example `github.com/yalue/onnxruntime_go`), which `pkg/ai` defers to
-   Stage 2 because it couples the build to `libonnxruntime`.
+2. Adding a CGO ONNX Runtime binding behind a new `Registry.InferNamed`
+   (for example `github.com/yalue/onnxruntime_go`). `pkg/ai` carries no
+   unimplemented method for this; the build-time `libonnxruntime` coupling
+   is the reason it needs its own ADR.
 3. A single-port re-export of `fr_regressor_v2` that concatenates the two
    inputs inside the graph, shipped alongside the current model.
 
@@ -1764,7 +1766,7 @@ The Go port landed in stages. Every row below is merged unless noted.
 | golusoris | Migrate the CLI root and subcommands onto the golusoris `clikit` (cobra + fx) framework; `VMAFX_`-prefixed config and injected `slog` | ADR-1119 |
 | ML-driven | `recommend`, `predict`, `recommend-saliency`, `prefilter`; codec-adapter registry, encode and score drivers, predictor, saliency pipeline, native TPE | — |
 | Encoder introspection | `benchmark` and `encode-profile`; `pkg/benchmark`, `pkg/codecadapter`, `pkg/encodeprofile`, `pkg/pyjson` | ADR-0643 (profile contract) |
-| Stage 5 (corpus, auto, sidecar) | `corpus`, `auto` and `sidecar`; `pkg/codecadapter`, `pkg/corpus`, `pkg/pyjson`, `pkg/tune/predictor`, `pkg/tune/sidecar`, `pkg/tune/auto`, `pkg/tune/executor` | ADR-1125 ([#1153](https://github.com/VMAFx/vmafx/pull/1153)) |
+| Stage 5 (corpus, auto, sidecar) | `corpus`, `auto` and `sidecar`; `pkg/codecadapter`, `pkg/corpus`, `pkg/pyjson`, `pkg/tune/predictor`, `pkg/tune/sidecar`, `pkg/tune/auto`, `pkg/tune/executor` | ADR-1125 ([#1153](https://github.com/vidiko/vmafx/pull/1153)) |
 | Stage 5 (per-shot) | `tune-per-shot`; `pkg/pershot`, `pkg/scorebackend`, the codec-adapter table, the raw-YUV scorer | ADR-1124 |
 | Stage 5b | `conformal` CLI wiring, shipped as `predict --with-uncertainty` and `recommend --with-uncertainty` | ADR-0393 |
 | Stage 6 | `fast` subcommand, `pkg/fast`, `pkg/conformal`, `pkg/scorebackend`. The smoke path is complete; the production path is blocked on ONNX named inputs ([Production-mode blocker](#production-mode-blocker-onnx-named-inputs)). | ADR-0276 / ADR-0304 |
@@ -1779,7 +1781,7 @@ An earlier revision of the roadmap listed `pkg/conformal` as merged under
 Stage 3. It was not: no such package existed on `master`. The package landed
 with Stage 6, and the roadmap row was corrected. The `pkg/tune/{predictor,codec,
 pyjson}` aliases were first kept for the in-flight sidecar parity fix
-([#1187](https://github.com/VMAFx/vmafx/pull/1187)); that fix has landed, and
+([#1187](https://github.com/vidiko/vmafx/pull/1187)); that fix has landed, and
 the aliases are still imported by the sidecar.
 
 ## See also

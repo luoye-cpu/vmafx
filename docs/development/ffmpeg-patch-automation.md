@@ -15,7 +15,7 @@ check and refresh it.
 ## Shared FFmpeg fix series
 
 Fixes to FFmpeg itself are not kept in `ffmpeg-patches/`. They live in
-[VMAFx/ffmpeg-patches](https://github.com/VMAFx/ffmpeg-patches), which
+[vidiko/ffmpeg-patches](https://github.com/vidiko/ffmpeg-patches), which
 publishes a signed release tarball per FFmpeg base, and every VMAFx FFmpeg
 build applies that series first and `ffmpeg-patches/series.txt` second
 ([ADR-3143](../adr/3143-ffmpeg-shared-fix-series.md)). `build-config.env`
@@ -172,11 +172,23 @@ python3 scripts/ci/ffmpeg_patch_stack.py --refresh \
 The refresh regenerates the series only after every patch replays successfully.
 Review the resulting diff and diagnostics, then run the check again before
 committing. A conflict requires a code change and another complete replay; a
-failed refresh is not a valid replacement series. If filesystem failure or a
-second interruption also prevents rollback, the tool preserves adjacent
-`.ffmpeg-refresh-<filename>-original-*` backups for recovery. Keep these until
-the original files have been restored; the failure receipt identifies failed
-replacements when recovery can finish reporting.
+failed refresh is not a valid replacement series.
+
+On failure, `receipt.json` records `status: failed` and the first error in
+`error`. If removing the temporary checkout also fails, the receipt records
+that failure in `cleanup_error` and the command prints it on a separate line.
+The receipt holds `status`, `error` and `cleanup_error` only when writing it
+succeeds. If the write fails, the command still reports the original error,
+with a `Could not write failure receipt: {receipt_error}` note, and
+`receipt.json` may be missing or left from an earlier write. If cleanup is the
+first failure, it appears in `error` and the command exits nonzero. Replay Git
+commands disable automatic maintenance and garbage collection so a detached Git
+process cannot race checkout removal.
+
+If a filesystem failure or a second interruption also prevents rollback, the
+tool preserves adjacent `.ffmpeg-refresh-<filename>-original-*` backups for
+recovery. Keep these until the original files have been restored. The failure
+receipt identifies failed replacements when recovery can finish reporting.
 
 ## Continuous checks and release discovery
 
