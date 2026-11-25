@@ -1,0 +1,1 @@
+- **CI:** the Docs job rejects stale renders in the merge queue before they reach `master`. If the last render on `master` is inexact, the render workflow opens its repair pull request without waiting six hours (ADR-3627).
