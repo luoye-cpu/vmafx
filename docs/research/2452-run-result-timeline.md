@@ -1,4 +1,4 @@
-# Research: run-result timeline schema (#2452)
+# Research-2452: run-result timeline schema
 
 ## Question
 
