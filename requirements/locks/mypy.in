@@ -1,1 +1,3 @@
 mypy==2.4.0
+# CI mypy (.github/workflows/lint-and-format.yml:855) uses only this lock; tenacity ships py.typed.
+tenacity==9.2.1

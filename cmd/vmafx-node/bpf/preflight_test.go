@@ -122,9 +122,9 @@ func TestStart_StopsOnPreflight(t *testing.T) {
 func TestEmbeddedObjectMatchesMirrors(t *testing.T) {
 	t.Parallel()
 	requireGeneratedObject(t)
-	spec, err := loadRcloneBypass()
+	spec, err := loadRcloneTracker()
 	if err != nil {
-		t.Fatalf("loadRcloneBypass: %v", err)
+		t.Fatalf("loadRcloneTracker: %v", err)
 	}
 	for _, name := range []string{"tp_openat_enter", "tp_openat_exit", "tp_close_enter"} {
 		if p := spec.Programs[name]; p == nil || p.Type != ebpf.TracePoint {
@@ -132,8 +132,8 @@ func TestEmbeddedObjectMatchesMirrors(t *testing.T) {
 		}
 	}
 	checks := map[string]uint32{
-		"mount_prefix_map": uint32(binary.Size(rcloneBypassMountPrefixT{})),
-		"bypass_fds":       uint32(binary.Size(rcloneBypassBypassEntryT{})),
+		"mount_prefix_map": uint32(binary.Size(rcloneTrackerMountPrefixT{})),
+		"bypass_fds":       uint32(binary.Size(rcloneTrackerBypassEntryT{})),
 	}
 	for name, want := range checks {
 		if m := spec.Maps[name]; m == nil || m.ValueSize != want {
@@ -147,7 +147,7 @@ func TestEmbeddedObjectMatchesMirrors(t *testing.T) {
 	if err := spec.Types.TypeByName("event_t", &event); err != nil {
 		t.Fatalf("event_t not in the object's BTF: %v", err)
 	}
-	if got, want := event.Size, uint32(binary.Size(rcloneBypassEventT{})); got != want {
+	if got, want := event.Size, uint32(binary.Size(rcloneTrackerEventT{})); got != want {
 		t.Errorf("event_t is %d bytes in BPF, its Go mirror %d", got, want)
 	}
 }
@@ -165,9 +165,9 @@ const kernelLicence = "GPL"
 func TestEmbeddedObjectLicence(t *testing.T) {
 	t.Parallel()
 	requireGeneratedObject(t)
-	spec, err := loadRcloneBypass()
+	spec, err := loadRcloneTracker()
 	if err != nil {
-		t.Fatalf("loadRcloneBypass: %v", err)
+		t.Fatalf("loadRcloneTracker: %v", err)
 	}
 	if len(spec.Programs) == 0 {
 		t.Fatal("the embedded object has no programs")
@@ -199,7 +199,7 @@ func TestEmbeddedObjectLoadsIntoKernel(t *testing.T) {
 // path without a NUL stops at maxPathLen (boundary).
 func TestDecodeEvent(t *testing.T) {
 	t.Parallel()
-	size := binary.Size(rcloneBypassEventT{})
+	size := binary.Size(rcloneTrackerEventT{})
 	raw := make([]byte, size)
 	binary.NativeEndian.PutUint64(raw[8:], 42<<32|7)
 	copy(raw[24:], "/rclone-mount/job/ref.y4m")
