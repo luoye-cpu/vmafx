@@ -38,8 +38,12 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import re
+import shlex
+import shutil
 import sys
+import tempfile
 from collections.abc import Iterator, MutableMapping, MutableSequence
 from copy import deepcopy
 from pathlib import Path
@@ -144,13 +148,21 @@ def check_steps(label: str, steps: list[Any]) -> list[str]:
     """Findings for one ordered list of steps."""
     findings: list[str] = []
     paired: set[int] = set()
-    for idx, step in enumerate(steps[:MAX_STEPS]):
+    v4_count = 0
+    for idx, step in enumerate(steps):
         if not isinstance(step, dict):
             continue
         cls = _classify(step.get("uses"))
         if cls is None:
             continue
         kind, is_v3 = cls
+        if not is_v3:
+            v4_count += 1
+            if v4_count > MAX_STEPS:
+                findings.append(
+                    f"{label}: more than {MAX_STEPS} v4+ artifact steps; refusing partial check"
+                )
+                break
         where = f"{label} step {idx + 1} ({step.get('name', kind + '-artifact')})"
         if is_v3:
             if idx not in paired:
@@ -368,11 +380,11 @@ def _twin_step(step: Any, kind: str, base: str) -> Any:
         twin.yaml_add_eol_comment(V3_PINS[kind].split("#", 1)[1].strip(), key="uses")
     else:
         missing = ", ".join(sorted(inputs - V3_INPUTS[kind]))
-        twin["shell"] = "bash"
-        twin["run"] = LiteralScalarString(
-            f"echo '::warning::artifact {kind} {SKIP_MARKER}: "
-            f"v4+ is GitHub-only, v3 lacks {missing}'\n"
+        message = (
+            f"::warning::artifact {kind} {SKIP_MARKER}: v4+ is GitHub-only, v3 lacks {missing}"
         )
+        twin["shell"] = "bash"
+        twin["run"] = LiteralScalarString(f"echo {shlex.quote(message)}\n")
     return twin
 
 
@@ -383,15 +395,59 @@ def _ensure_guard_and_twin(steps: Any, idx: int, kind: str) -> tuple[bool, bool]
     base = _base_condition(original, on_gitea=False)
     changed = False
     if base is None:
-        base = str(original or "").strip()
+        if isinstance(original, bool):
+            base = "true" if original else "false"
+        else:
+            base = str(original or "").strip()
         _set_if(step, guarded(base or None, False))
         changed = True
     if idx + 1 < len(steps):
         twin = steps[idx + 1]
-        if not _check_twin("", kind, step, twin, base):
+        problems = _check_twin("", kind, step, twin, base)
+        if problems:
+            twin_cls = _classify(twin.get("uses")) if _is_mapping(twin) else None
+            if twin_cls is not None and twin_cls[1]:
+                # Replace a malformed v3 twin instead of leaving it beside a
+                # second, fresh twin; the old pin would still run on Gitea.
+                steps.pop(idx + 1)
+                steps.insert(idx + 1, _twin_step(step, kind, base))
+                return True, True
+            # An unrelated step may follow the source, so fall through and
+            # insert the twin between them.
+        else:
             return changed, False
     steps.insert(idx + 1, _twin_step(step, kind, base))
     return True, True
+
+
+def _document_prefix(text: str) -> tuple[str, str]:
+    """Split comments/blank lines/BOM before an explicit ``---`` marker from the body."""
+    bom = "\ufeff" if text.startswith("\ufeff") else ""
+    body = text[len(bom) :]
+    lines = body.splitlines(keepends=True)
+    head: list[str] = []
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            head.append(line)
+            continue
+        if re.match(r"^---(?:\s|$)", stripped):
+            return bom + "".join(head), "".join(lines[idx:])
+        break
+    return "", text
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write the workflow through a same-directory temp file and atomic replace."""
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        shutil.copymode(path, tmp)
+        os.replace(tmp, path)  # noqa: PTH105 -- atomic replace accepts both Paths
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def write_file(path: Path) -> bool:
@@ -399,20 +455,22 @@ def write_file(path: Path) -> bool:
     if not check_file(path):
         return False
     text = path.read_text(encoding="utf-8")
-    yaml = _yaml(round_trip=True, explicit_start=text.startswith("---"))
-    doc = yaml.load(text)
+    prefix, body = _document_prefix(text)
+    yaml = _yaml(round_trip=True, explicit_start=body.startswith("---"))
+    doc = yaml.load(body)
     baseline = io.StringIO()
     yaml.dump(doc, baseline)
-    if baseline.getvalue() != text:
+    if prefix + baseline.getvalue() != text:
         print(
             f"{path}: round-trip without edits is not byte-identical; refusing to rewrite",
             file=sys.stderr,
         )
         return False
     changed = False
+    v4_count = 0
     for steps in _step_lists(doc):
         idx = 0
-        while idx < len(steps) and idx < MAX_STEPS:
+        while idx < len(steps):
             step = steps[idx]
             if not _is_mapping(step):
                 idx += 1
@@ -421,6 +479,13 @@ def write_file(path: Path) -> bool:
             if cls is None or cls[1]:
                 idx += 1
                 continue
+            v4_count += 1
+            if v4_count > MAX_STEPS:
+                print(
+                    f"{path}: more than {MAX_STEPS} v4+ artifact steps; refusing partial write",
+                    file=sys.stderr,
+                )
+                return False
             did_change, inserted = _ensure_guard_and_twin(steps, idx, cls[0])
             changed = changed or did_change
             if inserted:
@@ -436,7 +501,14 @@ def write_file(path: Path) -> bool:
         return False
     stream = io.StringIO()
     yaml.dump(doc, stream)
-    path.write_text(stream.getvalue(), encoding="utf-8")
+    output = prefix + stream.getvalue()
+    if path.read_text(encoding="utf-8") != text:
+        print(
+            f"{path}: changed while being written; refusing to overwrite a concurrent edit",
+            file=sys.stderr,
+        )
+        return False
+    _atomic_write(path, output)
     return True
 
 

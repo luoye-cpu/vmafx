@@ -7,12 +7,14 @@ from __future__ import annotations
 import difflib
 import importlib.util
 import io
+import shlex
 import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml  # type: ignore[import-untyped]  # PyYAML ships no stubs in the hook env
 from ruamel.yaml import YAML as RuamelYAML
@@ -665,6 +667,101 @@ class GiteaArtifactCheckTests(unittest.TestCase):
         self.assertIn("refusing to rewrite", result.stderr)
         self.assertIn("not guarded", result.stdout)
         self.assertEqual(self.path.read_text(encoding="utf-8"), textwrap.dedent(FLOW_MAPPING))
+
+    def test_skip_twin_quotes_unsupported_input_names(self) -> None:
+        text = f"""\
+name: Injection
+on: push
+jobs:
+  build:
+    steps:
+      - name: Upload
+        uses: {V7}
+        with:
+          name: log
+          path: build/log.txt
+          x'; touch /tmp/pwned; echo: value
+"""
+        result = self.run_check(text, "--write")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        steps = yaml.safe_load(self.path.read_text(encoding="utf-8"))["jobs"]["build"]["steps"]
+        run = steps[1]["run"]
+        parts = shlex.split(run)
+        self.assertEqual(len(parts), 2)
+        self.assertIn("x'; touch /tmp/pwned; echo", parts[1])
+
+    def test_write_preserves_if_false(self) -> None:
+        text = f"""\
+name: Disabled
+on: push
+jobs:
+  build:
+    steps:
+      - name: Upload
+        if: false
+        uses: {V7}
+        with:
+          name: log
+          path: build/log.txt
+"""
+        result = self.run_check(text, "--write")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        steps = yaml.safe_load(self.path.read_text(encoding="utf-8"))["jobs"]["build"]["steps"]
+        self.assertEqual(len(steps), 2)
+        self.assertIn("(false)", steps[0]["if"])
+        self.assertIn("(false)", steps[1]["if"])
+
+    def test_write_preserves_explicit_marker_after_comment(self) -> None:
+        text = f"""\
+# leading comment
+
+---
+name: Marker
+on: push
+jobs:
+  build:
+    steps:
+      - name: Upload
+        uses: {V7}
+        with:
+          name: log
+          path: build/log.txt
+"""
+        result = self.run_check(text, "--write")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(
+            self.path.read_text(encoding="utf-8").startswith("# leading comment\n\n---\n")
+        )
+
+    def test_write_repairs_a_malformed_v3_twin(self) -> None:
+        head, _sep, tail = GOOD.rpartition("path: build/log.txt")
+        text = head + "path: other" + tail
+        result = self.run_check(text, "--write")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        steps = yaml.safe_load(self.path.read_text(encoding="utf-8"))["jobs"]["build"]["steps"]
+        self.assertEqual(len(steps), 2)
+        self.assertEqual(steps[0]["with"], steps[1]["with"])
+        self.assertEqual(steps[1]["uses"], V3.split(maxsplit=1)[0])
+
+    def test_check_steps_refuses_partial_scan_at_max_steps(self) -> None:
+        module = load_checker_module()
+        old = module.MAX_STEPS
+        module.MAX_STEPS = 1
+        try:
+            findings = module.check_steps("limit", [{"uses": V7}, {"uses": V7}])
+        finally:
+            module.MAX_STEPS = old
+        self.assertTrue(any("refusing partial check" in finding for finding in findings))
+
+    def test_atomic_write_leaves_original_on_replace_failure(self) -> None:
+        module = load_checker_module()
+        original = "old\n"
+        self.path.write_text(original, encoding="utf-8")
+        with mock.patch.object(module.os, "replace", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                module._atomic_write(self.path, "new\n")
+        self.assertEqual(self.path.read_text(encoding="utf-8"), original)
+        self.assertEqual(list(self.path.parent.glob(f".{self.path.name}.*.tmp")), [])
 
     def test_twin_comparison_keeps_yaml_1_2_yes_as_a_string(self) -> None:
         text = UNGUARDED.replace(
