@@ -112,6 +112,7 @@ class SecurityWorkflowContractTest(unittest.TestCase):
             "- name: Trivy image scan", 1
         )[0]
         self.assertIn("trivy image --exit-code 3", control)
+        self.assertIn("--ignore-policy scripts/ci/trivy-linux-libc-dev.rego", control)
         self.assertIn('if [ "$rc" -ne 3 ]', control)
         fixture = (REPO_ROOT / "scripts/ci/fixtures/trivy-negative.Dockerfile").read_text(
             encoding="utf-8"
@@ -144,6 +145,19 @@ class SecurityWorkflowContractTest(unittest.TestCase):
                         timeout_seconds=10,
                     )
                     self.assertEqual(result.returncode == 0, status == findings_status)
+
+    def test_real_image_scan_ignores_only_kernel_header_vulnerabilities(self) -> None:
+        workflow = (REPO_ROOT / ".github/workflows/docker-image.yml").read_text(encoding="utf-8")
+        scan = workflow.split("- name: Trivy image scan", 1)[1].split(
+            "- name: Smoke-test image", 1
+        )[0]
+        self.assertIn("--ignore-policy scripts/ci/trivy-linux-libc-dev.rego", scan)
+        policy = (REPO_ROOT / "scripts/ci/trivy-linux-libc-dev.rego").read_text(encoding="utf-8")
+        self.assertIn("ignore if {", policy)
+        self.assertIn('input.Type == "vulnerability"', policy)
+        self.assertIn('input.PkgName == "linux-libc-dev"', policy)
+        tier = json.loads((REPO_ROOT / ".github/ci-tier.json").read_text(encoding="utf-8"))
+        self.assertIn("scripts/ci/trivy-linux-libc-dev.rego", tier["full_paths"])
 
     def test_concurrency_is_scoped_by_event_and_ref(self) -> None:
         workflow = SECURITY_WORKFLOW.read_text(encoding="utf-8")

@@ -283,6 +283,22 @@ class RoutingContract(unittest.TestCase):
     def test_image_exception_change_runs_the_image_scan(self) -> None:
         self.assertTrue(_plan_for([".trivyignore.yaml"]).selectors["docker_image"])
 
+    def test_image_own_inputs_include_locks_and_kernel_policy(self) -> None:
+        config = planner.load_config(CONFIG)
+        broad = set(config["selectors"]["docker_image"]["patterns"])
+        narrow = set(config["selectors"]["docker_image_inputs"]["patterns"])
+        for path in (
+            "python/requirements-lock.txt",
+            "requirements/locks/package-build.txt",
+            "scripts/ci/trivy-linux-libc-dev.rego",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(path, broad)
+                self.assertIn(path, narrow)
+                plan = _plan_for([path])
+                self.assertTrue(plan.selectors["docker_image"])
+                self.assertTrue(plan.selectors["docker_image_inputs"])
+
     def test_docs_only_change_is_impact_mode_with_no_c_lane(self) -> None:
         plan = _plan_for(["docs/usage/cli.md", "changelog.d/fixed/x.md"])
         self.assertEqual(plan.mode, "impact")

@@ -400,6 +400,64 @@ def expect_dev_container_pick(contract: Contract) -> None:
             raise AssertionError(f"full={full} broad={broad!r} narrow={narrow!r} was accepted")
 
 
+DOCKER_IMAGE_WORKFLOW = "docker-image.yml"
+
+
+def _docker_image_pick(contract: Contract) -> dict[str, Any]:
+    steps = contract.workflows[DOCKER_IMAGE_WORKFLOW]["jobs"]["impact"]["steps"]
+    picks = [step for step in steps if step.get("id") == "pick"]
+    if len(picks) != 1:
+        raise AssertionError(f"the Docker image planner has {len(picks)} pick steps, not one")
+    pick: dict[str, Any] = picks[0]
+    return pick
+
+
+def docker_image_pick(contract: Contract, full: str, broad: str, narrow: str) -> tuple[int, str]:
+    """Run the pick step's own script; return its exit status and what it writes."""
+    bash = shutil.which("bash")
+    if bash is None:
+        raise unittest.SkipTest("no bash on this host; the hosted runner runs the step")
+    with tempfile.TemporaryDirectory(prefix="docker-image-pick-") as directory:
+        output = Path(directory) / "github_output"
+        output.touch()
+        env = {"FULL": full, "BROAD": broad, "NARROW": narrow, "GITHUB_OUTPUT": str(output)}
+        done = subprocess.run(  # noqa: S603 -- resolved bash, the workflow's own step script
+            [bash, "-c", str(_docker_image_pick(contract)["run"])],
+            env=env,
+            check=False,
+            capture_output=True,
+            timeout=SHELL_TIMEOUT_S,
+        )
+        return done.returncode, output.read_text(encoding="utf-8")
+
+
+def expect_docker_image_pick(contract: Contract) -> None:
+    """The full tier reads the broad selector, a light PR the image's own inputs (#2749)."""
+    env = _docker_image_pick(contract).get("env", {})
+    wired = {
+        "FULL": "${{ needs.tier.outputs.full }}",
+        "BROAD": "${{ steps.impact.outputs.docker_image }}",
+        "NARROW": "${{ steps.impact.outputs.docker_image_inputs }}",
+    }
+    if env != wired:
+        raise AssertionError(f"the pick step reads {env}, not {wired}")
+    for full in ("true", "false"):
+        for broad in ("true", "false"):
+            for narrow in ("true", "false"):
+                status, written = docker_image_pick(contract, full, broad, narrow)
+                expected = broad if full == "true" else narrow
+                if status != 0 or f"selected={expected}\n" not in written:
+                    raise AssertionError(
+                        f"full={full} broad={broad} narrow={narrow}: rc {status}, {written!r}"
+                    )
+                if "reason=" not in written:
+                    raise AssertionError(f"full={full}: no reason written: {written!r}")
+    for full, broad, narrow in (("true", "", "true"), ("false", "true", "maybe")):
+        status, _ = docker_image_pick(contract, full, broad, narrow)
+        if status == 0:
+            raise AssertionError(f"full={full} broad={broad!r} narrow={narrow!r} was accepted")
+
+
 def gpu_job_starts(
     contract: Contract, *, full: bool, planner: str, selected: bool, cancelled: bool = False
 ) -> bool:
@@ -575,6 +633,9 @@ class RoutingContract(unittest.TestCase):
 
     def test_dev_container_lane_picks_the_selector_of_its_tier(self) -> None:
         expect_dev_container_pick(self.contract)
+
+    def test_docker_image_lane_picks_the_selector_of_its_tier(self) -> None:
+        expect_docker_image_pick(self.contract)
 
     def test_exceptions_are_unexpired(self) -> None:
         today = datetime.date.today()
@@ -764,6 +825,15 @@ class PlantedDefects(unittest.TestCase):
         )
         with self.assertRaises(AssertionError):
             expect_dev_container_pick(contract)
+
+    def test_a_docker_image_pick_that_reads_the_broad_selector_on_light_is_caught(self) -> None:
+        contract = self.mutated(
+            DOCKER_IMAGE_WORKFLOW,
+            '            selected="$NARROW" selector=docker_image_inputs\n',
+            '            selected="$BROAD" selector=docker_image\n',
+        )
+        with self.assertRaises(AssertionError):
+            expect_docker_image_pick(contract)
 
     def test_a_dev_container_gate_back_on_the_full_tier_is_caught(self) -> None:
         contract = self.mutated(

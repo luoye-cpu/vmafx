@@ -209,6 +209,29 @@ class SelfTest(unittest.TestCase):
                 "GHSA-x84v-xcm2-53pg",
             )
 
+    def test_alias_identity_is_accepted_for_the_planted_advisory(self) -> None:
+        report = {
+            "dependencies": [
+                {
+                    "name": "requests",
+                    "version": "2.19.0",
+                    "vulns": [
+                        {
+                            "id": "PYSEC-2018-28",
+                            "aliases": ["CVE-2018-18074", "GHSA-x84v-xcm2-53pg"],
+                        }
+                    ],
+                }
+            ]
+        }
+        with mock.patch.object(check_python_audit, "run_audit", return_value=report):
+            self.assertIn(
+                "GHSA-x84v-xcm2-53pg",
+                check_python_audit.self_test(
+                    ROOT, ROOT / "scripts/ci/fixtures/pip-audit-known-vuln.txt"
+                ),
+            )
+
     def test_empty_dependency_report_fails_closed(self) -> None:
         completed = mock.Mock(returncode=0, stdout='{"dependencies": []}', stderr="")
         with mock.patch.object(check_python_audit, "run_command", return_value=completed):

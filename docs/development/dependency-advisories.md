@@ -97,7 +97,8 @@ the golusoris root package again; take its sub-packages.
 
 `scripts/ci/check_python_audit.py` reads the lock paths from
 `requirements/locks/manifest.json`, excludes only the scanner's own
-`requirements/locks/security-audit.txt` (CI and release tool locks are included), and runs
+`requirements/locks/security-audit.txt` (CI and release tool locks are
+included), and runs
 `pip-audit --requirement <lock> --no-deps` for each project lock. The
 `--no-deps` mode is safe because every lock already contains the resolved
 transitive set; it stops pip-audit from re-resolving a different graph.
@@ -106,9 +107,10 @@ Before any lock is accepted, the gate audits
 `scripts/ci/fixtures/pip-audit-known-vuln.txt`
 (`requests==2.19.0`, CVE-2018-18074). A green run without that advisory is a
 gate error, not a pass. The expected package and version must report
-CVE-2018-18074 or its GHSA-x84v-xcm2-53pg identity; unrelated advisories do not
-satisfy the control. The gate also fails when pip-audit skips a dependency,
-returns no JSON or an empty dependency list, or exits with an error.
+CVE-2018-18074, PYSEC-2018-28 or its GHSA-x84v-xcm2-53pg identity; aliases in
+the report count, and unrelated advisories do not satisfy the control. The gate
+also fails when pip-audit skips a dependency, returns no JSON or an empty
+dependency list, or exits with an error.
 
 On pull requests the planner selects the audit when a manifest input or output
 changes. The `python_audit` selector is checked against every manifest entry;
@@ -134,15 +136,23 @@ pinned Trivy release and verifies `TRIVY_SHA256`, then runs:
 
 ```bash
 trivy image --exit-code 1 --ignorefile .trivyignore.yaml \
+  --ignore-policy scripts/ci/trivy-linux-libc-dev.rego \
   --scanners vuln --severity HIGH,CRITICAL vmaf
 ```
 
 The job first builds `scripts/ci/fixtures/trivy-negative.Dockerfile`
-(`ubuntu:22.04` at a two-year-old digest, still covered by the vulnerability database) and requires Trivy to return exactly 3 (the explicit findings status). A 0 means
-the gate missed known advisories; any other status, including the scanner error status 1, is a scanner failure. Only
-then does it scan the real image. A retained image advisory is a dated entry in
-`.trivyignore.yaml`; Trivy stops suppressing expired entries. Changes to this
-file select the image build and scan. Trivy does not reject unused entries.
+(`ubuntu:22.04` at a two-year-old digest, still covered by the vulnerability
+database) and requires Trivy to return exactly 3 (the explicit findings
+status) using the same kernel-header policy. A 0 means the gate missed known
+advisories; any other status, including the scanner error status 1, is a
+scanner failure, and an over-broad policy also turns the control green and
+fails it. Only then does it scan the real image with
+`scripts/ci/trivy-linux-libc-dev.rego`, which drops findings on the header-only
+package `linux-libc-dev`: containers use the host kernel, and the package ships
+no kernel code. A retained image advisory is a dated entry in
+`.trivyignore.yaml`; Trivy stops suppressing expired entries. Changes to
+either file select the image build and scan. Trivy does not reject unused
+entries.
 
 ## Checking a change locally
 

@@ -32,7 +32,7 @@ DEFAULT_FIXTURE = REPO_ROOT / "scripts" / "ci" / "fixtures" / "pip-audit-known-v
 AUDIT_TOOL_LOCK = "requirements/locks/security-audit.txt"
 PLANTED_PACKAGE = "requests"
 PLANTED_VERSION = "2.19.0"
-PLANTED_ADVISORY_IDS = frozenset({"CVE-2018-18074", "GHSA-x84v-xcm2-53pg"})
+PLANTED_ADVISORY_IDS = frozenset({"CVE-2018-18074", "GHSA-x84v-xcm2-53pg", "PYSEC-2018-28"})
 FIELDS = ("file", "package", "id", "reason", "expires")
 
 
@@ -205,8 +205,17 @@ def self_test(root: Path, fixture: Path) -> str:
         ):
             continue
         for vuln in vulns:
-            if isinstance(vuln, dict) and vuln.get("id") in PLANTED_ADVISORY_IDS:
-                advisories.add(str(vuln["id"]))
+            if not isinstance(vuln, dict):
+                continue
+            identities = {vuln.get("id")}
+            aliases = vuln.get("aliases")
+            if isinstance(aliases, list):
+                identities.update(alias for alias in aliases if isinstance(alias, str))
+            advisories.update(
+                identity
+                for identity in identities
+                if isinstance(identity, str) and identity in PLANTED_ADVISORY_IDS
+            )
     if not advisories:
         raise AuditError(
             f"the planted-defect fixture did not report {PLANTED_PACKAGE}=={PLANTED_VERSION} "

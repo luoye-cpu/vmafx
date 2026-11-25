@@ -5,6 +5,7 @@ paths:
   - scripts/ci/pip-audit-ignore.json
   - scripts/ci/fixtures/pip-audit-known-vuln.txt
   - scripts/ci/fixtures/trivy-negative.Dockerfile
+  - scripts/ci/trivy-linux-libc-dev.rego
   - .github/workflows/security-scans.yml
   - .github/workflows/docker-image.yml
   - .trivyignore.yaml
@@ -20,17 +21,21 @@ Python: `check_python_audit.py` reads the lock list from
 `pip-audit-ignore.json`. One exception per lock and advisory, with expiry; an
 expired or unused entry fails. Every invocation first audits
 `fixtures/pip-audit-known-vuln.txt` (`requests==2.19.0`) and refuses a green run
-unless the expected requests version reports CVE-2018-18074 or
-GHSA-x84v-xcm2-53pg. Empty reports fail. New lock -> manifest entry;
-`python_audit` impact patterns must cover its inputs and output (contract test).
+unless the expected requests version reports CVE-2018-18074, PYSEC-2018-28 or
+GHSA-x84v-xcm2-53pg, including as an alias. Empty reports fail. New lock ->
+manifest entry; `python_audit` impact patterns must cover its inputs and output
+(contract test).
 Pull requests route the audit; weekly schedules audit every lock.
 
 Image: `docker-image.yml` installs the `TRIVY_VERSION` / `TRIVY_SHA256` binary,
 builds `fixtures/trivy-negative.Dockerfile` (`ubuntu:22.04` at an old digest) and requires
-`trivy image --exit-code 3` to exit 3 before scanning the real `vmaf` image. `.trivyignore.yaml`
-supplies dated misconfiguration and image-vulnerability exceptions; image edits
-select the Docker gate. Trivy expires entries but does not reject unused ones. A changed
-severity threshold or scanner list must keep the negative control failing.
+`trivy image --exit-code 3` to exit 3 under the same kernel-header policy before
+scanning the real `vmaf` image. `trivy-linux-libc-dev.rego` drops findings on the
+header-only `linux-libc-dev` package (containers run on the host kernel);
+`.trivyignore.yaml` supplies dated misconfiguration and image-vulnerability
+exceptions. Image edits select the Docker gate. Trivy expires entries but does
+not reject unused ones. A changed severity threshold or scanner list must keep
+the negative control failing; an over-broad Rego policy turns it green and fails.
 
 Network: both gates need the advisory database. A Python gate analysis error exits 2; a Trivy error returns 1,
 which the negative control refuses. Neither is a pass. Run the unit fixture with

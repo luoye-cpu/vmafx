@@ -353,12 +353,15 @@
       "patterns": [
         "Dockerfile",
         ".dockerignore",
-        "python/requirements.txt",
         "python/pyproject.toml",
+        "python/requirements-lock.txt",
+        "python/requirements.txt",
+        "requirements/locks/package-build.txt",
         ".trivyignore.yaml",
         "build-config.env",
         "scripts/ci/fixtures/trivy-negative.Dockerfile",
-        "scripts/ci/install-cuda-toolkit.sh"
+        "scripts/ci/install-cuda-toolkit.sh",
+        "scripts/ci/trivy-linux-libc-dev.rego"
       ]
     },
     "docker_image_inputs": {
@@ -366,10 +369,14 @@
       "patterns": [
         "Dockerfile",
         ".dockerignore",
+        "python/requirements-lock.txt",
+        "python/requirements.txt",
+        "requirements/locks/package-build.txt",
         ".trivyignore.yaml",
         "build-config.env",
         "scripts/ci/fixtures/trivy-negative.Dockerfile",
-        "scripts/ci/install-cuda-toolkit.sh"
+        "scripts/ci/install-cuda-toolkit.sh",
+        "scripts/ci/trivy-linux-libc-dev.rego"
       ]
     },
     "dev_container": {

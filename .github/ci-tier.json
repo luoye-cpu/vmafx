@@ -13,6 +13,7 @@
   },
   "full_paths": [
     ".trivyignore.yaml",
+    "scripts/ci/trivy-linux-libc-dev.rego",
     "scripts/lib/safe_subprocess.py",
     "scripts/lib/test_safe_subprocess.py",
     "tools/rc1-tester/src/vmaf_rc1_tester/_safe_subprocess.py",

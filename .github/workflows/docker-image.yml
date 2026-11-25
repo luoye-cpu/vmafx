@@ -128,6 +128,7 @@ jobs:
         run: |
           set +e
           trivy image --exit-code 3 --ignorefile .trivyignore.yaml \
+            --ignore-policy scripts/ci/trivy-linux-libc-dev.rego \
             --scanners vuln --severity HIGH,CRITICAL vmafx-trivy-negative
           rc=$?
           set -e
@@ -138,6 +139,7 @@ jobs:
       - name: Trivy image scan
         run: |
           trivy image --exit-code 1 --ignorefile .trivyignore.yaml \
+            --ignore-policy scripts/ci/trivy-linux-libc-dev.rego \
             --scanners vuln --severity HIGH,CRITICAL vmaf
       - name: Smoke-test image — CPU score assertion
         # Run vmaf inside the image against the 576×324 YUV fixture pair that
