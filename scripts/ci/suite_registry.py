@@ -90,6 +90,8 @@ class Suite:
     not_local: str | None = None
     pytest_timeout: int | None = None
     pytest_timeout_method: str = "signal"
+    pytest_workers: int = 1
+    pytest_dist: str = "loadfile"
     fail_on_skip: str | None = None
     pytest_rewrite: tuple[str, str] | None = None
 
@@ -135,10 +137,12 @@ def _install(value: Any, label: str) -> Install:
 
 
 PYTEST_REWRITE_PARTS = 2
+PYTEST_DIST_MODES = frozenset({"load", "loadfile", "worksteal"})
+MAX_PYTEST_WORKERS = 16
 
 
 def _pytest_fields(pytest_cfg: Any, label: str) -> dict[str, Any]:
-    """The `pytest` object of a suite: per-test timeout and method, and a path rewrite."""
+    """The `pytest` object of a suite: per-test timeout, method, workers, and a path rewrite."""
     if not isinstance(pytest_cfg, dict):
         raise RegistryError(f"{label}.pytest must be an object")
     fields: dict[str, Any] = {}
@@ -154,6 +158,22 @@ def _pytest_fields(pytest_cfg: Any, label: str) -> dict[str, Any]:
         fields["pytest_rewrite"] = (rewrite[0], rewrite[1])
     if "method" in pytest_cfg:
         fields["pytest_timeout_method"] = str(pytest_cfg["method"])
+    if "workers" in pytest_cfg:
+        workers = pytest_cfg["workers"]
+        if (
+            not isinstance(workers, int)
+            or isinstance(workers, bool)
+            or not 1 <= workers <= MAX_PYTEST_WORKERS
+        ):
+            raise RegistryError(
+                f"{label}.pytest.workers must be an integer between 1 and {MAX_PYTEST_WORKERS}"
+            )
+        fields["pytest_workers"] = workers
+    if "dist" in pytest_cfg:
+        dist = pytest_cfg["dist"]
+        if not isinstance(dist, str) or dist not in PYTEST_DIST_MODES:
+            raise RegistryError(f"{label}.pytest.dist must be one of {sorted(PYTEST_DIST_MODES)}")
+        fields["pytest_dist"] = dist
     return fields
 
 
@@ -410,13 +430,17 @@ def command_check(root: Path) -> int:
     return 0
 
 
-def _run_pytest(root: Path, files: Sequence[str]) -> bool:
+def _run_pytest(
+    root: Path, files: Sequence[str], *, workers: int = 1, dist: str = "loadfile"
+) -> bool:
     """One in-process pytest run over files, from the repository root.
 
     In-process because safe_subprocess runs the resolved interpreter, which
     would leave the virtual environment that holds the tooling lock. Every
     test has a pytest-timeout deadline, so a hung test fails instead of
-    holding the job.
+    holding the job. With ``workers > 1`` pytest-xdist moves test files to
+    worker processes; ``--dist loadfile`` keeps each file on one worker so
+    module-level state cannot leak across files.
     """
     if not files:
         return True
@@ -424,7 +448,8 @@ def _run_pytest(root: Path, files: Sequence[str]) -> bool:
 
     print(f"suite-registry: pytest over {len(files)} Python test files", flush=True)
     os.chdir(root)
-    status = int(pytest.main(["-rs", f"--timeout={PER_TEST_TIMEOUT_SECONDS}", *files]))
+    parallel = ["-n", str(workers), "--dist", dist] if workers > 1 else []
+    status = int(pytest.main(["-rs", f"--timeout={PER_TEST_TIMEOUT_SECONDS}", *parallel, *files]))
     return status == 0
 
 
@@ -453,6 +478,9 @@ def run_shell_test(root: Path, bash: str, path: str) -> bool:
 
 def command_run(root: Path, name: str) -> int:
     registry = load_registry(root)
+    suite = next((s for s in registry.suites if s.name == name), None)
+    if suite is None:
+        raise RegistryError(f"no suite named {name!r} in {MANIFEST}")
     files = suite_files(registry, tracked_files(root), name)
     python_files = [f for f in files if f.endswith(".py")]
     shell_files = [f for f in files if f.endswith(".sh")]
@@ -462,7 +490,16 @@ def command_run(root: Path, name: str) -> int:
     bash = shutil.which("bash")
     if bash is None:
         raise RegistryError("bash is not on PATH")
-    failed = [] if _run_pytest(root, python_files) else ["pytest"]
+    failed = (
+        []
+        if _run_pytest(
+            root,
+            python_files,
+            workers=suite.pytest_workers,
+            dist=suite.pytest_dist,
+        )
+        else ["pytest"]
+    )
     failed += [path for path in shell_files if not run_shell_test(root, bash, path)]
     print(f"suite-registry: {name}: {len(python_files)} Python and {len(shell_files)} shell files")
     if failed:

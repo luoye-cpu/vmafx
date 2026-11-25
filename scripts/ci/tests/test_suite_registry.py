@@ -135,6 +135,28 @@ class SuiteRegistryTests(unittest.TestCase):
         self.build(PASSING_FILES, data)
         self.assert_finding(self.registry("check"), "venv_of names no suite: 'nope'")
 
+    def test_pytest_workers_and_dist_are_accepted(self) -> None:
+        data = manifest()
+        data["suites"][1]["pytest"] = {"workers": 4, "dist": "loadfile"}  # type: ignore[index]
+        self.build(PASSING_FILES, data)
+        self.assertEqual(self.registry("check").returncode, 0)
+
+    def test_pytest_workers_out_of_range_is_a_usage_error(self) -> None:
+        data = manifest()
+        data["suites"][1]["pytest"] = {"workers": 0}  # type: ignore[index]
+        self.build(PASSING_FILES, data)
+        result = self.registry("check")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("pytest.workers must be an integer between 1 and 16", result.stderr)
+
+    def test_pytest_dist_outside_the_modes_is_a_usage_error(self) -> None:
+        data = manifest()
+        data["suites"][1]["pytest"] = {"dist": "random"}  # type: ignore[index]
+        self.build(PASSING_FILES, data)
+        result = self.registry("check")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("pytest.dist must be one of", result.stderr)
+
     # --- check ---------------------------------------------------------------
 
     def test_wired_repository_passes(self) -> None:
@@ -224,6 +246,20 @@ class SuiteRegistryTests(unittest.TestCase):
         result = self.registry("run", "nope")
         self.assertEqual(result.returncode, 2)
         self.assertIn("no suite named 'nope'", result.stderr)
+
+    def test_run_honours_configured_workers(self) -> None:
+        data = manifest()
+        data["suites"][1]["pytest"] = {"workers": 2, "dist": "loadfile"}  # type: ignore[index]
+        self.build(
+            {
+                **PASSING_FILES,
+                "tools/test_second.py": "def test_second():\n    assert True\n",
+            },
+            data,
+        )
+        result = self.registry("run", "tools")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("pytest over 2 Python test files", result.stdout)
 
     # --- one run per test (ADR-1568) ------------------------------------------
 
