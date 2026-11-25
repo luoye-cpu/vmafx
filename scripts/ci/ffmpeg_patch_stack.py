@@ -462,7 +462,11 @@ def mirrors(repo: Path, remote: str, tag: str) -> dict[Path, bytes]:
         original = read_repo_text_bytes(path).decode("utf-8")
         updated = original
         for key, value in {"FFMPEG_TAG": tag, "FFMPEG_REMOTE": remote}.items():
-            updated, count = re.subn(rf"(?m)^ARG {key}=\S+$", f"ARG {key}={value}", updated)
+            updated, count = re.subn(
+                rf"(?m)^ARG {key}=\S+$",
+                lambda _match, key=key, value=value: f"ARG {key}={value}",
+                updated,
+            )
             if count != 1:
                 raise ValueError(f"expected one {key} mirror in {name}, found {count}")
         changed[path] = updated.encode()

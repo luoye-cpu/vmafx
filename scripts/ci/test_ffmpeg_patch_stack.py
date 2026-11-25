@@ -219,11 +219,11 @@ class RealReplay(unittest.TestCase):
         self.upstream = self.root / "upstream"
         self.upstream.mkdir()
         self.git(self.upstream, "init", "-q")
-        (self.upstream / "sample").write_text("before\n")
+        (self.upstream / "sample").write_bytes(b"before\n")
         self.git(self.upstream, "add", "sample")
         self.git(self.upstream, "commit", "-qm", "base")
         self.git(self.upstream, "tag", "n9.0.1")
-        (self.upstream / "sample").write_text("patched\n")
+        (self.upstream / "sample").write_bytes(b"patched\n")
         self.git(self.upstream, "commit", "-qam", "add integration")
         series_patch = self.git(self.upstream, "format-patch", "-1", "--stdout")
         self.repo = self.root / "repo"
@@ -346,6 +346,15 @@ class RealReplay(unittest.TestCase):
         with self.assertRaises(KeyError):
             STACK.maintain(self.repo, self.output, False, False)
         self.assertEqual(json.loads((self.output / "receipt.json").read_text())["status"], "failed")
+
+    def test_mirror_replacement_is_literal_for_a_windows_path(self) -> None:
+        remote = r"C:\ffmpeg\source"
+        changed = STACK.mirrors(self.repo, remote, "n9.1")
+        self.assertEqual(set(changed), {self.repo / name for name in STACK.MIRRORS})
+        for content in changed.values():
+            text = content.decode("utf-8").replace("\r\n", "\n")
+            self.assertIn("ARG FFMPEG_TAG=n9.1\n", text)
+            self.assertIn(f"ARG FFMPEG_REMOTE={remote}\n", text)
 
     def test_latest_release_rebases_and_updates_all_mirrors(self) -> None:
         self.git(self.upstream, "switch", "--detach", "n9.0.1")
