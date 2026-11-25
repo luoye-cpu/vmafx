@@ -258,12 +258,10 @@ class RenovateFilePatterns(unittest.TestCase):
         self.assertTrue(any("missing from postUpdateOptions" in e for e in errors))
 
 
-def matching_group_rules(config: dict[str, Any], dependency: dict[str, str]) -> list[int]:
-    """Find group rules for these concrete fixtures in their configured order."""
+def matching_package_rules(config: dict[str, Any], dependency: dict[str, str]) -> list[int]:
+    """Find matching rules for these concrete fixtures in their configured order."""
     result = []
     for index, rule in enumerate(config["packageRules"]):
-        if "groupName" not in rule:
-            continue
         matches = True
         for key, patterns in rule.items():
             if not key.startswith("match"):
@@ -283,6 +281,14 @@ def matching_group_rules(config: dict[str, Any], dependency: dict[str, str]) -> 
         if matches:
             result.append(index)
     return result
+
+
+def matching_group_rules(config: dict[str, Any], dependency: dict[str, str]) -> list[int]:
+    return [
+        i
+        for i in matching_package_rules(config, dependency)
+        if "groupName" in config["packageRules"][i]
+    ]
 
 
 class CoupledPinGroups(unittest.TestCase):
@@ -514,6 +520,7 @@ class PythonCiVersionGroup(unittest.TestCase):
         )
 
 
+TOOLING_INPUT = "requirements/locks/tooling-tests.in"
 LOCK_MANIFEST = "requirements/locks/manifest.json"
 UV_GROUP = "uv (lock generator, all managers)"
 UV_SELECTOR_FINDING = "uv manager selector must be the exact anchored manifest path"
@@ -547,15 +554,17 @@ def _uv_manifest_finding(manager: dict[str, Any], manifest_text: str, version: s
     return None
 
 
-def _uv_group_finding(config: dict[str, Any], update_type: str, version: str) -> str | None:
+def _uv_group_finding(
+    config: dict[str, Any], update_type: str, manifest_version: str, pip_version: str
+) -> str | None:
     rules = config["packageRules"]
     shared = {index for index, rule in enumerate(rules) if rule.get("groupName") == UV_GROUP}
     matches = {}
-    for manager, path in (
-        ("pip_requirements", "requirements/locks/tooling-tests.in"),
-        ("custom.regex", LOCK_MANIFEST),
+    for manager, path, version in (
+        ("pip_requirements", TOOLING_INPUT, pip_version),
+        ("custom.regex", LOCK_MANIFEST, manifest_version),
     ):
-        indices = matching_group_rules(
+        indices = matching_package_rules(
             config,
             {
                 "matchManagers": manager,
@@ -568,6 +577,11 @@ def _uv_group_finding(config: dict[str, Any], update_type: str, version: str) ->
                 "matchCurrentVersion": version,
             },
         )
+        enabled = config.get(manager, {}).get("enabled", True)
+        for index in indices:
+            enabled = rules[index].get("enabled", enabled)
+        if not enabled:
+            return f"{path}: {manager} uv ({update_type}) disabled"
         shared.intersection_update(indices)
         matches[manager] = indices
     if not shared:
@@ -575,7 +589,7 @@ def _uv_group_finding(config: dict[str, Any], update_type: str, version: str) ->
     group_index = min(shared)
     for manager, indices in matches.items():
         for index in indices:
-            group = rules[index]["groupName"]
+            group = rules[index].get("groupName", UV_GROUP)
             if index > group_index and group != UV_GROUP:
                 return f"uv ({update_type}): later {manager} rule overrides the uv group with {group!r}"
     return None
@@ -592,8 +606,16 @@ def uv_lock_generator_findings(config: dict[str, Any], read: Callable[[str], str
     manifest_finding = _uv_manifest_finding(manager, manifest_text, version)
     if manifest_finding is not None:
         errors.append(manifest_finding)
+    pins = re.findall(r"^uv==([^\s#]+)\s*$", read(TOOLING_INPUT), re.MULTILINE)
+    if len(pins) != 1:
+        return [f"{TOOLING_INPUT}: expected one exact uv pin"]
+    patterns = config["pip_requirements"]["managerFilePatterns"]
+    if not any(re.search(pattern[1:-1], TOOLING_INPUT) for pattern in patterns):
+        errors.append(f"{TOOLING_INPUT}: outside pip_requirements file patterns")
+    if any(fnmatch.fnmatchcase(TOOLING_INPUT, pattern) for pattern in config["ignorePaths"]):
+        errors.append(f"{TOOLING_INPUT}: ignored by Renovate")
     for update_type in ("patch", "minor", "major"):
-        group_finding = _uv_group_finding(config, update_type, version)
+        group_finding = _uv_group_finding(config, update_type, version, pins[0])
         if group_finding is not None:
             errors.append(group_finding)
     return errors
@@ -616,13 +638,18 @@ class UvLockGeneratorGroup(unittest.TestCase):
     def findings(
         self,
         change: Callable[[dict[str, Any]], None] | None = None,
-        read: Callable[[str], str] | None = None,
+        files: dict[str, str] | None = None,
     ) -> list[str]:
         config = json.loads(json.dumps(self.config))
         if change is not None:
             change(config)
-        reader = read or (lambda path: (ROOT / path).read_text(encoding="utf-8"))
-        return uv_lock_generator_findings(config, reader)
+
+        def read(path: str) -> str:
+            if files and path in files:
+                return files[path]
+            return (ROOT / path).read_text(encoding="utf-8")
+
+        return uv_lock_generator_findings(config, read)
 
     def test_checked_in_config_owns_uv_pins(self) -> None:
         self.assertEqual(self.findings(), [])
@@ -632,14 +659,48 @@ class UvLockGeneratorGroup(unittest.TestCase):
 
     def test_uv_group_requires_both_updates(self) -> None:
         (rule,) = [r for r in self.config["packageRules"] if r.get("groupName") == UV_GROUP]
+        self.assertEqual(rule.get("matchPackageNames"), ["uv"])
         self.assertEqual(rule.get("minimumGroupSize"), 2)
         self.assertEqual(rule.get("matchDatasources"), ["pypi"])
         self.assertCountEqual(
             rule.get("matchFileNames", []), ["requirements/locks/tooling-tests.in", LOCK_MANIFEST]
         )
 
+    def test_disabled_pip_uv_without_group_name_fails(self) -> None:
+        def disable(config: dict[str, Any]) -> None:
+            config["packageRules"].append(
+                {
+                    "matchManagers": ["pip_requirements"],
+                    "matchFileNames": [TOOLING_INPUT],
+                    "matchPackageNames": ["uv"],
+                    "enabled": False,
+                }
+            )
+
+        self.assertIn(
+            f"{TOOLING_INPUT}: pip_requirements uv (patch) disabled", self.findings(disable)
+        )
+
+    def test_missing_tooling_input_pin_fails(self) -> None:
+        self.assertIn(
+            f"{TOOLING_INPUT}: expected one exact uv pin",
+            self.findings(files={TOOLING_INPUT: "pytest-timeout==1.0"}),
+        )
+
+    def test_tooling_input_must_be_visible_to_pip_manager(self) -> None:
+        def ignore(config: dict[str, Any]) -> None:
+            config["ignorePaths"].append(TOOLING_INPUT)
+
+        def exclude(config: dict[str, Any]) -> None:
+            config["pip_requirements"]["managerFilePatterns"] = [r"/^requirements\.txt$/"]
+
+        self.assertIn(f"{TOOLING_INPUT}: ignored by Renovate", self.findings(ignore))
+        self.assertIn(
+            f"{TOOLING_INPUT}: outside pip_requirements file patterns", self.findings(exclude)
+        )
+
     def test_manifest_allows_space_before_colon(self) -> None:
-        self.assertEqual(self.findings(read=lambda _: '{"uv_version" : "0.13.6"}'), [])
+        self.assertEqual(self.findings(files={LOCK_MANIFEST: '{"uv_version" : "0.13.6"}'}), [])
 
     def test_missing_manager_fails(self) -> None:
         def remove(config: dict[str, Any]) -> None:
@@ -795,10 +856,7 @@ class UvLockGeneratorGroup(unittest.TestCase):
             indent=2,
         )
         self.assertIn('"uv_version_note": "1.2.3"', planted)
-        self.assertEqual(
-            self.findings(read=lambda path: planted if path == LOCK_MANIFEST else ""),
-            [],
-        )
+        self.assertEqual(self.findings(files={LOCK_MANIFEST: planted}), [])
 
 
 RUST_PINS = {

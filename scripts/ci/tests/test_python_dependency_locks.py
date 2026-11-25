@@ -508,6 +508,13 @@ class LockValidationTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.checker = load_checker()
 
+    def test_unhashed_requirement_after_continued_comment(self) -> None:
+        text = f"uv==1 --hash=sha256:{'a' * 64}\n  # comment \\\nother==1\n"
+        self.assertEqual(
+            self.checker._validate_lock_requirements(text, "lock.txt"),
+            ["lock.txt:3: dependency has no sha256 artifact hash"],
+        )
+
     def test_unpinned_requirement_is_rejected(self) -> None:
         manifest = {"uv_version": "0.12.18", "locks": []}
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2247,6 +2254,37 @@ class UvInputPinTests(unittest.TestCase):
         )
         self.manifest = self.checker.load_manifest(self.root)
 
+    def assert_one_pin_bump_fails(self, *, manifest_only: bool) -> None:
+        root = self.root / "pair"
+        relative = "requirements/locks/tooling-tests.in"
+        newer = "0.12.19"
+        write_uv_pin_fixture(root, {relative: f"uv=={self.version}\n"}, self.version)
+        manifest = self.checker.load_manifest(root)
+        generated = root / "generated.txt"
+        generated.write_text(f"uv=={self.version} --hash=sha256:{'a' * 64}\n", encoding="utf-8")
+        self.checker.stamp_lock(root, manifest, manifest["locks"][0], generated)
+        self.assertEqual(self.checker.check(root), 0)
+        if manifest_only:
+            manifest["uv_version"] = newer
+            (root / self.checker.MANIFEST_PATH).write_text(json.dumps(manifest), encoding="utf-8")
+            pinned, expected = self.version, newer
+        else:
+            (root / relative).write_text(f"uv=={newer}\n", encoding="utf-8")
+            pinned, expected = newer, self.version
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            self.assertEqual(self.checker.check(root), 1)
+        self.assertIn(
+            f"ERROR: {relative}:1: uv=={pinned} differs from uv_version {expected}.",
+            stderr.getvalue(),
+        )
+
+    def test_check_rejects_manifest_only_bump(self) -> None:
+        self.assert_one_pin_bump_fails(manifest_only=True)
+
+    def test_check_rejects_tooling_input_only_bump(self) -> None:
+        self.assert_one_pin_bump_fails(manifest_only=False)
+
     def test_matching_pin_passes(self) -> None:
         self.assertEqual(self.checker.check_uv_input_pins(self.root, self.manifest), [])
 
@@ -2442,6 +2480,7 @@ class UvBootstrapTests(unittest.TestCase):
         text = (ROOT / path).read_text(encoding="utf-8")
         install = 'python -m pip install --no-build-isolation --require-hashes -r "$bootstrap"'
         self.assertIn(install, text)
+        self.assertEqual(self.checker.scan_install_commands(path, text, root=ROOT), [])
         for workflow, script in (
             (path, text.replace("bootstrap-uv --output", "outputs --output")),
             (path, text.replace(install, 'bootstrap="unreviewed.txt"\n            ' + install)),
@@ -2531,6 +2570,50 @@ class UvBootstrapTests(unittest.TestCase):
             f"found uv=={self.version}, uv=={self.old}, expected uv=={self.version}",
             str(raised.exception),
         )
+
+    def test_conflicting_uv_pin_after_continued_comment(self) -> None:
+        self.compiled += f"# comment \\\nuv=={self.old} {self.digest}\n"
+        with self.assertRaises(self.checker.ContractError) as raised:
+            self.bootstrap()
+        self.assertIn(
+            f"found uv=={self.version}, uv=={self.old}, expected uv=={self.version}",
+            str(raised.exception),
+        )
+
+    def test_wrong_version_with_invalid_hash_reports_both_pins(self) -> None:
+        for hashes in ("", "--hash=sha256:bad", f"{self.digest} --hash=sha256:bad"):
+            with self.subTest(hashes=hashes):
+                self.compiled = f"uv=={self.old} {hashes}\n"
+                with self.assertRaises(self.checker.ContractError) as raised:
+                    self.bootstrap()
+                self.assertIn(
+                    f"found uv=={self.old}, expected uv=={self.version}", str(raised.exception)
+                )
+                self.assertIn("sha256 artifact hash", str(raised.exception))
+
+    def test_bootstrap_byte_limit(self) -> None:
+        size = len(self.compiled.encode("utf-8"))
+        with mock.patch.object(self.checker, "MAX_LOCK_BYTES", size):
+            self.assertEqual(self.bootstrap(), 0)
+            self.compiled += "\n"
+            with self.assertRaisesRegex(self.checker.ContractError, "exceeds .* bytes"):
+                self.bootstrap()
+
+    def test_physical_line_limit_counts_continuations(self) -> None:
+        self.compiled = f"uv=={self.version} \\\n  {self.digest}\n"
+        with mock.patch.object(self.checker, "MAX_REQUIREMENTS_LINES", 2):
+            self.assertEqual(self.bootstrap(), 0)
+            self.compiled += "# comment\n"
+            with self.assertRaisesRegex(self.checker.ContractError, "exceeds 2 physical lines"):
+                self.bootstrap()
+
+    def test_bootstrap_hash_limit(self) -> None:
+        self.compiled = f"uv=={self.version} {self.digest} {self.digest}\n"
+        with mock.patch.object(self.checker, "MAX_HASHES_PER_REQUIREMENT", 2):
+            self.assertEqual(self.bootstrap(), 0)
+            self.compiled = self.compiled.rstrip() + f" {self.digest}\n"
+            with self.assertRaisesRegex(self.checker.ContractError, "exceeds 2 hash options"):
+                self.bootstrap()
 
     def test_multiline_uv_hash_is_accepted(self) -> None:
         """Boundary: recognize uv's backslash-continued artifact hashes."""

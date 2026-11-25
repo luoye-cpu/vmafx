@@ -19,10 +19,12 @@ lock file with its source files and compilation arguments using a reviewed,
 pinned
 version of `uv` (`uv_version` in `requirements/locks/manifest.json`).
 `check`, `bootstrap-uv`, and `write` reject a manifest input whose `uv` pin differs from
-`uv_version`. Renovate moves the `requirements/locks/tooling-tests.in` pin and
-`uv_version` in one pull request through the
+`uv_version`. Renovate groups the `requirements/locks/tooling-tests.in` pin and
+`uv_version` through the
 `uv (lock generator, all managers)` group in `renovate.json`, guarded by
 `test_uv_group_requires_both_updates` in `scripts/ci/tests/test_renovate_file_patterns.py`.
+Renovate’s `minimumGroupSize` only postpones creation of a new branch, and the
+`check` hook rejects a pull request that changes just one pin.
 
 The checker recognizes `uv` by its case-insensitive, PEP 503-normalized package
 name. It checks `==` and `===` pins with optional extras, whitespace, and
@@ -83,7 +85,7 @@ CI Workflows & Dockerfiles                Local Workstation (make lint-tools, cy
 | --- | --- |
 | `make python-locks-check` | Validates that all lock files match their inputs and that every executed `pip install` in the repo uses `--require-hashes` or local `--no-deps`. Offline, fast. |
 | `make python-locks-write` | Networked refresh: runs the pinned `uv` compiler to update all lock files and re-stamp metadata headers. |
-| `python3 scripts/ci/check_python_dependency_locks.py bootstrap-uv --output FILE` | Compiles a temporary hash-pinned generator lock when the installed uv differs from the reviewed version. Removes FILE when the versions match. |
+| `python3 scripts/ci/check_python_dependency_locks.py bootstrap-uv --output FILE` | Compiles a temporary hash-pinned generator lock when the installed uv differs from the reviewed version. Removes `FILE` when the versions match (`test_matching_version_removes_stale_output`). |
 | `make lint-tools` | Installs project linting tools (`ruff`, `black`, `mypy`) into `.venv` from `requirements/locks/dev-linters.txt` using `--require-hashes`. |
 | `make cythonize-deps` | Installs C-extension build dependencies (`Cython`, `numpy`, `setuptools`, `packaging`) from `requirements/locks/cythonize.txt` using `--require-hashes`. |
 | `python3 -m pip install --require-hashes -r requirements/locks/nox.txt` | Installs the reviewed Nox release and its transitive dependencies before running local package sessions. |

@@ -50,6 +50,11 @@ PATH_LOOKUP_ERRORS = (ValueError, OSError)
 GIT_TIMEOUT_S = 60
 # 10x the slowest cold-cache uv pip compile of the manifest: 10.6 s.
 SUBPROCESS_TIMEOUT_S = 120
+MAX_LOCK_BYTES = 4 * 1024 * 1024
+MAX_REQUIREMENTS_LINES = 65_536
+MAX_HASHES_PER_REQUIREMENT = 1024
+# pip removes a comment only at the start of the line or after whitespace.
+REQUIREMENT_COMMENT_RE = re.compile(r"(?<!\S)#.*$")
 HASH_RE = re.compile(r"--hash=sha256:[0-9a-f]{64}(?:\s|$)")
 EXACT_REQUIREMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[^;\s]+")
 EXACT_INPUT_PIN_RE = re.compile(
@@ -474,21 +479,24 @@ def _manifest_input_paths(manifest: dict[str, Any]) -> list[str]:
     return list(seen)
 
 
-def _requirements_file_lines(text: str) -> Iterator[tuple[int, str]]:
-    """Join requirement continuations in one pass over the physical lines."""
+def _requirements_file_lines(text: str, source: str) -> Iterator[tuple[int, str]]:
+    """Join physical lines before stripping pip comments, preserving the first line number."""
+    lines = text.splitlines()
+    if len(lines) > MAX_REQUIREMENTS_LINES:
+        raise ContractError(f"{source}: exceeds {MAX_REQUIREMENTS_LINES} physical lines")
     pending: list[str] = []
-    start = 0
-    for number, line in enumerate(text.splitlines(), 1):
-        if not pending:
-            start = number
-        if line.endswith("\\") and not line.lstrip().startswith("#"):
-            pending.append(line.removesuffix("\\"))
-            continue
-        pending.append(line)
-        yield start, "".join(pending).partition("#")[0]
+    start = 1
+    for number, line in enumerate(lines, 1):
+        if not line.lstrip().startswith("#"):
+            if line.endswith("\\"):
+                pending.append(line.strip("\\"))
+                continue
+            pending.append(line)
+        yield start, REQUIREMENT_COMMENT_RE.sub("", "".join(pending)).strip()
         pending.clear()
+        start = number + 1
     if pending:
-        yield start, "".join(pending).partition("#")[0]
+        yield start, REQUIREMENT_COMMENT_RE.sub("", "".join(pending)).strip()
 
 
 def _toml_requirement_arrays(data: dict[str, Any]) -> Iterator[tuple[str, object]]:
@@ -510,7 +518,7 @@ def _toml_requirement_arrays(data: dict[str, Any]) -> Iterator[tuple[str, object
 
 def _input_requirements(relative: str, text: str) -> Iterator[tuple[int | str, str]]:
     if Path(relative).suffix.lower() != ".toml":
-        yield from _requirements_file_lines(text)
+        yield from _requirements_file_lines(text, relative)
         return
     try:
         data = tomllib.loads(text)
@@ -1874,6 +1882,16 @@ def read_lock_metadata(text: str) -> dict[str, str]:
     return metadata
 
 
+def _read_lock(path: Path) -> str:
+    """Bound the read even if the lock grows after the size check."""
+    with path.open("rb") as stream:
+        if os.fstat(stream.fileno()).st_size <= MAX_LOCK_BYTES:
+            data = stream.read(MAX_LOCK_BYTES + 1)
+            if len(data) <= MAX_LOCK_BYTES:
+                return data.decode("utf-8")
+    raise ContractError(f"{path}: lock exceeds {MAX_LOCK_BYTES} bytes")
+
+
 def validate_lock(root: Path, manifest: dict[str, Any], entry: dict[str, Any]) -> list[str]:
     entry_problems = validate_manifest_entry(entry)
     if entry_problems:
@@ -1882,8 +1900,8 @@ def validate_lock(root: Path, manifest: dict[str, Any], entry: dict[str, Any]) -
     output = entry["output"]
     path = root / output
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as error:
+        text = _read_lock(path)
+    except (OSError, UnicodeError) as error:
         return [f"{output}: {error}"]
     metadata = read_lock_metadata(text)
     expected = entry_digest(root, entry)
@@ -1901,9 +1919,8 @@ def validate_lock(root: Path, manifest: dict[str, Any], entry: dict[str, Any]) -
 def _validate_lock_requirements(text: str, output: str) -> list[str]:
     problems: list[str] = []
     requirements = 0
-    for line, logical in logical_lines(text):
-        stripped = logical.strip()
-        if not stripped or stripped.startswith("#"):
+    for line, stripped in _requirements_file_lines(text, output):
+        if not stripped:
             continue
         if stripped.startswith(("-", "--")):
             problems.append(
@@ -2145,33 +2162,38 @@ def _generator_entry(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
 def _check_bootstrap_pin(output: Path, version: str) -> None:
     pin = f"uv=={version}"
     try:
-        text = output.read_text(encoding="utf-8")
+        text = _read_lock(output)
     except (OSError, UnicodeError) as error:
         raise ContractError(f"cannot read bootstrap lock {output}: {error}") from error
     problems = _validate_lock_requirements(text, str(output))
-    if problems:
-        raise ContractError("\n".join(problems))
     uv_pins = []
-    for number, line in logical_lines(text):
-        content = line.partition("#")[0].strip()
+    for number, content in _requirements_file_lines(text, str(output)):
         if not content:
             continue
         # Keep the environment marker with its requirement, before the hash options.
-        requirement, *hashes = re.split(r"\s+(?=--)", content)
-        if not hashes or not all(HASH_RE.fullmatch(token) for token in hashes):
+        requirement, *hashes = re.split(
+            r"(?<!\s)\s+(?=--)", content, maxsplit=MAX_HASHES_PER_REQUIREMENT + 1
+        )
+        if len(hashes) > MAX_HASHES_PER_REQUIREMENT:
             raise ContractError(
+                f"{output}:{number}: exceeds {MAX_HASHES_PER_REQUIREMENT} hash options"
+            )
+        if not problems and (not hashes or not all(HASH_RE.fullmatch(token) for token in hashes)):
+            problems.append(
                 f"{output}:{number}: {requirement} requires valid sha256 artifact hashes"
             )
         match = EXACT_INPUT_PIN_RE.fullmatch(requirement)
         if not match:
-            raise ContractError(
+            problems.append(
                 f"{output}:{number}: found {requirement}, expected {pin} and exact pins"
             )
-        if re.sub(r"[-_.]+", "-", match[1]).lower() == "uv":
+        elif re.sub(r"[-_.]+", "-", match[1]).lower() == "uv":
             uv_pins.append("uv" + requirement.removeprefix(match[1]))
     if uv_pins != [pin]:
         found = ", ".join(uv_pins) or "no uv pin"
-        raise ContractError(f"{output}: found {found}, expected {pin}")
+        problems.append(f"{output}: found {found}, expected {pin}")
+    if problems:
+        raise ContractError("\n".join(problems))
 
 
 def _git_metadata_dirs(root: Path) -> tuple[Path, Path]:

@@ -90,6 +90,21 @@ def shape_findings(workflow: dict[str, Any], inputs: list[str]) -> list[str]:
     return found
 
 
+def unconditional_refresh_command(step: dict[str, Any], line: int, command: str) -> bool:
+    """Only the reviewed setup commands may precede the required invocation."""
+    if "if" in step or "continue-on-error" in step:
+        return False
+    prefix = step["run"].splitlines()[:line]
+    commands = [
+        text.strip() for text in prefix if text.strip() and not text.lstrip().startswith("#")
+    ]
+    setup = ["set -euo pipefail"]
+    if command.endswith("bootstrap-uv"):
+        setup.append('bootstrap="$RUNNER_TEMP/uv-bootstrap.txt"')
+        command += ' --output "$bootstrap"'
+    return commands == [*setup, command]
+
+
 def guard_order_findings(steps: list[dict[str, Any]]) -> list[str]:
     """Check command order and keep the bootstrap install in its producer's shell."""
     bootstrap = "python3 scripts/ci/check_python_dependency_locks.py bootstrap-uv"
@@ -121,8 +136,8 @@ def guard_order_findings(steps: list[dict[str, Any]]) -> list[str]:
     if positions[bootstrap][0] != positions[install][0]:
         return [ORDER_FINDING]
     for marker in (bootstrap, write):
-        step = steps[positions[marker][0]]
-        if "if" in step or "continue-on-error" in step:
+        index, line = positions[marker]
+        if not unconditional_refresh_command(steps[index], line, marker):
             return [REQUIRED_STEP_FINDING]
     return []
 
@@ -215,6 +230,13 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
             step for step in steps_of(wf) if "bootstrap-uv" not in step.get("run", "")
         ]
         self.assertIn(ORDER_FINDING, shape_findings(wf, self.inputs))
+
+    def test_planted_unreachable_write_is_reported(self) -> None:
+        wf = self.planted()
+        write = "python3 scripts/ci/check_python_dependency_locks.py write"
+        step = next(step for step in steps_of(wf) if write in step.get("run", ""))
+        step["run"] = step["run"].replace(write, f"if false; then\n  {write}\nfi")
+        self.assertIn(REQUIRED_STEP_FINDING, shape_findings(wf, self.inputs))
 
     def test_planted_optional_refresh_steps_are_reported(self) -> None:
         for command in ("bootstrap-uv", "check_python_dependency_locks.py write"):
