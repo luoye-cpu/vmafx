@@ -2,14 +2,14 @@
  *  Copyright 2026 Lusoris
  *  SPDX-License-Identifier: EUPL-1.2
  *
- *  HIP kernel-template helper bodies — runtime PR (T7-10b /
- *  ADR-0212 §"What lands next" step 1).
+ *  HIP kernel-template helper bodies for the landed T7-10b batch-4
+ *  runtime promotion (ADR-0377).
  *
- *  Replaces the audit-first `-ENOSYS` stubs (ADR-0241) with real
- *  ROCm HIP runtime calls. Mirrors `core/src/cuda/kernel_template.h`'s
- *  inline helpers but as out-of-line definitions so the runtime PR
- *  can flip implementations without forcing every consumer TU to
- *  recompile.
+ *  The audit-first `-ENOSYS` stubs (ADR-0241) are replaced by real
+ *  ROCm HIP runtime calls. The helpers mirror
+ *  `core/src/cuda/kernel_template.h`'s inline helpers but are defined
+ *  out of line, keeping every HIP call in one TU while consumers stay
+ *  on the stable signatures.
  */
 
 #include <assert.h>
