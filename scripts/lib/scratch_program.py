@@ -18,7 +18,8 @@ else in the directory is left to the normal cleanup, whose errors still fail
 the test.
 
 Git writes object files read-only. Windows refuses to unlink a read-only
-file, so :func:`remove_tree` clears the read-only bit and retries once.
+file, so :func:`remove_file` and :func:`remove_tree` clear the read-only
+bit and retry the refused operation once.
 
 Standard library only: suites import it as ``scripts.lib.scratch_program``
 with the repository root on ``sys.path``.
@@ -66,13 +67,25 @@ def remove_program(
             _unlink(candidate, attempts, delay, remove)
 
 
+def _retry_read_only(path: Path, operation: Callable[[], object]) -> None:
+    path.chmod(stat.S_IREAD | stat.S_IWRITE)
+    operation()
+
+
+def remove_file(path: Path) -> None:
+    """Unlink one file, retrying once after chmod on a permission failure."""
+    try:
+        path.unlink()
+    except PermissionError:
+        _retry_read_only(path, path.unlink)
+
+
 def remove_tree(path: Path) -> None:
     """Remove a scratch tree, retrying a refused operation once after chmod."""
 
     def retry(function: Callable[[str], object], failed_path: str, error: BaseException) -> None:
         if not isinstance(error, PermissionError):
             raise error
-        os.chmod(failed_path, stat.S_IREAD | stat.S_IWRITE)  # noqa: PTH101 -- rmtree supplies a str
-        function(failed_path)
+        _retry_read_only(Path(failed_path), lambda: function(failed_path))
 
     shutil.rmtree(path, onexc=retry)

@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.ci import ffmpeg_shared_series_fixture as shared_series
 from scripts.lib.safe_subprocess import run as run_command
-from scripts.lib.scratch_program import remove_tree
+from scripts.lib.scratch_program import remove_file, remove_tree
 
 SPEC = importlib.util.spec_from_file_location(
     "patch_stack", Path(__file__).with_name("ffmpeg_patch_stack.py")
@@ -481,7 +481,7 @@ class RealReplay(unittest.TestCase):
         )
         for pack in (cache / "objects").rglob("*"):  # ref kept, objects gone
             if pack.is_file():
-                pack.unlink()
+                remove_file(pack)
         result = STACK.maintain(self.repo, self.output, False, False)
         self.assertIn("fetched into cache", result["source"])
         self.assertEqual(

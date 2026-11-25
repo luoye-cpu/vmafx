@@ -28,7 +28,12 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from scripts.lib.safe_subprocess import run as run_command  # noqa: E402
-from scripts.lib.scratch_program import ATTEMPTS, remove_program, remove_tree  # noqa: E402
+from scripts.lib.scratch_program import (  # noqa: E402
+    ATTEMPTS,
+    remove_file,
+    remove_program,
+    remove_tree,
+)
 
 REAL_UNLINK = os.unlink
 
@@ -196,6 +201,45 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
             remove_tree(self.tree)
         self.assertIs(exc.exception, busy)
         attempts.assert_called_once_with(str(self.pack))
+
+    def test_remove_file_clears_the_read_only_bit(self) -> None:
+        """Positive: remove the read-only pack and leave the loose object in place."""
+        with mock.patch("os.unlink", self.windows_unlink):
+            remove_file(self.pack)
+        self.assertFalse(self.pack.exists())
+        self.assertTrue(self.loose.is_file())
+
+    def test_plain_unlink_fails_on_a_read_only_object(self) -> None:
+        """Negative: Windows refuses a plain unlink of the read-only pack."""
+        with mock.patch("os.unlink", self.windows_unlink), self.assertRaises(PermissionError):
+            self.pack.unlink()
+
+    def test_remove_file_raises_the_second_permission_error(self) -> None:
+        """Boundary: a file refused twice raises the second permission error."""
+        still_refused = PermissionError(errno.EACCES, "Access is denied", str(self.pack))
+        with (
+            mock.patch("os.unlink", side_effect=[PermissionError(), still_refused]) as unlink,
+            self.assertRaises(PermissionError) as exc,
+        ):
+            remove_file(self.pack)
+        self.assertIs(exc.exception, still_refused)
+        self.assertEqual(unlink.call_args_list, [mock.call(self.pack), mock.call(self.pack)])
+
+    def test_remove_file_raises_busy_on_first_attempt(self) -> None:
+        """Boundary: the first busy error reaches the caller without a retry."""
+        busy = OSError(errno.EBUSY, "Device or resource busy", str(self.pack))
+        with (
+            mock.patch("os.unlink", side_effect=busy) as unlink,
+            self.assertRaises(OSError) as exc,
+        ):
+            remove_file(self.pack)
+        self.assertIs(exc.exception, busy)
+        unlink.assert_called_once_with(self.pack)
+
+    def test_remove_file_raises_for_a_missing_file(self) -> None:
+        """Boundary: removing a missing file raises FileNotFoundError."""
+        with self.assertRaises(FileNotFoundError):
+            remove_file(self.pack.with_name("missing.pack"))
 
 
 def bare_git_rmtree_calls(source: str, name: str) -> list[str]:
