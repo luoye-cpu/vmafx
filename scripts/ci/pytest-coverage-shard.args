@@ -1,0 +1,10 @@
+python/test/
+-v
+-m
+not slow
+--tb=short
+--timeout=600
+--timeout-method=thread
+--ignore=python/test/resource
+--deselect
+python/test/command_line_test.py::CommandLineTest
