@@ -19,6 +19,21 @@ precedence = "closest"
 SPDX-FileCopyrightText = "2026 luoye-cpu"
 SPDX-License-Identifier = "EUPL-1.2"
 
+# The Gitea artifact-writer ADR, its index fragment, research digest, rebase
+# note and package invariant page are contributor-authored (PR #3669, issue
+# #3052): the fork-local EUPL-1.2 default applies, credited to their author.
+[[annotations]]
+path = [
+    "docs/adr/3628-gitea-artifact-writer-fail-closed.md",
+    "docs/adr/_index_fragments/3628-gitea-artifact-writer-fail-closed.md",
+    "docs/research/3052-gitea-artifact-writer.md",
+    "docs/rebase-notes.d/3052-ruamel-yaml.md",
+    "scripts/ci/AGENTS.d/gitea-artifact-writer.md",
+]
+precedence = "closest"
+SPDX-FileCopyrightText = "2026 luoye-cpu"
+SPDX-License-Identifier = "EUPL-1.2"
+
 # These six files descend from Netflix/vmaf root files.  ADR-1250 requires
 # inherited work, and every fork contribution to it, to remain on the terms it
 # already carried rather than being swept into the fork-local EUPL default.
