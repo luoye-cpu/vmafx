@@ -17,8 +17,8 @@ contracts on this side track CUDA's closely.
 
 ## Scope
 
-HIP-side runtime (picture lifecycle, dispatch strategy, kernel
-scaffolding template). HIP **feature kernels** live one level deeper
+HIP-side runtime (picture lifecycle, kernel-template helpers). HIP
+**feature kernels** live one level deeper
 in [../feature/hip/](../feature/hip/).
 
 ```text
@@ -33,7 +33,6 @@ hip/
   shared_frame.{c,h}    # ADR-1408: frame planes a VmafContext uploads once,
                         #   every twin reads; vmaf_hip_plane_source_acquire()
   hip_handle.h          # uintptr_t <-> hipStream_t / hipEvent_t, via a union
-  dispatch_strategy.{c,h} # Feature/extractor-name → active-kernel routing
   kernel_template.{h,c} # per-feature HIP kernel scaffolding (T7-10 / ADR-0241)
   stubs.c               # -ENOSYS fallbacks for the public libvmaf_hip.h
                         #   entry points when HAVE_HIP is OFF. Wired in
