@@ -337,8 +337,11 @@ def _tokenise_shell_item(text: str) -> list[str]:
     return list(lexer)
 
 
-def coverage_shard_argv_problem(step: str, index: int) -> str | None:
-    """Report any deviation from the coverage shard runner's expected arguments."""
+COVERAGE_SHARD_WRAPPER = "scripts/ci/run-coverage-python-shard.sh"
+
+
+def coverage_shard_script_problem(index: int, script_text: str | None = None) -> str | None:
+    """Report any deviation in the shared coverage-shard runner's exec line."""
     expected = [
         "timeout",
         "--kill-after=30s",
@@ -346,17 +349,40 @@ def coverage_shard_argv_problem(step: str, index: int) -> str | None:
         "python3",
         "scripts/ci/run_pytest_shard.py",
         "--shard",
-        f"{index}/4",
+        "$2",
         "--",
         "@scripts/ci/pytest-coverage-shard.args",
     ]
+    if script_text is None:
+        try:
+            script_text = (ROOT / COVERAGE_SHARD_WRAPPER).read_text(encoding="utf-8")
+        except OSError as exc:
+            return f"coverage shard {index}/4 runner cannot be read: {exc}"
+    logical = re.sub(r"\\[ \t]*\n", " ", script_text)
+    match = re.search(r"(?m)^exec[ \t]+(.+)$", logical)
+    if match is None:
+        return f"coverage shard {index}/4 runner has no exec line"
+    try:
+        actual = _tokenise_shell_item(match.group(1))
+    except ValueError as exc:
+        return f"coverage shard {index}/4 runner cannot be parsed: {exc}"
+    if actual != expected:
+        return f"coverage shard {index}/4 runner has argv {actual!r}, expected {expected!r}"
+    return None
+
+
+def coverage_shard_argv_problem(
+    step: str, index: int, script_text: str | None = None
+) -> str | None:
+    """Report any deviation from the coverage shard runner's expected arguments."""
+    expected = ["bash", COVERAGE_SHARD_WRAPPER, "--shard", f"{index}/4"]
     try:
         actual = _tokenise_shell_item(step_script(step))
     except (AssertionError, ValueError) as exc:
         return f"coverage shard {index}/4 command cannot be parsed: {exc}"
     if actual != expected:
         return f"coverage shard {index}/4 command has argv {actual!r}, expected {expected!r}"
-    return None
+    return coverage_shard_script_problem(index, script_text)
 
 
 def _shell_clauses_with_operators(tokens: list[str]) -> list[tuple[list[str], str]]:
@@ -2240,11 +2266,20 @@ class FailClosedCIContract(unittest.TestCase):
     def _assert_coverage_shard_argv_rejects(self, pytest_args: str) -> None:
         workflow = (WORKFLOWS / "tests-and-quality-gates.yml").read_text(encoding="utf-8")
         step = workflow_step(workflow, "Run Python test suite, shard 1/4")
-        run_line = f"          {step_script(step)}"
-        prefix, separator, _ = run_line.rpartition(" -- ")
-        self.assertTrue(separator, run_line)
-        mutated = step.replace(run_line, f"{prefix}{separator}{pytest_args}\n", 1)
-        self.assertIsNotNone(coverage_shard_argv_problem(mutated, 1), mutated)
+        script_path = ROOT / COVERAGE_SHARD_WRAPPER
+        script = script_path.read_text(encoding="utf-8")
+        logical = re.sub(r"\\[ \t]*\n", " ", script)
+        match = re.search(r"(?m)^exec[ \t]+(.+)$", logical)
+        self.assertIsNotNone(match, script)
+        self.assertIsNotNone(match)
+        command = match.group(1)
+        argfile = "@scripts/ci/pytest-coverage-shard.args"
+        self.assertEqual(command.count(argfile), 1, command)
+        mutated = logical.replace(command, command.replace(argfile, pytest_args, 1), 1)
+        self.assertIsNotNone(
+            coverage_shard_argv_problem(step, 1, script_text=mutated),
+            mutated,
+        )
 
     def test_coverage_shard_argv_rejects_commented_argfile(self) -> None:
         self._assert_coverage_shard_argv_rejects(

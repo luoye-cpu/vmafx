@@ -1070,7 +1070,8 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
-        run: bash scripts/ci/run-coverage-python-shard.sh --shard 1/4
+        run: |
+          bash scripts/ci/run-coverage-python-shard.sh --shard 1/4
       - name: Run Python test suite, shard 2/4
         id: python_coverage_shard_2
         if: steps.impact.outputs.golden_harness == 'true'
@@ -1078,7 +1079,8 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
-        run: bash scripts/ci/run-coverage-python-shard.sh --shard 2/4
+        run: |
+          bash scripts/ci/run-coverage-python-shard.sh --shard 2/4
       - name: Run Python test suite, shard 3/4
         id: python_coverage_shard_3
         if: steps.impact.outputs.golden_harness == 'true'
@@ -1086,7 +1088,8 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
-        run: bash scripts/ci/run-coverage-python-shard.sh --shard 3/4
+        run: |
+          bash scripts/ci/run-coverage-python-shard.sh --shard 3/4
       - name: Run Python test suite, shard 4/4
         id: python_coverage_shard_4
         if: steps.impact.outputs.golden_harness == 'true'
@@ -1094,7 +1097,8 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
-        run: bash scripts/ci/run-coverage-python-shard.sh --shard 4/4
+        run: |
+          bash scripts/ci/run-coverage-python-shard.sh --shard 4/4
       - name: Gather coverage report (gcovr)
         if: ${{ always() && steps.impact.outputs.golden_harness == 'true' }}
         working-directory: core
