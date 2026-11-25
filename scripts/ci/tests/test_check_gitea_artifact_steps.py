@@ -20,6 +20,9 @@ import yaml  # type: ignore[import-untyped]  # PyYAML ships no stubs in the hook
 from ruamel.yaml import YAML as RuamelYAML
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
+from scripts.lib.safe_subprocess import run as run_command  # noqa: E402
+
 SCRIPT = ROOT / "scripts/ci/check_gitea_artifact_steps.py"
 
 
@@ -781,12 +784,13 @@ jobs:
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_repository_workflows_pass(self) -> None:
-        result = subprocess.run(  # noqa: S603 -- fixed interpreter and script argv
+        result = run_command(
             [sys.executable, str(SCRIPT)],
+            allowed_executables=(sys.executable,),
             capture_output=True,
             text=True,
             check=False,
-            timeout=120,
+            timeout_seconds=120,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -816,12 +820,13 @@ jobs:
                 with tempfile.TemporaryDirectory() as tmp:
                     candidate = Path(tmp) / "workflow.yml"
                     candidate.write_text(broken, encoding="utf-8")
-                    result = subprocess.run(  # noqa: S603 -- fixed interpreter and script argv
+                    result = run_command(
                         [sys.executable, str(SCRIPT), "--write", str(candidate)],
+                        allowed_executables=(sys.executable,),
                         capture_output=True,
                         text=True,
                         check=False,
-                        timeout=120,
+                        timeout_seconds=120,
                     )
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertEqual(candidate.read_text(encoding="utf-8"), original, path)
