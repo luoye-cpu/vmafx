@@ -56,7 +56,7 @@ class SyntheticEvent:
     base_ref: str = "master"
     head_ref: str = ""
     head_repo: str = ""
-    repository: str = "VMAFx/vmafx"
+    repository: str = "vidiko/vmafx"
     draft: bool = False
     author: str = "someone"
     author_type: str = "User"
@@ -168,6 +168,7 @@ def tier_decision(event: SyntheticEvent, config_path: Path) -> ci_tier.Decision:
         facts,
         config,
         release_exempt=lambda: ci_tier.release_exempt_from_script(facts, event.paths),
+        changed_paths=lambda: event.paths,
     )
 
 

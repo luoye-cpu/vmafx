@@ -26,9 +26,9 @@ extractors, quality runners, models).
 New here? You do not need to understand the whole tree.
 
 1. Pick an issue labelled
-   [`good first issue`](https://github.com/VMAFx/vmafx/labels/good%20first%20issue)
+   [`good first issue`](https://github.com/vidiko/vmafx/labels/good%20first%20issue)
    (small, self-contained, with the files named) or
-   [`help wanted`](https://github.com/VMAFx/vmafx/labels/help%20wanted)
+   [`help wanted`](https://github.com/vidiko/vmafx/labels/help%20wanted)
    (larger, but wanted). Comment on the issue that you are taking it, so two
    people do not do the same work.
 2. Follow the [Quickstart](#quickstart) to build and run the tests.
@@ -38,7 +38,7 @@ New here? You do not need to understand the whole tree.
    below applies.
 5. Ask in the issue or the pull request if you are stuck; questions are
    welcome there. Open-ended questions go to
-   [Discussions](https://github.com/VMAFx/vmafx/discussions).
+   [Discussions](https://github.com/vidiko/vmafx/discussions).
 
 Contributions that are not code count too: documentation fixes, bug
 reproductions, [hardware reports](.github/ISSUE_TEMPLATE/hardware_report.yml)
@@ -95,9 +95,11 @@ files it touches. There is no contributor licence agreement. The required
 check **DCO Sign-off** fails a pull request with an unsigned commit; fix a
 branch with `git rebase --signoff origin/master`, then
 `git push --force-with-lease`. Bot commits (Renovate, release automation) are
-exempt. The check applies to pull requests created on or after
-2026-10-09 (the cutoff in `scripts/ci/dco-cutoff.txt`); earlier pull requests
-are grandfathered. Details, the check command and the exact exemptions:
+exempt from sign-off. The sign-off requirement applies to pull requests
+created on or after 2026-10-09 (the cutoff in `scripts/ci/dco-cutoff.txt`);
+earlier pull requests are grandfathered for sign-off, while model and coding
+tool attribution checks run on every pull request. Details, the check command
+and the exact exemptions:
 [DCO sign-off](docs/development/dco.md).
 
 ## Branch naming

@@ -103,8 +103,9 @@ make verify-all
 <!-- markdownlint-disable MD013 -->
 # AGENTS.md — VMAFx
 
-> **CORRECT REPO: `VMAFx/vmafx` (active) — NOT `lusoris/vmaf` (archived)**
-> Fork renamed + transferred. All work, PRs, gh commands -> `VMAFx/vmafx`. Session start: `gh repo set-default VMAFx/vmafx`.
+> **CORRECT REPO: `vidiko/vmafx` (active) — NOT `lusoris/vmaf` (archived)**
+> Moved from `VMAFx/vmafx` on 2026-11-20; the old organisation keeps a rename notice. <!-- old-org-ok -->
+> Fork renamed + transferred. All work, PRs, gh commands -> `vidiko/vmafx`. Session start: `gh repo set-default vidiko/vmafx`.
 
 ## GLOBAL PROJECT RULES (TOP PRIORITY)
 
@@ -171,6 +172,7 @@ make format-check  # dry-run
 ## 9. Reference documentation
 
 - Full reference material: [docs/development/agent-reference.md](docs/development/agent-reference.md) (repository layout, skills table, golden detail, release stages).
+- Read before changing workspace setup or handing off a change: [docs/development/ide-setup.md](docs/development/ide-setup.md) (workspace defaults) and [docs/development/agent-reference.md#agent-integration-contract](docs/development/agent-reference.md#agent-integration-contract) (agent integrations and hand-off).
 
 ## 10. Interaction style
 

@@ -8,6 +8,79 @@ search:
 # Rebase notes
 
 <!-- rebase-notes:fragments:begin (rendered from docs/rebase-notes.d/; do not edit) -->
+## Fatbin compression entry flags (2026-11-20)
+
+- `core/src/check_device_compression.py` reads fatbin entry flags and excludes
+  compressed payloads from raw-code scans. Preserve this check when updating
+  the CUDA build integration.
+
+## Affected test timeouts (2026-11-20)
+
+- `scripts/ci/run_affected_suites.py`: default per-test timeout 300 s and wall
+  cap multiplier `min(4, 1 + max(load1, load5) / CPUs)`; suite overrides win,
+  and suites without a per-test timeout retain the unscaled base cap.
+- `scripts/ci/tests/test_run_affected_suites.py`: timeout and load controls.
+- `docs/development/test-suites.md`: runner timeout behavior.
+- `changelog.d/fixed/affected-tests-load-scaled-cap.md`: release note.
+
+## ROCm image layer pull tokens (2026-11-20)
+
+`scripts/ci/install-rocm-from-image.sh` fetches a registry pull token before
+the manifest and again before each layer attempt. On sync, retain the token
+refresh inside the retry loop and its shared `fetch_token` implementation.
+`scripts/ci/tests/test_install_rocm_from_image.py` checks token exhaustion,
+token endpoint failure and retries with a fresh token.
+
+## Windows SYCL pin (2026-11-19)
+
+Keep the Windows SYCL oneAPI 2026.2.0.661 installer pin and the AOT probe
+before configuration, including the declared refused set. Verify the installer
+size and SHA-256 before extraction; preserve the workflow contract test in
+`scripts/ci/test_windows_sycl_toolset_contract.py`.
+
+## Tester Image as an own-input lane and CPython 3.14.10 licence record (2026-11-16)
+
+- `.github/workflows/docker-publish-tester.yml`: `impact` and the `Tester Image`
+  gate run on `needs.tier.outputs.light == 'true'`, routed by selector
+  `tester_image` on both tiers (ADR-3554). Fork-only workflow, no upstream
+  counterpart. **On sync**: keep both `outputs.light` conditions, which
+  `scripts/ci/tests/test_ci_routing_contract.py` and
+  `scripts/ci/tests/test_required_release_legs.py` guard.
+- `.github/ci-tier.json` (`own_input_lanes`),
+  `.github/workflows/required-aggregator.yml` (`delayedMissing` waiting on
+  active `delayedStrictDependencies` for `notOwed` own-input lanes) and
+  `tools/rc1-tester/image/licensing.json` (`cpython_license_rst["3.14.10"]`)
+  are fork-only files.
+
+## SYCL graph registration has one entry point (2026-11-14)
+
+`fix/issue-3365-sycl-register`. `vmaf_sycl_graph_register_flags()` is the
+only combined-graph registration function; do not reintroduce the flagless
+forwarding shim during an upstream sync. `core/test/test_sycl_init_unwind.cpp`
+wraps only `_flags`, and `core/src/sycl/AGENTS.md` keeps the combined-queue
+allocation before the extractor-table increment. Live comments in
+`core/src/feature/sycl/` name the flags entry point; accepted ADRs and the
+changelog archive keep the historical name.
+
+## Built-in model lengths are `unsigned int` (2026-11-13)
+
+- `core/src/model.c` declares every `src_*_json_len` as
+  `extern unsigned int`, the exact type `xxd -i` emits (no added `const`;
+  C11 6.2.7p2), and types `VmafBuiltInModel.data_len` as
+  `const unsigned int *` so reads stay read-only. Issue #3440 tracks the
+  other xxd declarations that still differ from the generated types.
+  The two buffer readers take the length as `(int)*data_len`, the same cast
+  `core/src/vmafx/model.c` already uses.
+- **On sync**: Netflix's `libvmaf/src/model.c` still declares these as
+  `extern const int`. Keep the fork's `unsigned int` when a port adds a model
+  or conflicts in this block; a new `extern const int ..._json_len` in the
+  table trips `-Wpointer-sign` under `-Dwerror=true`, and on MSVC 19.52 it
+  is warning C4744 under `/LTCG`.
+
+## Merge-base Bandit gate and outgoing scanner snapshots (2026-11-11)
+
+ADR-3530. No rebase impact: the scanner scripts, hook configuration, dependency locks and agent notes are fork-local tooling; no Netflix source, public ABI or golden assertion changes. Preserve the shared revision selection in `scripts/lib/new_scanner_findings.py`, the Bandit configuration in `bandit.yml`, and the paired tests when syncing tooling. Regenerate `scripts/ci/AGENTS-gates.md` from `scripts/ci/AGENTS.d/bandit-new.md`; ADR indexes remain render-only outputs.
+
 ## CI downloads retry connection failures and write to a file first (2026-11-10)
 
 - Netflix-derived `Dockerfile`: keep wget connection and host-resolution retry flags when updating the optional oneAPI key setup from upstream.
@@ -1550,6 +1623,10 @@ rebase or sync keeps `PRAETOR_REF` at `9bf502ec6ce5...` in `.github/workflows/st
 and keeps the seven governance jobs of `lefthook.yml`, `scripts/git-hooks/hiss-audit.sh` and
 `scripts/githooks/state-sync.sh` on `sh .config/lefthook/engine.sh <arguments>`: a side of a
 conflict that calls `praetorctl` or `standardsctl` directly brings back the engine from `PATH`.
+The `Makefile` governance targets (`verify-all`, `compile-context`, `audit`, `hiss-coverage`,
+`dedupe-check`) likewise keep `-include .config/praetor/engine.mk` and `$(PRAETORCTL)`: a side of a
+conflict that calls `standardsctl` there brings back the `PATH` engine, and
+`scripts/ci/tests/test_make_governance_engine_pin.py` fails on it (issue 3468).
 `.config/lefthook/engine.sh` and `.config/praetor/engine.mk` are praetor's text. `praetorctl adopt`
 refreshes each only while it is unedited, so never edit or format them: take them from one side of a
 conflict, or regenerate them with `adopt --lock-source-root=<praetor clone at the pin>` in a

@@ -38,7 +38,7 @@ The script:
 
 The first five files are the three Netflix test pairs of the CPU golden gate
 (normal, checkerboard 1-px, checkerboard 10-px; see section 8 of
-[AGENTS.md](https://github.com/VMAFx/vmafx/blob/master/AGENTS.md) and
+[AGENTS.md](https://github.com/vidiko/vmafx/blob/master/AGENTS.md) and
 [ADR-0024](../adr/0024-netflix-golden-preserved.md)). The cross-backend
 VIF and motion diff jobs that CI runs use them too.
 
@@ -93,7 +93,7 @@ credit notices:
   and skips re-downloading.
 
 The asset is the prerelease
-[`fixtures-pq-sollevante-v1`](https://github.com/VMAFx/vmafx/releases/tag/fixtures-pq-sollevante-v1),
+[`fixtures-pq-sollevante-v1`](https://github.com/vidiko/vmafx/releases/tag/fixtures-pq-sollevante-v1),
 which holds test data only. `make test-netflix-golden` and every CI job that
 runs a test reading the bundle (the golden job, the tox legs and both Coverage
 jobs) fetch it with the `./.github/actions/pq-fixture` action, and a failed
@@ -133,7 +133,7 @@ conversion bypassed and assert bit-exact score equality against x86-64:
   and skips re-downloading.
 
 The asset is the prerelease
-[`fixtures-hdr-ictcp-pixels-v1`](https://github.com/VMAFx/vmafx/releases/tag/fixtures-hdr-ictcp-pixels-v1),
+[`fixtures-hdr-ictcp-pixels-v1`](https://github.com/vidiko/vmafx/releases/tag/fixtures-hdr-ictcp-pixels-v1),
 which holds test data only. Every leg running HDR pin tests fetches it, and a
 failed download fails the job. CI keeps the bundle in its own cache entry, keyed
 on the sha that `scripts/test/fetch-test-yuvs.sh --print-bundle-sha hdr-ictcp-pixels-v1` prints.
@@ -201,9 +201,33 @@ the `FIXTURES` array in `scripts/test/fetch-test-yuvs.sh`.
   [backend performance baselines](backend-perf-baselines.md).
 - `python/test/resource/yuv/` is the directory this script fills.
 
+## Symbolic-link fixtures
+
+Windows volumes or filesystem filter drivers that reject symbolic links
+(`WinError 87`) and Windows hosts without the symbolic-link privilege
+(`WinError 1314`) fail link creation with `OSError`. Under HISS-21, test
+fixtures in `scripts/ci/tests` probe the target directory before creating a
+link and skip with a reason naming the probe error when the directory rejects
+links:
+
+- **Python (`scripts/ci/tests/test_*.py`):** import
+  `from scripts.ci.tests import symlink_test_support as links` and call
+  `links.skip_without_symlinks(<dir>)` inside the function that creates the
+  link, before its first `Path.symlink_to` or `os.symlink` call, passing the
+  directory that receives the link.
+- **Shell (`scripts/ci/tests/test-*.sh`):** source
+  `scripts/lib/symlink-probe.sh` and guard each link case above `ln -s` with
+  `if reason=$(symlink_probe "<dir>"); then ... else echo "SKIP: <case name>: cannot create a symbolic link in <dir>: $reason"; fi`.
+
+The contract test `scripts/ci/tests/test_symlink_test_support.py` scans every
+`scripts/ci/tests/test_*.py` and `scripts/ci/tests/test-*.sh` file and fails on
+any unguarded symbolic-link fixture. An `ln -s` counts as guarded only inside
+the `then` branch of an `if` whose condition calls `symlink_probe`. No Windows
+CI leg runs `scripts/ci/tests` today.
+
 ## Related
 
-- [AGENTS.md](https://github.com/VMAFx/vmafx/blob/master/AGENTS.md)
+- [AGENTS.md](https://github.com/vidiko/vmafx/blob/master/AGENTS.md)
   section 8: Netflix golden-data gate rule
 - [ADR-0024](../adr/0024-netflix-golden-preserved.md): Netflix golden tests
 - [ADR-0493](../adr/0493-test-yuv-fixture-md5-verification.md): rationale for

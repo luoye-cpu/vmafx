@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from scripts.ci import ci_escalate, ci_tier
 
-REPO = "VMAFx/vmafx"
+REPO = "vidiko/vmafx"
 SHA = "a" * 40
 
 
@@ -225,16 +225,23 @@ class OwesFullSuite(unittest.TestCase):
         "PR_LABELS": "[]",
     }
 
+    @staticmethod
+    def _fetch_label(label: str) -> ci_tier.Fetcher:
+        def fetch(path: str) -> object:
+            return [] if "/files" in path else [{"name": label}]
+
+        return fetch
+
     def test_the_full_label_escalates(self) -> None:
-        fetch = lambda path: [{"name": "ci: full"}]  # noqa: E731
+        fetch = self._fetch_label("ci: full")
         self.assertTrue(ci_escalate.owes_full_suite(self.ENV, fetch, ci_tier.DEFAULT_CONFIG))
 
     def test_an_unrelated_label_does_not(self) -> None:
-        fetch = lambda path: [{"name": "dependencies"}]  # noqa: E731
+        fetch = self._fetch_label("dependencies")
         self.assertFalse(ci_escalate.owes_full_suite(self.ENV, fetch, ci_tier.DEFAULT_CONFIG))
 
     def test_a_cut_label_on_an_ordinary_pull_request_does_not(self) -> None:
-        fetch = lambda path: [{"name": "autorelease: cut"}]  # noqa: E731
+        fetch = self._fetch_label("autorelease: cut")
         self.assertFalse(ci_escalate.owes_full_suite(self.ENV, fetch, ci_tier.DEFAULT_CONFIG))
 
 

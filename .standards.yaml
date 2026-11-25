@@ -1,7 +1,7 @@
 ---
 version: 1
 repository:
-  owner: vmafx
+  owner: vidiko
   name: vmafx
   forge: github
   default_branch: master
@@ -182,31 +182,31 @@ exceptions:
     path: "core/src/interop/pelorus_deband_params.c"
     category: "A"
     entered: "2026-11-02"
-    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of VMAFx/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
+    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of vidiko/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
     expires: "2027-01-04"
   - rule: clang-tidy-coverage
     path: "core/src/interop/pelorus_denoise_params.c"
     category: "A"
     entered: "2026-11-02"
-    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of VMAFx/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
+    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of vidiko/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
     expires: "2027-01-04"
   - rule: clang-tidy-coverage
     path: "core/src/interop/pelorus_interop.c"
     category: "A"
     entered: "2026-11-02"
-    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of VMAFx/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
+    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of vidiko/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
     expires: "2027-01-04"
   - rule: clang-tidy-coverage
     path: "core/src/interop/pelorus_qp_report_csv.c"
     category: "A"
     entered: "2026-11-02"
-    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of VMAFx/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
+    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of vidiko/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
     expires: "2027-01-04"
   - rule: clang-tidy-coverage
     path: "core/src/interop/pelorus_version.c"
     category: "A"
     entered: "2026-11-02"
-    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of VMAFx/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
+    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of vidiko/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
     expires: "2027-01-04"
   - rule: clang-tidy-coverage
     path: "core/test/test_colorspace.c"
@@ -224,13 +224,25 @@ exceptions:
     path: "core/test/test_pelorus_interop.c"
     category: "A"
     entered: "2026-11-02"
-    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of VMAFx/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
+    reason: "Category A, interval to the stated expiry. Pelorus interop mirror (pelorus-164-interop-mirror). Byte-identical mirror of vidiko/pelorus (ADR-1113; listed in scripts/ci/pelorus-mirror-paths.txt, which tidy-ratchet.py refuses as a translation unit): tidied in pelorus CI (libpelorus build, test, format, tidy) at the pinned SHA; a fix lands upstream and is re-vendored by scripts/sync-pelorus-interop.sh."
     expires: "2027-01-04"
   - rule: clang-tidy-coverage
     path: "core/test/test_sycl_cuda_serial_upload_lifetime.c"
     category: "A"
     entered: "2026-11-02"
     reason: "Category A, interval to the stated expiry. Built only when -Denable_cuda=true and -Denable_sycl=true together (the regression is the SYCL upload wait on CUDA's serial host-picture path); builds compile it with both backends (.github/workflows/libvmaf-build-matrix.yml:259, tests-and-quality-gates.yml:1400) but no tidy lane (Makefile TIDY_RATCHET_SETUP_cuda / _sycl) enables both; fix = a cuda+sycl tidy lane. Re-reviewed 2026-10-15."
+    expires: "2027-01-04"
+  - rule: clang-tidy-coverage
+    path: "core/test/test_xxd_extern_types.c"
+    category: "A"
+    entered: "2026-11-14"
+    reason: "Category A, interval to the stated expiry. New unit test that compiles the xxd-generated model definitions against their hand-written extern declarations (core/test/meson.build target xxd_extern_definitions); the lanes' measured_sources change only when a tidy baseline is re-measured, and that re-measure adds this file."
+    expires: "2027-01-04"
+  - rule: clang-tidy-coverage
+    path: "core/test/test_xxd_hsaco_extern_types.c"
+    category: "A"
+    entered: "2026-11-14"
+    reason: "Category A, interval to the stated expiry. New unit test that compiles the xxd-generated HIP HSACO definitions against their hand-written extern declarations (core/test/meson.build target xxd_hsaco_extern_definitions); the lanes' measured_sources change only when a tidy baseline is re-measured, and that re-measure adds this file."
     expires: "2027-01-04"
   - rule: clang-tidy-coverage
     path: "core/tools/compat/win32/getopt.c"

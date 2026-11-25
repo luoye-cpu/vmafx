@@ -11,6 +11,10 @@
 #     (a native arm64 host, two hours of GPU-toolkit builds) cost too much per pull
 #     request; the Dockerfile stage contract tests cover the GPU stages in the
 #     meantime (ADR-1595)
+#   - this lane runs in the light CI tier too (ADR-3554, `own_input_lanes` of
+#     .github/ci-tier.json): a pull request from this repository builds the amd64
+#     image when selector `tester_image` is set, and passes without building when
+#     nothing it reads changed; the other full-tier lanes stay with the master push
 #   - every push to master, routed the same way: build, run the documented
 #     `docker run` line and validate the report; nothing is pushed
 #   - nightly schedule, 00:29 UTC (ADR-1701): master's head, the amd64 image only,
@@ -25,11 +29,11 @@
 #     source is that commit with this ref's build recipe (ADR-1347)
 #
 # Produces (only on dispatch):
-#   ghcr.io/vmafx/vmafx:<git describe of the source commit>-tester
+#   ghcr.io/vidiko/vmafx:<git describe of the source commit>-tester
 #   (linux/amd64 + linux/arm64; `v1.0.0-rc.2-tester` for the tagged commit itself)
-#   ghcr.io/vmafx/vmafx:<...>-tester-source: the corresponding source of the
+#   ghcr.io/vidiko/vmafx:<...>-tester-source: the corresponding source of the
 #   image's copyleft parts (Dockerfile target source-export, ADR-1503)
-#   ghcr.io/vmafx/vmafx:<git describe of the source commit>-tester-sycl,
+#   ghcr.io/vidiko/vmafx:<git describe of the source commit>-tester-sycl,
 #   -tester-cuda and -tester-hip (linux/amd64: the Intel, NVIDIA and AMD GPU kits,
 #   targets final-sycl, final-cuda and final-hip of the same Dockerfile, jobs
 #   build-gpu and publish-gpu, each with its source image <...>-tester-<kit>-source)
@@ -59,6 +63,9 @@ on:
   pull_request:
     branches: [master]
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+    branches: [master]
   push:
     branches: [master]
   # Nightly build and test of master (ADR-1701). Ends, at the job timeouts, before
@@ -86,7 +93,7 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: vmafx/vmafx
+  IMAGE_NAME: ${{ github.repository_owner }}/vmafx
   PUBLISH_TAG: ${{ github.event.inputs.tag }}
   SOURCE_REF: ${{ github.event.inputs.ref }}
   # Layer compression of every image this workflow pushes (ADR-1594): zstd at
@@ -106,9 +113,10 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/ci-tier.yml
 
+  # ADR-3554: own-input lane; selector `tester_image` is own_paths_only on both tiers.
   impact:
     needs: tier
-    if: needs.tier.outputs.full == 'true'
+    if: needs.tier.outputs.light == 'true'
     name: Plan tester image impact
     runs-on: ubuntu-26.04
     timeout-minutes: 10
@@ -505,14 +513,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # The required context (ADR-1687). `build` needs `validate` and `refs-x86`, so it
-  # is skipped when either fails or when the planner selected nothing: only a
-  # selected run whose build (every matrix leg) passed, or an unselected run, passes.
-  # The GPU images and the publish jobs never run on a pull request and are not
-  # part of it.
+  # The required context (ADR-1687, ADR-3554). `build` needs `validate` and
+  # `refs-x86`, so it is skipped when either fails or when the planner selected
+  # nothing: only a selected run whose build (every matrix leg) passed, or an
+  # unselected run, passes. Runs on both the light and full tiers via
+  # `own_input_lanes` of .github/ci-tier.json. The GPU images and the publish jobs
+  # never run on a pull request and are not part of it.
   tester-image:
     needs: [tier, impact, build]
-    if: always() && needs.tier.outputs.full == 'true'
+    if: always() && needs.tier.outputs.light == 'true'
     # required-aggregator
     name: Tester Image
     runs-on: ubuntu-26.04
@@ -534,6 +543,9 @@ jobs:
             true:success|false:skipped) ;;
             *) echo "::error::invalid tester image gate state selected=$SELECTED work=$WORK_RESULT"; exit 1 ;;
           esac
+          if [ "$SELECTED" = false ]; then
+            echo "::notice::Tester Image skipped: selector tester_image matched no changed path"
+          fi
 
   publish:
     name: Publish tester image
@@ -605,7 +617,7 @@ jobs:
       - name: Verify what was just signed
         run: |
           cosign verify \
-            --certificate-identity-regexp '^https://github.com/VMAFx/vmafx/\.github/workflows/docker-publish-tester\.yml@refs/(heads/master|tags/v.*)$' \
+            --certificate-identity-regexp '^https://github.com/vidiko/vmafx/\.github/workflows/docker-publish-tester\.yml@refs/(heads/master|tags/v.*)$' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.index.outputs.digest }}"
           {
@@ -677,7 +689,7 @@ jobs:
         run: |
           verify() {  # subject, predicate type; the attestation index can lag a few seconds
             for _ in 1 2 3 4 5 6; do
-              gh attestation verify "oci://${IMAGE}@$1" -R VMAFx/vmafx \
+              gh attestation verify "oci://${IMAGE}@$1" -R vidiko/vmafx \
                 --predicate-type "$2" && return 0
               sleep 10
             done
@@ -737,8 +749,10 @@ jobs:
     # Not on a pull request: three toolkit images are up to six hours of runner time
     # (ADR-1595). The push to master that merges the change runs them, and the
     # Dockerfile stage contract test checks the stages meanwhile. Not on the nightly
-    # schedule either (ADR-1701): it builds the amd64 CPU image only.
-    if: github.event_name != 'pull_request' && github.event_name != 'schedule'
+    # schedule either (ADR-1701): it builds the amd64 CPU image only. Not on a merge
+    # group either, for the same cost (ADR-3556); the push to master after the queue
+    # merges the group runs them.
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group' && github.event_name != 'schedule'
     runs-on: ubuntu-26.04
     timeout-minutes: 120
     strategy:
@@ -1044,7 +1058,7 @@ jobs:
           VENDOR: ${{ matrix.vendor }}
         run: |
           cosign verify \
-            --certificate-identity-regexp '^https://github.com/VMAFx/vmafx/\.github/workflows/docker-publish-tester\.yml@refs/(heads/master|tags/v.*)$' \
+            --certificate-identity-regexp '^https://github.com/vidiko/vmafx/\.github/workflows/docker-publish-tester\.yml@refs/(heads/master|tags/v.*)$' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "${IMAGE}@${DIGEST}"
           {

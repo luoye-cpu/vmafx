@@ -9,6 +9,7 @@ import base64
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import struct
@@ -223,7 +224,7 @@ def test_a_recorded_tree_passes_and_carries_its_texts(tmp_path: Path) -> None:
     assert notices_then_check(args) == []
     licences = Path(args.root) / "licenses"
     text = (licences / lic.NOTICES_NAME).read_text()
-    assert "https://github.com/VMAFx/vmafx/tree/c0ffee" in text and "the image t1-source" in text
+    assert "https://github.com/vidiko/vmafx/tree/c0ffee" in text and "the image t1-source" in text
     assert "  tar 1.35-1  source tar=1.35+dfsg-1 glibc=2.41-1" in text
     assert "libquadmath-1234.so.0: LGPL-2.1-or-later; source gcc.src.rpm" in text
     assert (licences / "texts/EUPL-1.2.txt").read_text() == "EUPL text\n"
@@ -685,11 +686,12 @@ def source_repo(tmp: Path) -> tuple[Path, str]:
     """A local git repository with one commit (the test stand-in for TheRock)."""
     repo = tmp / "upstream"
     write(repo / "patches/numactl/0001.patch", "patch\n")
+    environment = dict(lic.git_environment(), GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
 
     def git(*argv: str) -> str:  # never the caller's repository, even under a git hook
         """Run a git command in the upstream test repository and return stripped stdout."""
         done = subprocess.run(["git", *argv], cwd=repo, check=True, capture_output=True, text=True,
-                              env=lic.git_environment(), timeout=GIT_TIMEOUT_S)  # fmt: skip
+                              env=environment, timeout=GIT_TIMEOUT_S)  # fmt: skip
         return done.stdout.strip()
 
     git("init", "-q")
@@ -786,6 +788,29 @@ def test_every_artifact_records_its_interpreter_and_core_components() -> None:
             assert "python-dist" in kinds, kind
         elif not shape.startswith("release-"):  # an image: its distribution's packages
             assert "dpkg" in kinds, kind
+
+
+def test_cpython_31410_is_recorded_for_tester_and_production_server_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = lic.load_manifest()
+    assert data["artifacts"]["image"]["python"]["version"] == "3.14.10"
+    assert data["artifacts"]["production-server-image"]["python"]["version"] == "3.14.10"
+    assert data["artifacts"]["published-rc-server-image"]["python"]["version"] == "3.14.7"
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(lic, "download", lambda url, dest, sha: calls.append((url, dest.name, sha)))
+    args = argparse.Namespace(artifact="image", python_version="3.14.10", out=str(tmp_path / "out"))
+    lic.fetch_texts(args, data)
+    assert (
+        "https://raw.githubusercontent.com/python/cpython/v3.14.10/Doc/license.rst",
+        "cpython-license.rst",
+        "8a7329b25131f64b2bea284155f0824876b1af9f4a2f970e6335751d97dfa6dd",
+    ) in calls
+    unrecorded = argparse.Namespace(
+        artifact="image", python_version="3.14.99", out=str(tmp_path / "bad")
+    )
+    with pytest.raises(lic.LicensingError, match="no cpython_license_rst entry for Python 3.14.99"):
+        lic.fetch_texts(unrecorded, data)
 
 
 def test_the_record_allows_every_licence_the_repo_files_declare() -> None:
@@ -982,7 +1007,7 @@ def windows_sycl_tree(tmp: Path) -> argparse.Namespace:
     args.artifact = "windows-sycl-zip"
     root = Path(args.root)
     for directory in ("build/tools", "tests"):
-        for name in ("sycl8.dll", "ur_loader.dll", "ur_adapter_level_zero.dll", "libmmd.dll",
+        for name in ("sycl9.dll", "ur_loader_shared.dll", "ur_adapter_level_zero.dll", "libmmd.dll",
                      "umf.dll", "libhwloc-15.dll", "ze_loader.dll", "vcruntime140.dll",
                      "msvcp140.dll"):  # fmt: skip
             write(root / directory / name, "MZ")
@@ -1010,6 +1035,15 @@ def windows_sycl_tree(tmp: Path) -> argparse.Namespace:
 def test_the_windows_sycl_zip_record_passes_and_refuses_planted_defects(tmp_path: Path) -> None:
     args = windows_sycl_tree(tmp_path)
     data = lic.load_manifest()
+    spec_path = REPO / "tools/rc1-tester/image/sycl-runtime-windows.json"
+    runtime = json.loads(spec_path.read_text(encoding="utf-8"))
+    record = lic.artifact_record(data, args.artifact)
+    recorded_paths = {
+        component["id"]: component.get("paths", []) for component in record["components"]
+    }
+    for component in runtime["components"]:
+        paths = [f"{dest}/{name}" for dest in component["dests"] for name in component["names"]]
+        assert sorted(recorded_paths[component["id"]]) == sorted(paths)
     assert notices_then_check(args, data) == []
     root = Path(args.root)
     notices = (root / "licenses/THIRD_PARTY_NOTICES.txt").read_text()

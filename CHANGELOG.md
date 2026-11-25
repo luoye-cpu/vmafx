@@ -31,6 +31,12 @@
 - **Packaged Rust crate checks.** Bundle the documentation headers in `vmafx-sys` and check both Rust crate archives for size, uncompressed extraction limits, standalone docs.rs builds without GPU tools, and header drift, in Rust CI and as a pre-commit hook (#2320). Publish missing crate versions in dependency order from protected release tags via uncredentialed dry-run verification and `--no-verify` publication, with bootstrap-token-to-OIDC authentication (ADR-3399).
 
 
+- **VMAFx encode packages and torcul.** A new architecture page,
+  [`docs/architecture/torcul-capability-map.md`](docs/architecture/torcul-capability-map.md),
+  maps five VMAFx Go encode packages to their planned Rust counterparts in
+  torcul and lists the conditions for retiring each Go package (#2320).
+
+
 - **API documentation coverage check.** `scripts/ci/check_api_doc_coverage.py` mechanically enforces that every public VMAFx symbol (including `vmafx_*` functions, `Vmafx` types, and `VMAFX_*` enum constants and macros) declared in `core/include/vmafx/*.h` is reachable in `docs/api/` (#2436).
 
 
@@ -44,6 +50,34 @@
   every staged ELF file's GLIBC, libstdc++ (GLIBCXX) and CXXABI symbol versions
   before publication. Existing x86-64 download names stay available
   ([installation](docs/getting-started/index.md#release-download)).
+
+
+- **Pull-request titles are checked in CI by the existing squash-message gate, and the
+  `type:*` label now derives from the declared types (#2750).** The title becomes the
+  subject of the squashed commit on `master`, and the required `DCO Sign-off` job
+  already checked that subject on every pull request via
+  `scripts/ci/squash_message.py check` — but the composed subject `<title> (#N)` let
+  two defects through that the pinned engine cannot see: a title with an empty
+  conventional subject (`fix:`) passed once the `(#N)` suffix filled the description
+  slot, and a type the hook refuses because `.pre-commit-config.yaml` does not declare
+  it (such as `style`) passed on the engine's own type list. The check now refuses
+  both, alongside the hook's own refusals (unknown type, missing delimiter, breaking
+  change without `!` or `Migration:`). The PR-type label workflow drops its own copy
+  of the type list and labels through the new `squash_message.py emit-label`, which
+  reads `declared_types()` and prints `type:<type>`; `.github/release.yml` gains
+  `type:feat`/`type:fix` section aliases, drops the `type:security`/`type:style`
+  entries (no pull request has ever carried either label), and `docs/principles.md`
+  names the CI check next to the hook.
+
+
+- **The toolchain probe now pairs the MinGW cross runtime with the compiler's thread model, not only its
+  presence (#3307).** The new `x86_64-w64-mingw32-gcc` entry prints the driver's `Thread model:` line, resolves
+  `libstdc++-6.dll` / `libgcc_s_seh-1.dll` with `gcc -print-file-name` (never a path rebuilt from `-dumpversion`,
+  which Debian's flavoured drivers report as `13-win32`), exits non-zero when a resolution fails, and
+  `objdump -p`-asserts the runtime's import table against the detected model — a win32-model driver next to a
+  `libwinpthread`-importing runtime refuses instead of pasting green evidence. The probe reports tool absence as
+  exit 0; only a found driver whose runtime cannot be resolved or whose flavour contradicts the model fails.
+Contributed by luoye-cpu.
 
 
 - **`adm_cuda` evaluates two viewing distances in one instance (ADR-2795).**
@@ -466,6 +500,13 @@
   with no entry, and an entry path that is gone. See ADR-2485.
 
 
+- **DCO sign-off check before every push.** The `dco-sign-off` pre-push hook
+  runs `scripts/ci/check-dco.py --merge-base origin/master` on the commits a push
+  adds, so a commit that never passed the local commit-msg hook, such as a
+  review bot's suggestion pulled from the pull request branch, stops locally
+  instead of turning the DCO job red. See `docs/development/dco.md`.
+
+
 - Added the required check `DCO Sign-off`: every commit of a pull request must
   carry a `Signed-off-by:` line (`git commit -s`; `git rebase --signoff` fixes a
   branch). Renovate, Dependabot and GitHub Actions bot commits in their own pull
@@ -632,6 +673,12 @@
 - **Per-platform install tables.** Document installation routes, commands, status, and GPU backend support per platform in Getting Started ([#2319](https://github.com/VMAFx/vmafx/issues/2319)).
 
 
+- Agents: `.config/lane-brief.yaml` makes the lane launcher refuse a vmafx review
+  brief that lacks `Write nothing in the worktree` or `return: final message only`,
+  so a review job can no longer spend its run and then end in the rc 79 worktree
+  guard (ADR-3553).
+
+
 - **Mini retrain and a resumable stage runner for the retrain tooling** (ADR-1898, issue #1246).
   `make mini-retrain` runs extraction, feature checks, combination, training and export of
   `vmaf_tiny_v2` to `v4` and `fr_regressor_v1`, validation, registry validation and a PLCC / SROCC / RMSE
@@ -659,6 +706,17 @@
 
 
 - **The scoring node takes container inputs and a time window**: `.mkv`, `.mp4` and other inputs ffmpeg reads are decoded by the node's ffmpeg into a Y4M pipe and scored, with no temp file; the new job fields `window_start` and `window_duration` score a sample without decoding the whole clip ([ADR-3370](docs/adr/3370-node-container-decode.md)).
+
+
+- **Smoke-test `vmafx-node:<tag>-sycl` for `VMAFX_BACKEND=sycl` on publish.**
+  `docker-publish-operator-node.yml` now runs
+  `scripts/release/smoke-published-image.sh` with kind `node-sycl` on the
+  published `-sycl` digest after signature verification. It inspects
+  `Config.Env` of the pulled image and refuses a tag lacking the exact
+  `VMAFX_BACKEND=sycl` entry (missing or set to another value), checks the
+  `/usr/local/bin/vmafx-node` entrypoint, `--version` and the FUSE mount, and
+  prints the GPU skip reason instead of passing SYCL scoring silently
+  (`scripts/release/tests/test-smoke-published-image.sh`).
 
 
 - **`ghcr.io/vmafx/vmafx-node:<tag>-sycl` scores on Intel GPUs (ADR-3371).**
@@ -835,6 +893,9 @@
   the `VmafxError` and `VmafxPending` exceptions, and the Python 3.12 floor; PyPI
   wheels are not published yet
   ([Python package](docs/usage/python-package.md)).
+
+
+- Merge-queue fork admission: read-only reviewed-head admission verdict (`admit-fork`), `fork_reviewers` train policy, and post-enqueue `queue-audit` verification in `scripts/dev/merge_train_guard.py` (ADR-3610).
 
 
 - **The tester report states what executed (ADR-3381).** Report schema 4 adds `executed_dispatch` (the SIMD level the library reported for the default and the scalar-masked run of each fixture, checked against the host's expectation; a mismatch or a silent library fails the verdict), and `library` (library pair `libvmafx.so.1` or `libvmaf.so.3`, provenance digest, conformance mode). Schema 1 to 3 reports stay valid. The host flag table now follows the library's CPU rules (AVX2 needs FMA and BMI; `avx512icl` added).
@@ -1046,6 +1107,9 @@
 - **Add `scripts/dev/upstream_pr_sweep.py`, one tracked tool that rebases, builds and tests the fork's open upstream pull requests.** It is dry-run by default, refuses heads the fork does not own and dirty worktrees, and pushes only with a lease to the contribution fork's own branches ([docs](docs/development/upstream-pr-sweep.md)). Every git it starts drops the repository-locating `GIT_*` variables and the caller's `git -c` overrides, and `scripts/git-hooks/framework-hooks.sh` now runs pre-commit without `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and the object-directory variables, so a hook-run fixture can no longer write into the caller's repository.
 
 
+- Upstream contribution branches: offline pre-push checks for patch shape, tests, attribution, merge conflicts, stale draft IDs, signatures, target paths, and self-review evidence (ADR-3559).
+
+
 - **vmaf-tune introduces content-aware video classification ([ADR-0618](docs/adr/0618-content-aware-classifier.md), [ADR-3374](docs/adr/3374-vmaf-tune-classifier-vision-fails-by-name.md)).**
   `vmaf-tune classify` extracts ITU-T P.910 spatial information (SI) and temporal
   information (TI) via FFmpeg `siti`, probes container geometry and dynamic range
@@ -1247,7 +1311,23 @@
   and refuses other presets (`recommend-saliency` exits with code 2 and a one-line error).
 
 
+- Remove the unimplemented `pkg/ai.Registry.InferDirect` stub, its
+  `ErrDirectInferNotImplemented` sentinel and its unit test. Q-132 settled on
+  the `vmafx-ort-runner` subprocess as the single ONNX integration, so
+  inference is exposed only through `Registry.Infer` (#2455).
+
+
 - **Run the MS-SSIM decimate and SSIMULACRA 2 PTLR bit-exactness checks on Windows.** The two Windows skips (`TODO(ms-ssim-mingw)`, `TODO(ssimulacra2-ptlr-mingw)`) are stale: the scalar references already get a correctly-rounded fma on every compiler — the PTLR test TU is compiled with `-mavx2 -mfma` (gcc inlines `fmaf` as hardware `vfmadd`; the binary contains no `fmaf` libcall), and the decimate scalar uses `vmaf_fmaf_exact`, whose double detour is correctly rounded on every in-range input we swept. Without `-mfma`, mingw-w64's static software `fmaf()` deviates from correctly-rounded on 28.1% of the tests' input grids (1-ulp errors) — the skips' premise was right about the libm, but the build and the decimate scalar had already routed around it. Both tests pass on Windows (`test_ms_ssim_decimate` 10/10, `test_ssimulacra2_simd` 13/13 including all five PTLR cases, MinGW-w64 gcc 16.2), so both skips are removed. Closes VMAFx/vmafx#2886.
+
+
+- **The four Coverage Gate Python shards share one pytest argument file.**
+  `scripts/ci/pytest-coverage-shard.args` replaces the repeated inline lists in
+  `tests-and-quality-gates.yml`.
+
+
+- Refresh dependency locks automatically on update branches; the DCO
+  exemption covers only live entries among the 30 exact paths listed in
+  `.config/lint-exceptions.d/dco-python-lock-refresh.toml`.
 
 
 - **The `actionlint` hook and `make lint-actions` cannot hang
@@ -1320,6 +1400,20 @@
   `docs/development/api-generation.md` now names the import layout table,
   the FFmpeg and GStreamer format headers, `docs/usage/pixel-formats.md` and
   the Q30 RGB coefficient table that `scripts/codegen/vmafx-api.py` writes.
+
+
+- **New Bandit findings in changed Python files now fail at pre-commit and pre-push, before Codacy sees them.**
+  The `bandit-new` hook (`scripts/ci/check_bandit_new.py`) runs Bandit with the 56 Codacy-enabled
+  patterns in `bandit.yml` and reports only findings the merge-base copy of the file does not carry,
+  so moved lines and Git-detected renames keep their old findings. Pre-push scans the outgoing
+  commit rather than local edits. Separate `bandit-new-push` and `flawfinder-new-push` hooks use
+  `--outgoing` to scan the full pre-push merge-base delta without framework filenames, including
+  docs-only follow-up pushes and files absent from the worktree. Configuration changes scan all
+  tracked Python files with each revision's pattern list only in the invocation that selects
+  `bandit.yml`, avoiding repeated full scans across partitioned file lists; Python stubs, Python
+  executables and PEP 263 encodings are supported. The default comparison follows `origin/HEAD`,
+  falling back to `origin/master`. A `# noqa` comment does not silence it. The flawfinder gate
+  shares the same merge-base comparison (`scripts/lib/new_scanner_findings.py`).
 
 
 - **One encoder registry feeds the Go and the Python tuners
@@ -1458,6 +1552,18 @@
   ([ADR-3384](../docs/adr/3384-ci-queue-burst-renovate-schedule.md)).
 
 
+- **CI tier escalates own pull requests touching platform process-launch paths
+  to `full` ([ADR-3536](docs/adr/3536-ci-tier-full-paths.md)).**
+  `.github/ci-tier.json` adds `full_paths` (`fnmatch.fnmatchcase` globs) for
+  platform-guarded process-launch modules and their tests so unlabelled own
+  pull requests touching them run the full cross-platform suite, fail closed to
+  `full` when changed paths are unavailable or any file or label API entry is
+  malformed, and check `full_paths` against `git ls-files` via
+  `scripts/ci/ci_tier.py --check-full-paths` with repository-locating `GIT_*`
+  variables dropped and only an absolute `GIT_INDEX_FILE` kept for this
+  checkout.
+
+
 - **CI runs the tier a pull request owes, not the whole suite on every push
   ([ADR-2169](docs/adr/2169-ci-fewer-runs.md)).** A pull request from this repository
   (Renovate included) runs lint, format, the fast suite and the governance gates; the
@@ -1549,7 +1655,18 @@
   and border tap logic (HISS-19); scores and compiled SASS are unchanged.
 
 
+- **DCO attribution check covers commit identities and pull request bodies.** Pull requests and landed commits now refuse model or coding tool tokens in author and committer identities, plus banned co-author lines and generated attribution in commit messages. Pull request bodies follow the same line rules; local checks accept `--pr-body-file PATH` or `PR_BODY`.
+
+
 - `Dev Container Build` runs on light-tier pull requests that change the image's own inputs (`dev/**`, `.dockerignore`, `build-config.env`, the workflow and its build scripts); other light pull requests pass it with a notice naming the reason, and the full tier and the master push keep building the image for every input it copies (ADR-3338).
+
+
+- **Ubuntu development images install packages from one dated archive snapshot
+  ([ADR-3541](docs/adr/3541-dev-image-apt-snapshot.md)).** The plain, CUDA and
+  SYCL images read `UBUNTU_APT_SNAPSHOT` from `build-config.env`, and Renovate
+  proposes a new timestamp weekly for manual review. The certificate bootstrap
+  remains the only installation from the live Ubuntu archive; CUDA and oneAPI
+  vendor repositories keep their separate version policies.
 
 
 - **Dev container: the Vulkan loader and lavapipe are in the image.** The
@@ -1575,6 +1692,9 @@
   `git_init()` from `scripts/docs/tests/fixture_repo.py` instead of each
   running `git init` with the caller's `GIT_*` variables stripped inline
   (HISS-19).
+
+
+- Add a local check that reports numeric tokens in PR bodies and replies that are absent from their evidence files.
 
 
 - **Extra compilation-database entries bring three hand-built sources into clang-tidy coverage.**
@@ -1728,6 +1848,9 @@
 - **HDR pins hold 5 decimal places on x86-64 and 3 on aarch64 and macOS.** libvmaf scores identical converted pictures bit-exact on every platform; the zimg conversion to ICtCp rounds differently on aarch64 and macOS, by up to 3.5e-4 on the pooled score. See [HDR models](docs/models/v1.md#hdr-models).
 
 
+- Narrow heavy-job `ninja` link steps to consumed targets when a matching Builds matrix row is active, keeping full compilation (ADR-3625).
+
+
 - **The chart no longer sets `VMAFX_BACKEND` on the scoring server.** The
   server's Deployment, StatefulSet and Job carried it, but `vmafx-server`
   never read it: it takes its backend from each request's `backend` score
@@ -1805,11 +1928,20 @@
 - **The Windows icx-cl and icpx builds no longer print an override warning on every compile.** The strict floating-point line of `intel-llvm-cl` is `/fp:precise /clang:-fno-fast-math /clang:-fcomplex-arithmetic=full /clang:-ffp-contract=off` instead of `/fp:precise /Qfma-`, and the SYCL compiles and device link of the MSVC build take the `-fno-fast-math -fcomplex-arithmetic=full` reset the Linux icpx already has. Same arithmetic: equal compiler front-end arguments apart from the complex-arithmetic token, equal predefined macros, byte-identical objects and device bitcode ([Research-2170](docs/research/2170-windows-strict-fp-spelling-2026-10-07.md), [ADR-2170](docs/adr/2170-warnings-are-errors-per-leg.md)).
 
 
+- **Lane briefs now carry the checks that missed three defects.** `.config/lane-brief.yaml` makes the lane launcher refuse a `task: fix` brief that lacks the isolated `mypy --no-site-packages --disable-error-code=import-not-found` command, and a `task: review` brief that lacks `grep the test tree for each changed literal` or `build-option change: meson setup`. `scripts/ci/tests/test_lane_brief_config.py` pins the lines and replays planted briefs against the launcher's reader; see [Lane brief requirements](docs/development/agent-reference.md).
+
+
+- **Fix lane briefs now carry a `markdownlint-cli2` check line.** `.config/lane-brief.yaml` makes the lane launcher refuse a `task: fix` brief that lacks `*.md change: markdownlint-cli2`, so every fix brief either names the touched Markdown files linted by the pre-commit hook or records that none apply. `scripts/ci/tests/test_lane_brief_config.py` pins the clause and replays planted briefs against the launcher's reader; see [Lane brief requirements](docs/development/agent-reference.md).
+
+
 - **`M_PI` and `M_E` come from `<math.h>` on every platform (Netflix/vmaf
   `4e150067b`).** The build defines `_USE_MATH_DEFINES` on Windows (MSVC,
   clang-cl, icx-cl and MinGW-w64), and the local copies of the constants
   (fourteen in the feature sources, the SYCL twins included, and four in
   tests) are gone. Scores are unchanged: the copies held the same double.
+
+
+- **GitHub merge-queue `merge_group` support for `Required Checks Aggregator` ([ADR-3556](docs/adr/3556-merge-queue-merge-group.md)).** `required-aggregator.yml` and every workflow that produces a required check owed outside `pull_request` now trigger on `merge_group` (`types: [checks_requested]`, `branches: [master]`) under the `full` CI tier and full impact plan. On `merge_group`, the aggregator exempts `pullRequestOnly` contexts and both OpenSSF Scorecard gates (`Scorecard PR Gate` ran on the pull request; `Scorecard Master Gate` runs on the `master` push after the merge), while publish, Pages, and registry-push steps remain restricted to their existing events.
 
 
 - **Metal feature extractors unwind without `goto`.** Seven Metal host
@@ -2154,6 +2286,9 @@
 - Consolidated duplicated YUV format tables and file lifecycle helpers from `compat/python-vmaf/tools/reader.py` and `writer.py` into `_YuvIoBase`, and extracted local helpers for repeated blocks in `decorator.py`, `misc.py`, and `plot.py`.
 
 
+- **The research radar collector retries HTTP fetches through tenacity 9.2.1.** `scripts/research/radar_collect.py` replaces its hand-written retry loop in `http_fetch` with `tenacity.Retrying` (Apache-2.0), keeping the same three attempts, 1 s / 4 s backoff, retried transport error classes, and `FetchError` reporting.
+
+
 - **The roadmap and release pages list the full RC4 and RC5 scope.**
   [ADR-2342](docs/adr/2342-rc-map-amendment-2026-10.md) records the scope decisions of 2026-10-06 and
   2026-10-07 (RC4 work packages for bindings, the FFmpeg series redesign, input formats, engineering
@@ -2406,6 +2541,9 @@
   +4.2 ms is `T-SYCL-SPEED-COV-EXACT-SEQUENTIAL-COST-2026-10-06` (RC8).
 
 
+- `Tester Image` runs on light-tier pull requests that change the tester image's own inputs (`docker/Dockerfile.tester`, `tools/rc1-tester/**`, `build-config.env`, the toolkit install scripts, the licence inputs and the workflow), the Required Checks Aggregator waits while a selected own-input lane's build jobs run on the light tier, and `tools/rc1-tester/image/licensing.json` records CPython 3.14.10 for the tester and production MCP server images ([ADR-3554](docs/adr/3554-tester-image-own-input-lane.md)).
+
+
 - **The changed-files clang-tidy jobs defer to the lane that measures a file instead of failing
   on it (Q-341, Q-342).** In `Tidy Changed`, a changed file without a command in the CPU build is
   skipped only when a lane's `measured_sources` lists it, or when a live `clang-tidy-coverage`
@@ -2569,7 +2707,28 @@
 - **`enable_zimg` is on by default ([ADR-3396](docs/adr/3396-zimg-on-by-default.md)).** Default builds now include `vmaf_picture_convert` colourspace, bit depth and size conversion via [zimg](https://github.com/sekrit-twc/zimg) >= 2.7, enabling CLI HDR PQ auto-selection (`hdr_vmaf_v1.1.8_3d0h`) out-of-the-box. If `zimg` is missing, `meson setup` halts with an explicit error naming `zimg >= 2.7`, `pkg-config`, and `-Denable_zimg=false`. Opting out via `-Denable_zimg=false` continues to build cleanly without zimg, where HDR conversion returns `-ENOTSUP`. Published images and distribution bundles carry libzimg under WTFPL.
 
 
+### Removed
+
+- **SYCL**: removed the internal flagless `vmaf_sycl_graph_register()`
+  compatibility entry point. `vmaf_sycl_graph_register_flags()` is now the
+  only combined-graph registration function, so every extractor registers
+  with its own `VmafFeatureExtractor` flags.
+
+
+- **CI:** the README no longer shows a Codacy grade badge and the README Badges
+  workflow (`.github/workflows/readme-badges.yml`) no longer reads Codacy, so
+  the workflow stops failing on a source that never answers.
+
+
 ### Fixed
+
+- **Docs:** the Python library page no longer walks readers through the
+  three distribution package-manager blocks (including the `yum` route for
+  old CentOS and RHEL, which the supported install table does not cover);
+  it now points Linux readers at the per-distribution getting-started
+  install guides and keeps the Python-version requirement, the `nasm`
+  2.13.02 floor and the Python headers note (issue 2339).
+
 
 - **CI:** the `FFmpeg vmafx Filter` job fails on any compiler warning and on a build log its warning scan cannot read, so the series' own C code meets the warning gate the other FFmpeg builds already enforce (issue 2477).
 
@@ -2605,6 +2764,30 @@
 - **Score SYCL device frames in a build that also enables CUDA.** `translate_picture()` (`core/src/libvmaf.c`) had no case for a frame in SYCL device memory, so with `-Denable_cuda=true -Denable_sycl=true` the first imported SYCL frame (for example a GL texture through `vmafx_context_import_frame()`) failed with `VMAFX_E_INVALID` (`-EINVAL`). SYCL device frames now go to the SYCL twins in the host slot as HIP device frames do, and a CUDA extractor that would read one is refused with `-ENOTSUP`. `test_live_sycl_textures_without_workers` in `core/test/test_vmafx_window_live.c` failed before the fix.
 
 
+- **`vmaf-tune --near-dup-verify` compares the same one-second window on
+  both sides.** The spot check compared the query source's one-second
+  score with the cached trial's whole-clip aggregate, so an exact
+  duplicate whose first second is easier or harder than its average
+  could be refused, and a different clip could be accepted, on the wrong
+  difference (issue #3343). Both sides now score the cached encode over
+  the same one-second window — the query source and the cached source
+  read from the cached row's `src` column, at the entry's own sample
+  offset for a sample-mode entry. The cached encode decodes through the
+  shared decode path in a temporary directory that closes with the
+  check, and the cached source normalizes through the same
+  reference-decode path the sweep uses for the query leg, so a container
+  decodes there and a raw source at another native geometry scales to
+  the rung target instead of being misread. A cached entry without a
+  readable source path, without a stored `src_sha256`, whose file no
+  longer hashes to that stored hash, or whose decode fails is refused
+  and reuse fails closed; the near-duplicate index still keeps entries
+  at another geometry away from the check (issue #3448, closed as not
+  planned), and the option stays off by default (ADR-3372 decision 5).
+  Unit tests cover the two-leg window, the decode path and the
+  fail-closed cases in `tests/test_near_dup_verify.py` and
+  `tests/test_near_dup_spot_decode.py`.
+
+
 - **HDR10 encodes with `hevc_qsv` Main 10 and `av1_qsv` open again (#3344).**
   The HDR arguments added an output `-pix_fmt p010le` after the `hwupload` filter, so FFmpeg
   tried to convert the uploaded hardware frames back to a software format and the encoder
@@ -2614,6 +2797,26 @@
 
 
 - **Tag raw HDR inputs with colour transfer and primaries:** copy `-color_primaries`, `-color_trc`, `-colorspace`, and `-color_range` from encode options to input options for raw sources so FFmpeg passes colour properties to the encoder (issue 3345). User `--extra-ffmpeg-arg` colour options stay output-only.
+
+
+- **Move the `.cursor/rules/vmafx-workspace.mdc` instructions into the canonical agent documents, so `praetorctl compile-context --verify` no longer refuses an instruction file outside `AGENTS.md`.**
+  Workspace defaults (`.vscode/` tasks, clangd as the only C/C++ language server, `meson setup <build-dir> core`)
+  merge into `docs/development/ide-setup.md`, where the setup steps already live. The agent-integration and
+  hand-off rules move to a new "Agent integration contract" section of `docs/development/agent-reference.md`,
+  which section 9 of `AGENTS.md` already links. `AGENTS.md` gains one pointer line and the hand-written
+  `.mdc` is deleted, so Cursor reads the generated projection instead.
+  `scripts/ci/tests/test_cursor_rules_migration.py` checks the deletion, the canonical sentences,
+  the `AGENTS.md` pointer and the generated projection line without needing `praetorctl`.
+
+
+- **`libaom-av1` `ultrafast` maps to `-cpu-used 8`, the highest value FFmpeg accepts.**
+  The adapter mapped `ultrafast` to 9, which FFmpeg's `libaom-av1` wrapper refuses
+  (`Value 9.000000 for parameter 'cpu-used' out of range [0 - 8]`), so every
+  `ultrafast` encode and the predictor probe that uses it failed at option
+  parsing. The Python adapter, the Go twins (`pkg/encoder` and
+  `pkg/codecadapter`) and the docs now agree on 0..8, a unit test pins every
+  accepted preset inside that range, and the libaom adapter cache version moves
+  to `2` so cached argv from the old mapping is not reused.
 
 
 - **Run active SYCL combined-graph extractors on subsampled frames (#3356).**
@@ -2626,6 +2829,63 @@
 
 
 - **Credits page:** the credits check no longer lets the Netflix VMAF entry's `core/` directory cover every third-party file below it, and under `closest` REUSE precedence it reads a file's own licence header, so the two SSIMULACRA 2 headers are now credited to libjxl and the inherited speed-filter test and four inherited Python `third_party/` files to Netflix VMAF (issue 3370).
+
+
+- **The assertion-density gate now scans C and C++ files that sit directly under `core/src/`, and the `core/tools` subdirectories.**
+  The `git ls-files` pathspecs lacked `:(glob)`, so `core/src/**/*.c` skipped all 31 files directly under `core/src/` (and
+  `core/tools/*.c` pulled in subdirectories by accident). The nine functions over 20 lines in four of the skipped files
+  that had no `assert()` carry one now, and the harness plants an assert-less function directly under `core/src/`, which
+  fails on the old pathspec and is reported on the new one.
+
+
+- **Run the pinned Praetor engine in Makefile governance targets (#3468).** `verify-all`, `compile-context`, `audit`, `hiss-coverage` and `dedupe-check` called `standardsctl` from `PATH` instead of the repository pin; the `Makefile` now includes `.config/praetor/engine.mk` and invokes `$(PRAETORCTL)`, and `scripts/ci/tests/test_make_governance_engine_pin.py` rejects missing or misplaced includes and literal `standardsctl` or `praetorctl` calls.
+
+
+- **Forward `main()` argv and pin timeouts in `test_vmafx_rgb_math_contract`.**
+  `main(argv)` called `unittest.main()` without `argv`, parsing `sys.argv`
+  instead of its own argument list; it now passes `argv=[sys.argv[0], *args]`,
+  and the warm-up test pins `timeout=TIMEOUT` on every compiler call.
+
+
+- **Cache compiler probes, log phases and warm up compilers for
+  `test_vmafx_rgb_math_contract`.**
+  `compile_frame_import` re-ran `is_gnu_gcc` and `probe_c_std` on every call,
+  and a timed-out run reported neither which compiler step stalled nor the
+  Meson test log on the Windows ARM64 MSVC job. `is_gnu_gcc` and `probe_c_std`
+  now cache per resolved compiler executable, and every compiler subprocess
+  logs `start` and `done` phase lines to `stderr` with flushing. The
+  `windows-arm64` job warms the GNU compilers the test resolves (`--warm-up`)
+  before the fast suite and uploads `core\build\meson-logs\testlog.txt` on
+  every non-cancelled run.
+
+
+- **CI:** Install Linux CPU and GPU ONNX Runtime from pinned NuGet packages.
+
+
+- The Windows SYCL tester zip uses the same oneAPI 2026.2 installer as the
+  Windows SYCL CI build for compatibility with MSVC 14.52. The build uses
+  the AOT targets accepted by the installed compiler and reports missing
+  runtime DLLs together
+  ([ADR-3568](docs/adr/3568-windows-sycl-tester-zip-oneapi-2026-2.md)).
+
+
+- **CI:** wait on API rate limits and poll less often (issue 3582).
+
+
+- **The perf regression gate and the external-bench comparison no longer report success for runs that measured nothing.**
+  `scripts/perf/check-regression.py` exits 3 and names a state (`missing`, `failed`, `skipped`,
+  `incomparable`) for every cell it could not compare, including cells from different hardware or a
+  different workload; `--advisory` masks only the regression exit code. `tools/external-bench/compare.py`
+  exits 5 and counts failed wrapper runs per competitor, and `normalise_output` refuses to fill an empty or
+  incomplete wrapper output with zeros (ADR-3611).
+
+
+- **Landed check accepts a release-bot self co-author line** on any landed
+  commit authored by `vmafx-release-bot[bot]` (seen on render commit
+  `800122efd8`), so master `Landed commit messages` stays green (ADR-3624).
+
+
+- **Go security scan:** the node's eBPF binding no longer trips gosec G101 (hard-coded credentials): its bpf2go identifier is `rcloneTracker`, whose generated constant names hold no credential word, and `make lint-go` also scans generated Go files with `.gosec.json` (issue 3630).
 
 
 - **ADR allocator scans open pull request heads to avoid fork PR collisions.**
@@ -2663,10 +2923,24 @@
   must not carry ([adr-workflow](docs/development/adr-workflow.md)).
 
 
+- **Tests:** the affected-tests runner applies a default 300 s per-test timeout
+  when pytest-timeout is installed, and scales its 900 s base wall cap by
+  `min(4, 1 + max(load1, load5) / CPUs)` to account for host load; suites
+  without a per-test timeout retain the unscaled base cap. With plugin autoload
+  disabled it loads pytest-timeout explicitly, and without `SIGALRM` it uses the
+  thread timeout method.
+
+
 - CI: the Required Checks Aggregator waits out GitHub API 5xx answers for 15
   minutes. A longer outage fails the job with `Transient GitHub API failure:`
   instead of an unhandled `HttpError`, so it reads as a rerun and not as a code
   failure.
+
+
+- **CI:** `Required Checks Aggregator` pins check-run producers (`github-advanced-security` for `CodeQL`, `Semgrep OSS` and `gitleaks`; `github-actions` otherwise), scopes the `minCreatedMs` age window to `github-actions` (and missing slugs on `github-actions` names), and waits through the propagation window after SARIF upload jobs so per-SHA code-scanning checks stay visible after draft transitions without masking new failures (pull request 3047, ADR-3539).
+
+
+- **Required Checks Aggregator re-runs on pull-request title and body edits without dropping earlier ready-head build results.** `.github/workflows/required-aggregator.yml` now triggers on `edited` pull-request events, anchors its 2-minute GitHub Actions check-run freshness window at the latest `ready_for_review` timeline event (or `pull_request.created_at` when never a draft), and excludes `rule-enforcement.yml` check suites whose `display_title` does not start with the `"[<pull_request.updated_at>] "` edit-stamp prefix set by `run-name:` while failing closed if `pull_request.updated_at` is missing or no current `Rules` run starts, so gates re-triggered by `rule-enforcement.yml` (`Deliverables Checklist`, `docs/state.md Gate`, `DCO Sign-off`) block merges when an edit turns them red while draft-era runs before ready-for-review remain excluded (ADR-3551). When multiple `Rules` runs share the same one-second edit stamp (in any status), the aggregator also fails closed immediately and asks for another pull-request edit or a commit push. The embedded aggregator script avoids `${{` syntax in comments so `actions/runner` does not convert the 43 KB script into an oversize expression, and `scripts/ci/check-workflow-size.py` now enforces GitHub's 21,000-character expression limit across all workflow files.
 
 
 - CI: the required-checks aggregator of a master push no longer reads the check runs of a scheduled
@@ -2682,6 +2956,21 @@
   ([ADR-3293](docs/adr/3293-aggregator-owed-contexts-must-succeed.md)).
 
 
+- **Same-head pull-request events queue instead of cancelling active merge-gate
+  runs.** `.github/workflows/required-aggregator.yml` and
+  `.github/workflows/rule-enforcement.yml` now enable `cancel-in-progress` only
+  on `pull_request` `synchronize` events: same-head `edited`, `reopened`, and
+  `ready_for_review` aggregator runs wait as pending and repeated pending
+  aggregator runs collapse to the newest, while each `edited` `Rules` run gets
+  its own concurrency group keyed on `github.run_id` (same-second edits sharing
+  an `updated_at` stamp fail closed when an aggregator run lists both `Rules`
+  runs; the later edit's own aggregator run queues behind the earlier one and
+  re-lists them after its own grace unless a third edit replaces that pending
+  run, per ADR-3551 and ADR-3557); a content guard fails superseded required
+  `Rules` jobs, enforced by
+  `scripts/ci/tests/test_master_concurrency_contract.py` (ADR-3557).
+
+
 - **The API generator's format test compares against the pinned
   clang-format.** It ran whichever clang-format was installed, and the hosted
   Linux image's 18.1.3 formats the generated `*_INIT` macros differently from
@@ -2689,6 +2978,9 @@
   now uses only the pinned major (`VMAFX_CLANG_FORMAT` names one explicitly)
   and skips, naming the version it found, otherwise; the Tooling Tests job
   installs the pinned release.
+
+
+- **Fail-closed APT index refreshes.** Pass `--error-on=any` and `-o Acquire::Retries=3` on every `apt-get update` invocation across CI workflows, container builds, and setup scripts so transient DNS or mirror errors retry and fail at index refresh instead of surfacing later during package installation, enforced by `AptUpdateFailClosedContract` ([ADR-3537](docs/adr/3537-apt-update-fail-closed.md)).
 
 
 - **The root `pyproject.toml` explains why black targets Python 3.10.** Black's target is the
@@ -2770,6 +3062,12 @@
   breaks system packages without it (`--user` installs are exempt).
 
 
+- **Changes to shared `scripts/lib` helpers and `scripts/__init__.py` now run the Build workflow's Python test legs.** A test fails when a helper imported by the Python tests is missing from the selector.
+
+
+- **CI:** symbolic-link test fixtures under `scripts/ci/tests` probe the target directory via `symlink_test_support.py` and `scripts/lib/symlink-probe.sh` before creating links and skip with the probe's error on Windows volumes or hosts that reject symbolic links, enforced by `scripts/ci/tests/test_symlink_test_support.py`.
+
+
 - Windows UCRT64 CI: the MSYS2 leg installs `python-setuptools`, which the codegen suite (`test_vmafx_api_generator`) imports, instead of failing on a missing module.
 
 
@@ -2801,6 +3099,12 @@
 
 
 - **Keep Codacy off the compiled agent-context files.** `CLAUDE.md`, `.windsurfrules`, `.cursor/rules/*.mdc`, `.github/copilot-instructions.md`, `.codex/rules.md` and `.gemini/GEMINI.md` are rendered from `AGENTS.md` by `praetorctl compile-context`, so a Codacy finding on them cannot be fixed in place. They are now top-level `exclude_paths` in `.codacy.yml`, and `scripts/ci/tests/test_codacy_config.py` fails when any tracked file carrying the compile marker is not excluded. Codacy's Agentlinter still reads them, because its wrapper scans the whole checkout and only filters results by file.
+
+
+- **CI:** exclude `docs/hardware-reports/index.md` by exact path from Codacy's `markdownlint` engine in `.codacy.yml` alongside `docs/hardware-reports/.markdownlint-cli2.yaml` (Codacy reads only the root `.markdownlint.json`), and fail `scripts/ci/tests/test_codacy_config.py` when nested `markdownlint-cli2` configurations and exact-path Codacy exclusions drift apart.
+
+
+- **Keep Codacy's Ruff off the trees with their own Ruff configuration.** Codacy's Ruff reads only the root `pyproject.toml`, so it reported findings in `ai/`, `dev-llm/`, `mcp-server/vmaf-mcp/`, `tools/rc1-tester/`, `tools/vmaf-roi-score/` and `tools/vmaf-tune/` that their own configurations rule out, such as `PLR2004` in tests. The `ruff-check` hook still lints those trees with their nested configurations. `.codacy.yml` now excludes them from Codacy's Ruff, and `scripts/ci/tests/test_codacy_config.py` fails when that list and the directories holding a nested Ruff configuration drift apart.
 
 
 - **Fifteen code-scanning findings are fixed in code; the provided-feature lookup no longer reads past a full list.**
@@ -2860,6 +3164,9 @@
 - **The coverage jobs give gcov builds the sanitizer legs' test timeout multiplier, and a skipped coverage shard names its cause.** `Coverage Gate`, `Coverage (GPU)` and `make coverage` run the Meson suite with `--timeout-multiplier 3`, as the sanitizer legs do, after `test_integer_adm_simd` reached its 30 s under gcov on master. The step `Assert every Python coverage shard passed` names the earlier step whose failure skipped the shards, and the shard steps set `PYTHONPATH` again (they carried a misspelt key).
 
 
+- **Bound the CUDA out-of-memory test's wait for freed device memory.** The test polls up to 100 times at 50 ms intervals and reports the poll count. Windows skips with a reason if memory remains unavailable after 5 seconds because the driver can retain freed memory until process exit (issue #3277); other platforms still fail the memory-return assertion.
+
+
 - The CUDA out-of-memory test now skips with a reason when the hog does not exhaust memory and identifies failures caused by delayed driver memory return or an unusable picture pair or ring after allocation failure.
 
 
@@ -2868,6 +3175,9 @@
   pictures, so a CUDA picture with another pitch (a frame imported where its
   producer holds it) scored wrong VIF values; it now uses each picture's
   stride.
+
+
+- **DCO checks refuse bot-authored commits outside the bot's own branch before squash landing.** PR and pre-push checks now catch review-bot authors even with a valid human sign-off, explain the landed co-author failure, and suggest re-authoring or dropping the commit. Dependency-bot branches (`BOT_LOGINS`) remain supported in PR and pre-push checks. Render branches of `vmafx-release-bot[bot]` remain supported in PR checks, where the forge reports the bot as the opener; pre-push checks refuse their commits, because that bot is outside `BOT_LOGINS` (ADR-3544).
 
 
 - CI: the `Dev Container Build work` job runs on `ubuntu-26.04` again. A new
@@ -2879,6 +3189,9 @@
 
 
 - **The dev container builds again: ClangBuildAnalyzer is configured with the Ninja generator.** The `build-deps` stage of `dev/Containerfile` installs `ninja-build` but no make program, so CMake's default "Unix Makefiles" generator stopped the ClangBuildAnalyzer build of ADR-3336 and every dev image build failed. The configure now passes `-G Ninja`, and `scripts/ci/tests/test_dev_image_build_stages.py` refuses a CMake configure without a generator in that stage.
+
+
+- **Ubuntu dev images and `scripts/setup/ubuntu.sh`:** install hash-pinned Python build and lint tools into a dedicated virtual environment (`VMAFX_TOOLS_VENV`, `/opt/vmafx-tools` in `docker/dev/ubuntu-26.04*.Dockerfile`), stage `requirements/locks/build.txt` and `dev-linters.txt` via `ARG VMAFX_REPO_ROOT`, validate boolean flags strictly against `true|false`, and build and smoke-test all three Ubuntu dev images in CI when their inputs change (issue 3455, [ADR-3545](docs/adr/3545-dev-image-tools-venv-ci.md)).
 
 
 - **The dev container runs the command it is given and exits.** `dev/scripts/dev-mcp-entrypoint.sh`
@@ -2900,6 +3213,12 @@
 
 
 - Documentation: the FFmpeg commands that make the distorted test clips in `docs/benchmarks.md` and `docs/usage/bench.md` encode with libx264 again (one piped raw video into a decoder that expected raw frames and failed, the other wrote a copy of the reference), and the `vmaf_pre` example of `docs/ai/models/learned_filter_v1.md` gives raw inputs their pixel format and size (#2477).
+
+
+- CI: `docs-render-pr.yml` now runs on every push to `master` in addition to
+  its hourly schedule fallback, so dropped GitHub scheduled runs no longer
+  leave an open render pull request `BEHIND` past the 24-hour render bound
+  (#3462, ADR-3552).
 
 
 - **The documentation site names `https://vmafx.dev/` as its address.** The
@@ -2943,7 +3262,14 @@
   the CLI, and in the context's log callback for the VMAFx API.
 
 
+- **CUDA:** the device compression check reads fatbin entry flags, avoiding
+  false failures when compressed payloads contain raw-code markers.
+
+
 - **CI:** a refused or unreachable connection no longer ends a CI download on the first attempt: curl and wget fetches in shell scripts, workflows and container recipes retry connection and host-resolution failures, the tidy lane's APT downloads retry, and a contract test checks curl and wget fetches for the retry flags and requires retried downloads to write to a file before use.
+
+
+- **Preserve the first FFmpeg patch refresh error.** A temporary checkout cleanup failure is reported alongside the original replay error. Replay Git commands disable automatic maintenance and garbage collection to prevent cleanup races.
 
 
 - **The shared FFmpeg fix series fetches a failed github.com release download via the forge API.**
@@ -2971,6 +3297,12 @@
   encode (two tests failed on that, depending on the order they ran in).
 
 
+- **FIFO helper child exit codes.** Wait up to three seconds for failed FIFO helpers to finish exiting before reporting their exit code, report an unavailable exit code explicitly when that wait expires, and never wait for a helper that already signaled readiness.
+
+
+- Temporary Git test repositories ignore caller global and system configuration, preventing inherited commit-signing defaults from breaking fixtures. The existing static hook rejects Python filters that re-admit caller Git variables or omit configuration isolation ([ADR-3535](docs/adr/3535-fixture-git-config-isolation.md)).
+
+
 - Tests: scratch repositories built after `scripts/lib/clean-git-env.sh` no longer
   start git's automatic maintenance. A commit in such a repository started a
   detached `git maintenance run --auto`, whose repack deleted loose objects while
@@ -2978,6 +3310,9 @@
   `Tooling Tests` failed intermittently with `cp: cannot stat .git/objects/..`. The
   helper now sets `maintenance.auto=false` and `gc.auto=0`, and
   `scripts/ci/test_git_fixture_isolation.py` fails when it stops doing so.
+
+
+- **Fixture isolation check covers underscore Git helpers.** The static fixture-isolation scan now flags repository creation through helpers such as `self._git("init")` and `run_git(["clone", url])`, which its word-boundary pattern skipped; the one fixture it newly flags gains the system-configuration barrier ([ADR-3535](docs/adr/3535-fixture-git-config-isolation.md)).
 
 
 - **Data-only fixture prereleases now carry build provenance.** A
@@ -3033,6 +3368,10 @@
   reads unfinished, instead of failing at once. The jobs API had reported the finished
   `FFmpeg Ubuntu gcc work` leg without a conclusion for a few seconds and failed master
   `baeb82e6f` (`T-CI-GATE-JOBS-API-LAG-2026-10-27`).
+
+
+- **CI:** the Git fixture sentinel reports script failures and checks declared
+  failing tests. Its hook uses the tooling suite dependencies.
 
 
 - CI: artifact steps no longer fail on the Gitea mirror with
@@ -3134,6 +3473,9 @@
   no score changes.
 
 
+- **Intel NEO and Level Zero container and CI fetches read a committed asset lock instead of querying `api.github.com` at build time.** `dev/scripts/fetch-intel-neo.py` now reads `.deb` URLs and SHA-256 digests from `dev/scripts/intel-neo-lock.json` by default (`--write-lock` refreshes it, `.github/workflows/intel-neo-lock-refresh.yml` commits updates on Renovate branches as `vmafx-release-bot[bot]`, `renovate.json` ignores that author email during branch checks, and `scripts/ci/check-dco.py` accepts that signed single-file refresh commit via `dco-bot-opener`), eliminating anonymous GitHub API rate-limit failures in the credential-free `Release Dry Run` GPU image builds ([ADR-3555](docs/adr/3555-intel-neo-lock-file.md)). `dev/Containerfile` now fetches the Level Zero loader `.deb` packages (`libze1`, `libze-dev`) through the same lock instead of unchecked `curl` downloads. `--write-lock` validates the new lock before it replaces the old one. `scripts/ci/check-dco.py --landed` also accepts the single `vmafx-release-bot[bot]` `Co-authored-by:` trailer added when GitHub squashes a `renovate[bot]` pull request that updates `dev/scripts/intel-neo-lock.json` (`dco-landed-release-bot-coauthor`).
+
+
 - Python harness: the per-content fit lines of the subjective-dataset scatter plots
   (`RegressorMixin._least_squares_line()`) no longer raise
   `ValueError: not enough values to unpack` when a group's least-squares line has a
@@ -3157,6 +3499,9 @@
   lacks one.
 
 
+- LLVM installation removes the hosted runner's Microsoft and Azure apt sources before refreshing package lists, avoiding failures when those unrelated repositories rate-limit requests. Both distribution archive and apt.llvm.org installs use the same cleanup as cached apt installs.
+
+
 - CI: the Python lock checker no longer refuses a step before `actions/checkout` that runs
   `jq -c`, `bash -c` or another tool's own `-c` / `-r` / `-e` flag; it reads those flags as a
   requirements file or an editable target only in a pip-like command
@@ -3174,6 +3519,9 @@
 - Build: libvmaf compiles on macOS again. `feature_collector.h` included C++ standard headers
   (through `model.h`) inside an `extern "C"` block, which libc++ rejects with "templates must
   have C++ linkage"; headers are now included before the C-linkage block.
+
+
+- Preserve macOS framework virtual environments when an owned interpreter link shares the resolved executable's directory; retain link and directory ownership checks and the existing protections for every other link.
 
 
 - **The MCP tools advertise and use the library's default model.** `vmaf_score`, `vmaf_score_encoded`
@@ -3208,6 +3556,9 @@
 
 
 - Build: the Windows MinGW-w64 (UCRT64) build links again with link-time optimisation. `VMAFX_EXPORT` no longer expands to an ELF visibility attribute under MinGW GCC, which ignores it and warned at every LTO use; it is empty there, as `VMAF_EXPORT` already was. Exported symbols are unchanged.
+
+
+- **Build:** the Windows ARM64 MSVC build links again on MSVC 19.52. `core/src/model.c` declared the built-in models' `src_*_json_len` lengths as `int`, while `xxd -i` defines them as `unsigned int`; MSVC 19.52 reports that mismatch under `/LTCG` as warning C4744, and `/WX` made it fatal for `vmaf.exe`, `vmafx.exe` and four other binaries. The declarations now use `unsigned int`.
 
 
 - CI: the `Windows MSVC+CUDA` legs of `libvmaf-build-matrix.yml` and `build.yml`
@@ -3256,7 +3607,28 @@
   the cache on.
 
 
+- **CI:** the mypy gate counts repeated findings, so a new occurrence of an inherited error is reported even when its path, code and message match.
+
+
 - CI: Renovate's CI Node.js pull request can pass the dependency-only deliverables exemption and move Node to a new major while the engine-locked documentation workflow keeps its own major until the next engine pin move.
+
+
+- **`vmafx-node` no longer dials an undeployed online-training sidecar, gates
+  `/readyz` on the sidecar when enabled, and supports node-scoped pod affinity
+  in the Helm chart
+  ([ADR-3558](docs/adr/3558-node-sidecar-readiness-gpu-affinity.md)).** The
+  sidecar feedback drainer is now opt-in via `VMAFX_SIDECAR_ENABLED`
+  (`sidecar.enabled`, chart `node.sidecar.enabled`, default `false`), stopping
+  recurring `WARN sidecar not reachable` logs on standard deployments while
+  rejecting invalid boolean values at startup. When enabled, `/readyz` reports
+  `503` unless the drainer holds a live Unix socket connection (with reconnect
+  backoff capped at 15 s so readiness recovers within 30 s). The Helm chart's
+  node `readinessProbe` now queries HTTP `/readyz` on `metrics` (backed by
+  `scorer`, loopback `grpc`, and conditional `sidecar` checks, amending
+  ADR-1094), and `node.affinity` overrides global `affinity` so heterogeneous
+  GPU pools can configure soft scheduling preferences without a hard pin. For
+  Intel Arc pools, use `gpu.intel.com/product` with `Arc_Pro_B60` preferred
+  (weight 100) and `Arc_B580` as fallback (weight 50).
 
 
 - Go tests: the `cmd/vmafx-node` tests that dial the node's listeners start the graph through `startAppWithRetry`, which picks fresh loopback ports and retries up to five times when a reserved port was taken before the graph bound it (`bind: address already in use`); other start errors fail at once.
@@ -3279,6 +3651,12 @@
   `float_psnr` and `ciede` twins up to 15 bits, the `psnr_hvs` twins up to 11
   bits. Before, twins outside the five `picture_copy()` families were accepted
   unmeasured, and the `float_moment` twins returned unscaled moments there.
+
+
+- Correct fork links after the organisation moves and reject obsolete GitHub organisation references with a documented pre-commit check.
+
+
+- **Dev container:** Install ONNX Runtime from the pinned NuGet helper, avoiding unavailable release archives.
 
 
 - **Traces, metrics and logs leave the services when an OTLP endpoint is
@@ -3471,10 +3849,17 @@
   unset.
 
 
+- **CI:** the hourly `docs-render-pr` workflow no longer fails while its render
+  pull request waits in the merge queue.
+
+
 - CI: the scheduled render pull request opener (`scripts/ci/open-render-pr.sh`) acts only on a
   same-repository pull request the release-bot App opened, re-arms auto-merge when the branch is
   already rendered at the master tip, commits a render that adds only new files, and refuses to
   start without `RUNNER_TEMP` (ADR-3373).
+
+
+- **Dependencies:** Renovate groups coupled clang-format pins and Rust workflow toolchain updates with their matching versions.
 
 
 - **Renovate: update packaged Helm subchart archives on Chart.lock changes.**
@@ -3499,6 +3884,9 @@
   The no-reference model (#2166) is a 1.1 item because the live no-reference mode
   (#2413) needs it; the 1.3 row now names the artefact detectors (#2272), ST-GREED
   (#2394) and the decision issue (#2167) instead.
+
+
+- CI: refresh the registry pull token before every ROCm image layer attempt so long installs and retries do not reuse an expired token.
 
 
 - **ROCm container layer downloads retry the entire pipeline.** Mid-stream network
@@ -3570,6 +3958,13 @@
   random on ext4. It now keeps a second link to the stale socket, so the file
   system cannot give its inode number to the server's new socket
   (`ai/sidecar/tests/test_socket_permissions.py`).
+
+
+- **Make published node image smoke-test frames readable.** The FUSE frames
+  folder was created by `mktemp -d` with mode 0700, preventing the nonroot mount
+  container from reading it and causing every `vmafx-node` and
+  `vmafx-node-...-sycl` publish smoke step to fail. The folder is now 0755, and
+  the test stub refuses unreadable folders.
 
 
 - **A stale private-state lock no longer stops every commit hook.** `scripts/githooks/state-sync.sh`
@@ -3754,6 +4149,9 @@
   accepts `yuv420p` and `yuv444p16` only).
 
 
+- **Installed merge-train adapters work outside a checkout.** Releases include the gateway's derived `scripts.lib` dependencies and bind every library hash at launch. Caller and state-directory packages cannot replace release imports; library-only updates create a new release without changing the old one. A relative import, a `scripts.*` import outside `scripts.lib`, or a dynamic `__import__`/`import_module` call now refuses the preview instead of shipping a release that fails to import.
+
+
 - CI: the upstream watchers wait out the delay a GitHub search rate limit states. In run 39123672700
   the FFmpeg HIP hwdec watcher failed on a `search/code` 429 asking to "try again in 84 s" after two
   backoff steps of 15 s and 30 s. `scripts/ci/upstream_watch_count.sh` now sleeps the stated delay
@@ -3797,6 +4195,9 @@
   ADR-3295 checks the head out to run `make docs-render-check`; the checkout of a name that is no commit
   failed, so the pre-push hook refused every render-only pull request with "cannot check out
   validator-head". The validator's git shim now checks out the commit it runs on.
+
+
+- **vmaf-tune near-duplicate spot checks.** Decode cached encode containers to temporary raw YUV before scoring, refuse reuse when decoding fails, and remove decoded files after the check. Score against the sweep's decoded reference so container sources can match. In sample-clip mode, the spot check reads the reference window that the cached encode covers. The spot check scores with the sweep's VMAF model, the model the cached score used.
 
 
 - **A VMAFx error names a long path in full.** `VmafxError` kept 95 bytes of
@@ -3870,6 +4271,16 @@
   any other guard.
 
 
+- **CI:** Move the Windows MSVC+SYCL oneAPI offline installer pin in `libvmaf-build-matrix.yml` to `2026.2.0.661` (`intel-oneapi-toolkit-2026.2.0.661_offline.exe`): MSVC 14.52 refuses Clang front ends older than 22 (`STL1000`), and Intel's release notes describe a Clang 22 front end from compiler release 2026.0.0 ([ADR-3567](docs/adr/3567-windows-sycl-oneapi-2026-2.md)).
+  The installer size and SHA-256 are checked before extraction.
+  Builds run `44487361326` measured six refused AOT targets (`tgllp`, `adl-s`,
+  `adl-p`, `adl-n`, `rpl-s`, `rpl-p`). Xe-LP, Alder Lake and Raptor Lake
+  integrated devices get no AOT image from the Windows CI build and, by design,
+  fall back to the [`spir64` image compiled at run time](docs/backends/sycl/aot.md#default-target-list).
+  Builds run `44499808688` built the leg with the 13 accepted targets; the
+  run-time fallback on the six refused families remains unmeasured.
+
+
 - **The Windows SYCL tester zip passes its import check.** `cfgmgr32.dll`, which the Level Zero loader imports, is a System32 DLL and is now accepted by `scripts/ci/check-windows-bundle-imports.py`; an unknown DLL is still refused. The x64-sycl leg failed on it, so no rc.3 Windows zip was published.
 
 
@@ -3881,6 +4292,16 @@
   `_open` to `_wsopen_s` / `_sopen_s` (the CRT's non-deprecated spellings) made the
   CRT reject permission bits other than `_S_IREAD` and `_S_IWRITE` as an invalid
   parameter; the mode is masked to those two bits, as the old calls effectively did.
+
+
+- Built-in JSON and BRISQUE models and HIP kernel blobs now declare the exact
+  `unsigned char[]` and `unsigned int` types emitted by `xxd -i`. Read-only
+  access remains const-qualified at use sites. The CPU build compiles model
+  declarations and generated definitions together in `test_xxd_extern_types`
+  to reject future type mismatches; run it with
+  `python3 scripts/ci/run_meson_test.py -- -C build test_xxd_extern_types`.
+  HIP builds with generated kernels also compile every HSACO declaration and
+  definition together in `test_xxd_hsaco_extern_types`.
 
 
 - **The direct y4m reader reads a stream shallower than the picture left-shifted to the picture's depth.**

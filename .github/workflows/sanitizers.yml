@@ -24,6 +24,9 @@ on:
   pull_request:
     branches: [master]
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+    branches: [master]
   schedule:
     # Fuzz nightly at 04:30 UTC. TSan fires on push to master (above).
     - cron: "30 4 * * *"
@@ -61,7 +64,7 @@ jobs:
   # trip it unconditionally (rewrite tracked separately).
   asan-ubsan:
     needs: tier
-    if: needs.tier.outputs.full == 'true' && (github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: needs.tier.outputs.full == 'true' && (github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     # ADR-1297 — required. `-fsanitize=address,undefined` in one build is a
     # distinct configuration from the separate `Sanitizers (address)` and
     # `Sanitizers (undefined)` rows that were already required: interaction
@@ -113,9 +116,7 @@ jobs:
         # Tidy Ratchet run passed 5.2m); 10 min is at least 1.25x the slowest.
         timeout-minutes: 10
         run: |
-          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAPT::Keep-Downloaded-Packages "true";\n' \
-            | sudo tee /etc/apt/apt.conf.d/80ci-retries >/dev/null
-          sudo apt-get update
+          bash scripts/ci/apt-install-cached.sh refresh
           mkdir -p "${RUNNER_TEMP}/apt-archives"
           if compgen -G "${RUNNER_TEMP}/apt-archives/*.deb" >/dev/null; then
             sudo cp -f "${RUNNER_TEMP}/apt-archives"/*.deb /var/cache/apt/archives/
@@ -292,9 +293,7 @@ jobs:
         # Tidy Ratchet run passed 5.2m); 10 min is at least 1.25x the slowest.
         timeout-minutes: 10
         run: |
-          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAPT::Keep-Downloaded-Packages "true";\n' \
-            | sudo tee /etc/apt/apt.conf.d/80ci-retries >/dev/null
-          sudo apt-get update
+          bash scripts/ci/apt-install-cached.sh refresh
           mkdir -p "${RUNNER_TEMP}/apt-archives"
           if compgen -G "${RUNNER_TEMP}/apt-archives/*.deb" >/dev/null; then
             sudo cp -f "${RUNNER_TEMP}/apt-archives"/*.deb /var/cache/apt/archives/
@@ -454,9 +453,7 @@ jobs:
         # Tidy Ratchet run passed 5.2m); 10 min is at least 1.25x the slowest.
         timeout-minutes: 10
         run: |
-          printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\nAPT::Keep-Downloaded-Packages "true";\n' \
-            | sudo tee /etc/apt/apt.conf.d/80ci-retries >/dev/null
-          sudo apt-get update
+          bash scripts/ci/apt-install-cached.sh refresh
           mkdir -p "${RUNNER_TEMP}/apt-archives"
           if compgen -G "${RUNNER_TEMP}/apt-archives/*.deb" >/dev/null; then
             sudo cp -f "${RUNNER_TEMP}/apt-archives"/*.deb /var/cache/apt/archives/

@@ -7,20 +7,24 @@ from __future__ import annotations
 import io
 import os
 import shutil
+import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.ci.run_meson_test import CREDENTIAL_ENV_VARS
-from scripts.dev import upstream_pr_sweep as sweep_mod
-from scripts.dev.tests.upstream_pr_sweep_fixture import (
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
+
+from scripts.ci.run_meson_test import CREDENTIAL_ENV_VARS  # noqa: E402
+from scripts.dev import upstream_pr_sweep as sweep_mod  # noqa: E402
+from scripts.dev.tests.upstream_pr_sweep_fixture import (  # noqa: E402
     REPO_ROOT,
     SweepFixtureCase,
     git_run,
     require_fixture_tools,
 )
-from scripts.lib.safe_subprocess import TextCommandResult
+from scripts.lib.safe_subprocess import TextCommandResult  # noqa: E402
 
 
 def setUpModule() -> None:
@@ -28,6 +32,13 @@ def setUpModule() -> None:
 
 
 class UpstreamPrSweepHardeningTest(SweepFixtureCase):
+    def setUp(self) -> None:
+        super().setUp()
+        # Keep the independent gate contract in test_upstream_push_gate.py.
+        gate = patch("scripts.dev.upstream_push_gate.run_gate", return_value=[])
+        gate.start()
+        self.addCleanup(gate.stop)
+
     def test_T00_missing_new_sha_returns_structured_failure(self) -> None:
         target = sweep_mod.PRTarget(number=1, branch="fix/pr-1", head_owner="testfork")
         for missing_val in (None, ""):
@@ -113,8 +124,10 @@ class UpstreamPrSweepHardeningTest(SweepFixtureCase):
         git_run(self.setup_clone, "checkout", "-b", foreign_branch, self.pr_old_sha)
         (self.setup_clone / "foreign.txt").write_text("untrusted code\n", encoding="utf-8")
         git_run(self.setup_clone, "add", "foreign.txt")
+        foreign_barriers = {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
         foreign_env = dict(
             os.environ,
+            **foreign_barriers,
             GIT_AUTHOR_EMAIL="contributor@untrusted.example",
             GIT_COMMITTER_EMAIL="contributor@untrusted.example",
         )
@@ -578,7 +591,7 @@ class UpstreamPrSweepHardeningTest(SweepFixtureCase):
         doc_text = doc_path.read_text(encoding="utf-8")
         self.assertNotIn("../../scripts/dev/tests/test_upstream_pr_sweep.py", doc_text)
         self.assertIn(
-            "https://github.com/VMAFx/vmafx/blob/master/scripts/dev/tests/test_upstream_pr_sweep.py",
+            "https://github.com/vidiko/vmafx/blob/master/scripts/dev/tests/test_upstream_pr_sweep.py",
             doc_text,
         )
 

@@ -25,6 +25,10 @@
   "3.14.8": {
    "url": "https://raw.githubusercontent.com/python/cpython/v3.14.8/Doc/license.rst",
    "sha256": "cd6f471c0bfdb099efefc25ddff9b3df8bf62e10428987f1f05e6f2f9e35d563"
+  },
+  "3.14.10": {
+   "url": "https://raw.githubusercontent.com/python/cpython/v3.14.10/Doc/license.rst",
+   "sha256": "8a7329b25131f64b2bea284155f0824876b1af9f4a2f970e6335751d97dfa6dd"
   }
  },
  "generated_build_files": [
@@ -243,9 +247,9 @@
   "image": {
    "title": "the VMAFx tester image",
    "licence_root": "opt/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the source RPMs listed under [grafted]); SOURCES.txt inside it is the index.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the source RPMs listed under [grafted]); SOURCES.txt inside it is the index.",
    "python": {
-    "version": "3.14.8"
+    "version": "3.14.10"
    },
    "components": [
     {
@@ -266,7 +270,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file)."
      ]
@@ -355,7 +359,7 @@
       "MIT",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above"
+     "source": "https://github.com/vidiko/vmafx at the source commit above"
     },
     {
      "id": "build-records",
@@ -579,7 +583,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file)."
      ]
@@ -662,7 +666,7 @@
       "EUPL-1.2",
       "BSD-2-Clause-Patent"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above"
+     "source": "https://github.com/vidiko/vmafx at the source commit above"
     },
     {
      "id": "build-records",
@@ -773,7 +777,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file)."
      ]
@@ -898,7 +902,7 @@
       "EUPL-1.2",
       "BSD-2-Clause-Patent"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above"
+     "source": "https://github.com/vidiko/vmafx at the source commit above"
     },
     {
      "id": "build-records",
@@ -1011,7 +1015,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file).",
       "The CUDA kernels are fatbins inside vmaf.exe and the test programs (cubins for sm_80, sm_86, sm_89, sm_90, sm_100 and sm_120, PTX for compute_80 and compute_120); their device code also holds NVIDIA's code, see [component nvidia-cuda-device-code]."
@@ -1145,7 +1149,7 @@
       "MIT",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above"
+     "source": "https://github.com/vidiko/vmafx at the source commit above"
     },
     {
      "id": "build-records",
@@ -1248,7 +1252,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file).",
       "The SYCL kernels are device images inside vmaf.exe and the test programs: ahead-of-time code for the Intel GPU targets of the build's sycl_icpx_aot_targets list and portable SPIR-V, compiled from the repository's sources."
@@ -1315,20 +1319,20 @@
     {
      "id": "intel-oneapi-dpcpp-runtime",
      "kind": "fixed",
-     "name": "Intel oneAPI DPC++/C++ Compiler 2025.3 runtime for Windows: sycl8, the Unified Runtime loader, its Windows proxy loader and its Level Zero adapters, and the compiler's math and support libraries the programs import",
+     "name": "Intel oneAPI DPC++/C++ Compiler 2026.2 runtime for Windows: sycl9, the Unified Runtime loader, its Windows proxy loader and its Level Zero adapters, and the compiler's math and support libraries the programs import",
      "paths": [
-      "build/tools/sycl8.dll",
+      "build/tools/sycl9.dll",
       "build/tools/ur_win_proxy_loader.dll",
-      "build/tools/ur_loader.dll",
+      "build/tools/ur_loader_shared.dll",
       "build/tools/ur_adapter_level_zero.dll",
       "build/tools/ur_adapter_level_zero_v2.dll",
       "build/tools/libmmd.dll",
       "build/tools/svml_dispmd.dll",
       "build/tools/libircmd.dll",
       "build/tools/libirngmd.dll",
-      "tests/sycl8.dll",
+      "tests/sycl9.dll",
       "tests/ur_win_proxy_loader.dll",
-      "tests/ur_loader.dll",
+      "tests/ur_loader_shared.dll",
       "tests/ur_adapter_level_zero.dll",
       "tests/ur_adapter_level_zero_v2.dll",
       "tests/libmmd.dll",
@@ -1340,7 +1344,7 @@
      "copyright": [
       "Copyright (C) Intel Corporation"
      ],
-     "source": "binary only; copied unmodified from the oneAPI Base Toolkit 2025.3.0.372 for Windows installed on the hosted runner, every file listed in its credist.txt (tools/rc1-tester/image/sycl-runtime-windows.json); a listed DLL nothing imports is left out (image/gpu-runtime.json)",
+     "source": "binary only; copied unmodified from the oneAPI Base Toolkit 2026.2.0.661 for Windows installed on the hosted runner, every file listed in its credist.txt (tools/rc1-tester/image/sycl-runtime-windows.json); a listed DLL nothing imports is left out (image/gpu-runtime.json)",
      "texts": [
       {
        "artifact": "licenses/intel/intel-oneapi-dpcpp-runtime/LICENSE.rtf",
@@ -1365,7 +1369,7 @@
     {
      "id": "intel-oneapi-umf",
      "kind": "fixed",
-     "name": "Intel oneAPI Unified Memory Framework 1.0.2 for Windows (umf.dll)",
+     "name": "Intel oneAPI Unified Memory Framework 1.1.0 for Windows (umf.dll)",
      "paths": [
       "build/tools/umf.dll",
       "tests/umf.dll"
@@ -1374,7 +1378,7 @@
      "copyright": [
       "Copyright (C) Intel Corporation"
      ],
-     "source": "https://github.com/oneapi-src/unified-memory-framework (release 1.0.2); binary copied unmodified from the oneAPI Base Toolkit 2025.3.0.372 for Windows",
+     "source": "https://github.com/oneapi-src/unified-memory-framework (release 1.1.0); binary copied unmodified from the oneAPI Base Toolkit 2026.2.0.661 for Windows",
      "texts": [
       {
        "artifact": "licenses/intel/intel-oneapi-umf/LICENSE.TXT",
@@ -1389,7 +1393,7 @@
     {
      "id": "intel-oneapi-tcm-hwloc",
      "kind": "fixed",
-     "name": "Portable Hardware Locality (libhwloc-15.dll) as built by Intel in oneAPI Thread Composability Manager 1.4.1 for Windows",
+     "name": "Portable Hardware Locality (libhwloc-15.dll) as built by Intel in oneAPI Thread Composability Manager 1.5 for Windows",
      "paths": [
       "build/tools/libhwloc-15.dll",
       "tests/libhwloc-15.dll"
@@ -1400,7 +1404,7 @@
       "Copyright (c) 2009-2016 Inria",
       "Copyright (C) Intel Corporation"
      ],
-     "source": "https://github.com/open-mpi/hwloc (2.x); binary copied unmodified from the oneAPI Base Toolkit 2025.3.0.372 for Windows",
+     "source": "https://github.com/open-mpi/hwloc (2.x); binary copied unmodified from the oneAPI Base Toolkit 2026.2.0.661 for Windows",
      "texts": [
       {
        "artifact": "licenses/intel/intel-oneapi-tcm-hwloc/license.txt",
@@ -1490,7 +1494,7 @@
       "MIT",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above"
+     "source": "https://github.com/vidiko/vmafx at the source commit above"
     },
     {
      "id": "build-records",
@@ -1533,7 +1537,7 @@
   "sycl-image": {
    "title": "the VMAFx Intel GPU tester image",
    "licence_root": "opt/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed Debian package at the installed version); SOURCES.txt inside it is the index. The Intel GPU stack's source is named in [component intel-gpu-stack].",
+   "source_offer": "the image ghcr.io/vidiko/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed Debian package at the installed version); SOURCES.txt inside it is the index. The Intel GPU stack's source is named in [component intel-gpu-stack].",
    "components": [
     {
      "id": "vmafx-binaries",
@@ -1553,7 +1557,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file)."
      ]
@@ -1645,7 +1649,7 @@
       "MIT",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above"
+     "source": "https://github.com/vidiko/vmafx at the source commit above"
     },
     {
      "id": "build-records",
@@ -1882,7 +1886,7 @@
   "cuda-image": {
    "title": "the VMAFx NVIDIA GPU tester image",
    "licence_root": "opt/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed Debian package at the installed version); SOURCES.txt inside it is the index. The image holds no NVIDIA library and no other copyleft object code.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed Debian package at the installed version); SOURCES.txt inside it is the index. The image holds no NVIDIA library and no other copyleft object code.",
    "components": [
     {
      "id": "vmafx-binaries",
@@ -1902,7 +1906,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file).",
       "The CUDA kernels are fatbins inside libvmaf and the test executables (cubins for sm_80, sm_86, sm_89, sm_90, sm_100 and sm_120, PTX for compute_80 and compute_120); their device code also holds NVIDIA's code, see [component nvidia-cuda-device-code]."
@@ -1991,7 +1995,7 @@
       "MIT",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above"
+     "source": "https://github.com/vidiko/vmafx at the source commit above"
     },
     {
      "id": "build-records",
@@ -2138,7 +2142,7 @@
   "hip-image": {
    "title": "the VMAFx AMD GPU tester image",
    "licence_root": "opt/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx:{tag}-source in the same registry package, published with this image: the Debian source packages of every installed Debian package at the installed version, and the upstream archives of elfutils 0.195 and numactl 2.0.19 with the TheRock tree that built the LGPL libraries of the ROCm runtime ([component rocm-sysdeps]); SOURCES.txt inside it is the index.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx:{tag}-source in the same registry package, published with this image: the Debian source packages of every installed Debian package at the installed version, and the upstream archives of elfutils 0.195 and numactl 2.0.19 with the TheRock tree that built the LGPL libraries of the ROCm runtime ([component rocm-sysdeps]); SOURCES.txt inside it is the index.",
    "components": [
     {
      "id": "vmafx-binaries",
@@ -2158,7 +2162,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file).",
       "The HIP kernels are code objects inside libvmaf and the test executables, one per gfx target of image/hip-targets.json, compiled by ROCm 10.1.0's hipcc from the repository's .hip files."
@@ -2247,7 +2251,7 @@
       "MIT",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above"
+     "source": "https://github.com/vidiko/vmafx at the source commit above"
     },
     {
      "id": "build-records",
@@ -2626,7 +2630,7 @@
   "production-cli-image": {
    "title": "the VMAFx production image (vmaf command)",
    "licence_root": "usr/local/share/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version); SOURCES.txt inside it is the index.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version); SOURCES.txt inside it is the index.",
    "components": [
     {
      "id": "vmafx-binaries",
@@ -2647,7 +2651,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file).",
       "EUPL-1.2 covers the VMAFx files only; every other component keeps its own terms."
@@ -2694,7 +2698,7 @@
       "MIT",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above (model/)"
+     "source": "https://github.com/vidiko/vmafx at the source commit above (model/)"
     },
     {
      "id": "build-records",
@@ -2778,9 +2782,9 @@
   "production-server-image": {
    "title": "the VMAFx production MCP server image",
    "licence_root": "usr/local/share/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the source RPMs listed under [grafted]); SOURCES.txt inside it is the index.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the source RPMs listed under [grafted]); SOURCES.txt inside it is the index.",
    "python": {
-    "version": "3.14.8"
+    "version": "3.14.10"
    },
    "components": [
     {
@@ -2802,7 +2806,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file).",
       "EUPL-1.2 covers the VMAFx files only; every other component keeps its own terms."
@@ -2849,7 +2853,7 @@
       "MIT",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above (model/)"
+     "source": "https://github.com/vidiko/vmafx at the source commit above (model/)"
     },
     {
      "id": "build-records",
@@ -3030,7 +3034,7 @@
   "production-operator-image": {
    "title": "the VMAFx Kubernetes operator image",
    "licence_root": "usr/local/share/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx-operator:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the module zips of the copyleft Go modules under go/); SOURCES.txt inside it is the index.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx-operator:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the module zips of the copyleft Go modules under go/); SOURCES.txt inside it is the index.",
    "components": [
     {
      "id": "vmafx-binaries",
@@ -3042,7 +3046,7 @@
      "licences": [
       "EUPL-1.2"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository Go file the program compiles (go list -deps)."
      ]
@@ -3121,7 +3125,7 @@
   "production-go-server-image": {
    "title": "the VMAFx scoring server image (vmafx-server)",
    "licence_root": "usr/local/share/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx-server:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the module zips of the copyleft Go modules under go/); SOURCES.txt inside it is the index.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx-server:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the module zips of the copyleft Go modules under go/); SOURCES.txt inside it is the index.",
    "components": [
     {
      "id": "vmafx-binaries",
@@ -3146,7 +3150,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file).",
       "EUPL-1.2 covers the VMAFx files only; every other component keeps its own terms."
@@ -3193,7 +3197,7 @@
       "MIT",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above (model/)"
+     "source": "https://github.com/vidiko/vmafx at the source commit above (model/)"
     },
     {
      "id": "go-modules",
@@ -3273,7 +3277,7 @@
   "production-controller-image": {
    "title": "the VMAFx controller image (vmafx-controller)",
    "licence_root": "usr/local/share/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx-controller:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the module zips of the copyleft Go modules under go/); SOURCES.txt inside it is the index.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx-controller:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the module zips of the copyleft Go modules under go/); SOURCES.txt inside it is the index.",
    "rewrite": {
     "vmafx-server": "vmafx-controller"
    },
@@ -3319,7 +3323,7 @@
   "production-node-image": {
    "title": "the VMAFx worker node image (vmafx-node)",
    "licence_root": "usr/local/share/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx-node:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the module zips of the copyleft Go modules under go/, every module of rclone, FFmpeg as compiled under ffmpeg/, and the Debian sources of the copied libraries); SOURCES.txt inside it is the index.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx-node:{tag}-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the module zips of the copyleft Go modules under go/, every module of rclone, FFmpeg as compiled under ffmpeg/, and the Debian sources of the copied libraries); SOURCES.txt inside it is the index.",
    "components": [
     {
      "id": "vmafx-binaries",
@@ -3344,7 +3348,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file).",
       "EUPL-1.2 covers the VMAFx files only; every other component keeps its own terms."
@@ -3391,7 +3395,7 @@
       "MIT",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above (model/)"
+     "source": "https://github.com/vidiko/vmafx at the source commit above (model/)"
     },
     {
      "id": "ffmpeg",
@@ -3569,7 +3573,7 @@
   "production-node-sycl-image": {
    "title": "the VMAFx worker node image with Intel oneAPI SYCL runtime (vmafx-node)",
    "licence_root": "usr/local/share/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx-node:{tag}-sycl-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the module zips of the copyleft Go modules under go/, every module of rclone, FFmpeg as compiled under ffmpeg/, and the Debian sources of the copied libraries); SOURCES.txt inside it is the index.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx-node:{tag}-sycl-source in the same registry package, published with this image (Debian source packages of every installed package at the installed version, and the module zips of the copyleft Go modules under go/, every module of rclone, FFmpeg as compiled under ffmpeg/, and the Debian sources of the copied libraries); SOURCES.txt inside it is the index.",
    "rewrite": {
     "opt/vmafx/licenses/": "usr/local/share/vmafx/licenses/",
     "opt/vmafx/lib/": "usr/local/lib/"
@@ -3653,7 +3657,7 @@
   "production-cuda-image": {
    "title": "the VMAFx production NVIDIA GPU image (vmaf command, CUDA)",
    "licence_root": "usr/local/share/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed Debian package at the installed version); SOURCES.txt inside it is the index. The image holds no NVIDIA library and no other copyleft object code.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed Debian package at the installed version); SOURCES.txt inside it is the index. The image holds no NVIDIA library and no other copyleft object code.",
    "rewrite": {
     "opt/vmafx/licenses/": "usr/local/share/vmafx/licenses/",
     "opt/vmafx/lib/": "usr/local/lib/"
@@ -3707,7 +3711,7 @@
   "production-rocm-image": {
    "title": "the VMAFx production AMD GPU image (vmaf command, HIP on ROCm)",
    "licence_root": "usr/local/share/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx:{tag}-source in the same registry package, published with this image: the Debian source packages of every installed Debian package at the installed version, and the upstream archives of elfutils 0.195 and numactl 2.0.19 with the TheRock tree that built the LGPL libraries of the ROCm runtime ([component rocm-sysdeps]); SOURCES.txt inside it is the index.",
+   "source_offer": "the image ghcr.io/vidiko/vmafx:{tag}-source in the same registry package, published with this image: the Debian source packages of every installed Debian package at the installed version, and the upstream archives of elfutils 0.195 and numactl 2.0.19 with the TheRock tree that built the LGPL libraries of the ROCm runtime ([component rocm-sysdeps]); SOURCES.txt inside it is the index.",
    "rewrite": {
     "opt/vmafx/licenses/": "usr/local/share/vmafx/licenses/",
     "opt/vmafx/lib/": "usr/local/lib/"
@@ -3781,7 +3785,7 @@
   "production-oneapi-image": {
    "title": "the VMAFx production Intel GPU image (vmaf command, SYCL on oneAPI)",
    "licence_root": "usr/local/share/vmafx/licenses",
-   "source_offer": "the image ghcr.io/vmafx/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed Debian package at the installed version); SOURCES.txt inside it is the index. The Intel GPU stack's source is named in [component intel-gpu-stack].",
+   "source_offer": "the image ghcr.io/vidiko/vmafx:{tag}-source in the same registry package, published with this image (Debian source packages of every installed Debian package at the installed version); SOURCES.txt inside it is the index. The Intel GPU stack's source is named in [component intel-gpu-stack].",
    "rewrite": {
     "opt/vmafx/licenses/": "usr/local/share/vmafx/licenses/",
     "opt/vmafx/lib/": "usr/local/lib/"
@@ -3886,7 +3890,7 @@
       "MIT",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above (model/)"
+     "source": "https://github.com/vidiko/vmafx at the source commit above (model/)"
     },
     {
      "id": "notices",
@@ -3922,7 +3926,7 @@
       "Unlicense",
       "LicenseRef-LIVE-BRISQUE"
      ],
-     "source": "https://github.com/VMAFx/vmafx at the source commit above",
+     "source": "https://github.com/vidiko/vmafx at the source commit above",
      "notes": [
       "The licences and copyright lines below are those of every repository file the build compiled (vmafx-compiled-sources.json next to this file lists them file by file).",
       "EUPL-1.2 covers the VMAFx files only; every other component keeps its own terms."

@@ -5,11 +5,14 @@
 from __future__ import annotations
 
 import ast
+import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
@@ -28,8 +31,26 @@ class FixtureTrain(guard.Train):
         self.metadata: dict[str, Any] = {}
         self.calls: list[tuple[str, ...]] = []
         self.checks = [{"name": "Required Checks Aggregator", "bucket": "pass", "state": "SUCCESS"}]
+        self.review_items: list[dict[str, Any]] = []
+        self.queue: list[dict[str, Any]] = []
+        self.enabled_switches: set[str] = set()
         self.fail_push = False
         self.fail_network = False
+
+    def reviews(self, number: int) -> list[dict[str, Any]]:
+        if self.fail_network:
+            raise guard.Refused("fixture API unavailable")
+        return list(self.review_items)
+
+    def hardware_switches(self) -> set[str]:
+        if self.fail_network:
+            raise guard.Refused("fixture API unavailable")
+        return set(self.enabled_switches)
+
+    def queue_entries(self) -> list[dict[str, Any]]:
+        if self.fail_network:
+            raise guard.Refused("fixture API unavailable")
+        return list(self.queue)
 
     def pr(self, number: int) -> dict[str, Any]:
         if self.fail_network:
@@ -46,7 +67,7 @@ class FixtureTrain(guard.Train):
 
     def git(self, *args: str, cwd: Path | None = None) -> str:
         if args[:2] == ("remote", "get-url"):
-            return "https://github.com/VMAFx/vmafx.git"
+            return "https://github.com/vidiko/vmafx.git"
         if args[0] == "push" and self.fail_push:
             raise guard.Refused("fixture push rejected")
         result: str = super().git(*args, cwd=cwd)
@@ -61,8 +82,19 @@ ENGINE_FIXTURE_FILES = (".config/lefthook/engine.sh", ".github/workflows/standar
 
 
 class TrainContract(unittest.TestCase):
+    def isolate_git_config(self) -> None:
+        base = guard.environment
+        isolated = patch.object(
+            guard,
+            "environment",
+            side_effect=lambda: dict(base(), GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1"),
+        )
+        isolated.start()
+        self.addCleanup(isolated.stop)
+
     def setUp(self) -> None:
         """Build temporary Git repo with base/topic commits and initial state directory files."""
+        self.isolate_git_config()
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
@@ -127,6 +159,19 @@ class TrainContract(unittest.TestCase):
         checkout = self.directory / name
         self.train.git("worktree", "add", "--detach", str(checkout), self.head)
         return checkout
+
+    def test_guard_refuses_cross_repository_prs(self) -> None:
+        field = "isCrossRepository"
+        del self.train.metadata[field]
+        for fields in ({field: True}, {}, {field: None}, {field: "false"}):
+            with (
+                self.subTest(fields=fields),
+                patch.dict(self.train.metadata, fields),
+                self.assertRaisesRegex(
+                    guard.Refused, "cross-repository PRs require an explicit owner"
+                ),
+            ):
+                self.train.guard(1421)
 
     def test_holds_and_nonmaster_apply_to_every_action(self) -> None:
         for condition in ("held", "stacked", "release", "paused", "protected"):
@@ -459,7 +504,7 @@ class TrainContract(unittest.TestCase):
         original = self.train.git
         for urls in (
             "https://example.invalid/fork.git",
-            "https://github.com/VMAFx/vmafx.git\nhttps://example.invalid/fork.git",
+            "https://github.com/vidiko/vmafx.git\nhttps://example.invalid/fork.git",
         ):
 
             def git(*args: str, cwd: Path | None = None, urls: str = urls) -> str:
@@ -581,6 +626,547 @@ class TrainContract(unittest.TestCase):
                 src = path.read_text(encoding="utf-8")
                 tree = ast.parse(src, filename=str(path), feature_version=(3, 10))
                 self.assertIsNotNone(tree)
+
+    def write_fork_policy(self, reviewers: Any = ("alice", "bob")) -> None:
+        policy: dict[str, Any] = {
+            "schema": 1,
+            "protected_branches": [],
+            "protected_worktrees": [],
+        }
+        if reviewers is not None:
+            policy["fork_reviewers"] = (
+                list(reviewers) if isinstance(reviewers, tuple) else reviewers
+            )
+        (self.state / "policy.json").write_text(json.dumps(policy))
+
+    def configure_fork_pr(self, reviewers: Any = ("alice", "bob")) -> None:
+        self.write_fork_policy(reviewers)
+        self.train.metadata["isDraft"] = False
+        self.train.metadata["isCrossRepository"] = True
+        self.train.metadata["mergeStateStatus"] = "CLEAN"
+        self.train.metadata["autoMergeRequest"] = None
+
+    @staticmethod
+    def stub_composer(code: int = 0, output: str = "") -> Any:
+        class StubComposer:
+            @staticmethod
+            def check_message(*args: Any, **kwargs: Any) -> tuple[int, str]:
+                return code, output
+
+        return StubComposer()
+
+    @staticmethod
+    def review_record(
+        login: str,
+        state: str,
+        oid: str,
+        submitted_at: str = "2026-11-22T01:00:00Z",
+    ) -> dict[str, Any]:
+        return {
+            "author": {"login": login},
+            "state": state,
+            "submittedAt": submitted_at,
+            "commit": {"oid": oid},
+        }
+
+    def test_admit_fork_refuses_unreviewed_head(self) -> None:
+        self.configure_fork_pr()
+        self.train.review_items = []
+        with (
+            patch.object(guard, "load_squash_composer", return_value=self.stub_composer()),
+            self.assertRaisesRegex(guard.Refused, "approval"),
+        ):
+            self.train.admit_fork(1421, self.head)
+        self.assertFalse(any(call[:2] == ("pr", "merge") for call in self.train.calls))
+
+    def test_admit_fork_refuses_older_head_mismatch_and_outside_reviewer(self) -> None:
+        self.configure_fork_pr(("alice",))
+        older = "a" * 40
+        other = "b" * 40
+        cases = (
+            ([self.review_record("alice", "APPROVED", older)], self.head, "approval"),
+            ([self.review_record("alice", "APPROVED", other)], other, "reviewed head"),
+            ([self.review_record("mallory", "APPROVED", self.head)], self.head, "approval"),
+        )
+        for items, reviewed_head, pattern in cases:
+            self.train.review_items = items
+            with (
+                self.subTest(pattern=pattern, reviewed_head=reviewed_head),
+                patch.object(guard, "load_squash_composer", return_value=self.stub_composer()),
+                self.assertRaisesRegex(guard.Refused, pattern),
+            ):
+                self.train.admit_fork(1421, reviewed_head)
+
+    def test_admit_fork_decisive_reviews_and_trailing_comment(self) -> None:
+        self.configure_fork_pr(("alice", "bob"))
+        negative_sets = (
+            [
+                self.review_record("alice", "APPROVED", self.head, "2026-11-22T01:00:00Z"),
+                self.review_record("bob", "CHANGES_REQUESTED", self.head, "2026-11-22T01:05:00Z"),
+            ],
+            [self.review_record("alice", "DISMISSED", self.head, "2026-11-22T01:00:00Z")],
+            [
+                self.review_record("alice", "APPROVED", self.head, "2026-11-22T01:00:00Z"),
+                self.review_record("alice", "DISMISSED", self.head, "2026-11-22T01:10:00Z"),
+            ],
+        )
+        for items in negative_sets:
+            self.train.review_items = items
+            with (
+                self.subTest(states=[item["state"] for item in items]),
+                patch.object(guard, "load_squash_composer", return_value=self.stub_composer()),
+                self.assertRaises(guard.Refused),
+            ):
+                self.train.admit_fork(1421, self.head)
+        self.train.review_items = [
+            self.review_record("alice", "APPROVED", self.head, "2026-11-22T01:00:00Z"),
+            self.review_record("alice", "COMMENTED", "c" * 40, "2026-11-22T02:00:00Z"),
+        ]
+        with patch.object(guard, "load_squash_composer", return_value=self.stub_composer()):
+            receipt = self.train.admit_fork(1421, self.head)
+        self.assertEqual(receipt["reviewer"], "alice")
+        self.assertEqual(receipt["submitted_at"], "2026-11-22T01:00:00Z")
+
+    def test_admit_fork_refuses_absent_empty_or_invalid_fork_reviewers(self) -> None:
+        self.configure_fork_pr()
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        for bad_policy in (None, [], "alice", [""], [123]):
+            self.write_fork_policy(bad_policy)
+            with (
+                self.subTest(fork_reviewers=bad_policy),
+                patch.object(guard, "load_squash_composer", return_value=self.stub_composer()),
+                self.assertRaisesRegex(guard.Refused, "fork_reviewers"),
+            ):
+                self.train.admit_fork(1421, self.head)
+        (self.state / "policy.json").write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "protected_branches": [],
+                    "protected_worktrees": [],
+                    "fork_reviewers": None,
+                }
+            )
+        )
+        with self.assertRaisesRegex(guard.Refused, "invalid train policy: fork_reviewers"):
+            self.train.policy()
+
+    def test_admit_fork_refuses_in_repo_held_paused_and_draft(self) -> None:
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        self.train.metadata["isCrossRepository"] = False
+        with self.assertRaisesRegex(guard.Refused, "merge-train actions"):
+            self.train.admit_fork(1421, self.head)
+        self.train.metadata["isCrossRepository"] = True
+        self.train.metadata["isDraft"] = True
+        with self.assertRaisesRegex(guard.Refused, "draft"):
+            self.train.admit_fork(1421, self.head)
+        self.train.metadata["isDraft"] = False
+        (self.state / "hold.txt").write_text("1421 held\n")
+        with self.assertRaisesRegex(guard.Refused, "held"):
+            self.train.admit_fork(1421, self.head)
+        (self.state / "hold.txt").write_text("")
+        with self.assertRaisesRegex(guard.Refused, "held"):
+            self.train.admit_fork(1213, self.head)
+        (self.state / "PAUSED").touch()
+        with self.assertRaisesRegex(guard.Refused, "paused"):
+            self.train.admit_fork(1421, self.head)
+
+    def test_admit_fork_refuses_bad_checks_merge_states_and_squash_message(self) -> None:
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        for merge_state in ("BEHIND", "BLOCKED", "DIRTY", "UNKNOWN"):
+            self.train.metadata["mergeStateStatus"] = merge_state
+            with (
+                self.subTest(merge_state=merge_state),
+                self.assertRaisesRegex(guard.Refused, "CLEAN"),
+            ):
+                self.train.admit_fork(1421, self.head)
+        self.train.metadata["mergeStateStatus"] = "CLEAN"
+        self.train.checks = [{"name": "Required Checks Aggregator", "bucket": "fail"}]
+        with self.assertRaisesRegex(guard.Refused, "required checks"):
+            self.train.admit_fork(1421, self.head)
+        self.train.checks = [
+            {"name": "Required Checks Aggregator", "bucket": "pass", "state": "SUCCESS"}
+        ]
+        with (
+            patch.object(
+                guard, "load_squash_composer", return_value=self.stub_composer(1, "bad subject")
+            ),
+            self.assertRaisesRegex(guard.Refused, "squash message check failed"),
+        ):
+            self.train.admit_fork(1421, self.head)
+
+        class MutatingComposer:
+            @staticmethod
+            def check_message(*args: Any, **kwargs: Any) -> tuple[int, str]:
+                self.train.metadata["title"] = "feat(core): mutated during check"
+                return 0, ""
+
+        with (
+            patch.object(guard, "load_squash_composer", return_value=MutatingComposer()),
+            self.assertRaisesRegex(guard.Refused, "changed during squash message check"),
+        ):
+            self.train.admit_fork(1421, self.head)
+
+    def test_admit_fork_refuses_auto_merge_and_enabled_hardware_switch(self) -> None:
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        self.train.metadata["autoMergeRequest"] = {"enabledAt": "2026-11-22T01:00:00Z"}
+        with (
+            patch.object(guard, "load_squash_composer", return_value=self.stub_composer()),
+            self.assertRaisesRegex(guard.Refused, "owner must disable it"),
+        ):
+            self.train.admit_fork(1421, self.head)
+        self.train.metadata["autoMergeRequest"] = None
+        self.train.enabled_switches = {"SYCL_ARC_RUNNER_ENABLED"}
+        with (
+            patch.object(guard, "load_squash_composer", return_value=self.stub_composer()),
+            self.assertRaisesRegex(guard.Refused, "SYCL_ARC_RUNNER_ENABLED"),
+        ):
+            self.train.admit_fork(1421, self.head)
+        self.train.enabled_switches = {
+            "GPU_COVERAGE_ENABLED",
+            "SYCL_ARC_RUNNER_ENABLED",
+        }
+        with (
+            patch.object(guard, "load_squash_composer", return_value=self.stub_composer()),
+            self.assertRaisesRegex(
+                guard.Refused,
+                r"GPU_COVERAGE_ENABLED, SYCL_ARC_RUNNER_ENABLED",
+            ),
+        ):
+            self.train.admit_fork(1421, self.head)
+        self.train.enabled_switches = set()
+        with patch.object(guard, "load_squash_composer", return_value=self.stub_composer()):
+            receipt = self.train.admit_fork(1421, self.head)
+        self.assertEqual(receipt["head"], self.head)
+
+    @staticmethod
+    def _variables_answer(**values: str) -> str:
+        variables = [{"name": name, "value": value} for name, value in values.items()]
+        return json.dumps({"total_count": len(variables), "variables": variables})
+
+    def _switches_from(self, org: str, repo: str) -> set[str]:
+        seen_argv: list[list[str]] = []
+
+        def fake_execute(argv: list[str], cwd: Path) -> str:
+            seen_argv.append(argv)
+            return org if "/actions/organization-variables?" in argv[2] else repo
+
+        with patch.object(guard, "execute", side_effect=fake_execute):
+            enabled: set[str] = guard.Train(self.root, self.state).hardware_switches()
+        self.assertEqual(
+            sorted(argv[2].split("/actions/")[1] for argv in seen_argv),
+            ["organization-variables?per_page=100", "variables?per_page=100"],
+        )
+        self.assertTrue(
+            all(argv[:2] == ["gh", "api"] and "--repo" not in argv for argv in seen_argv)
+        )
+        return enabled
+
+    def test_hardware_switches_parse_and_refuse(self) -> None:
+        none = self._variables_answer()
+        repo = self._variables_answer(
+            SYCL_ARC_RUNNER_ENABLED=" true ", GPU_COVERAGE_ENABLED="false"
+        )
+        self.assertEqual(self._switches_from(none, repo), {"SYCL_ARC_RUNNER_ENABLED"})
+        self.assertEqual(self._switches_from(none, none), set())
+        org = self._variables_answer(GPU_COVERAGE_ENABLED="true", SYCL_ARC_RUNNER_ENABLED="true")
+        self.assertEqual(self._switches_from(org, none), set(guard.HARDWARE_SWITCHES))
+        self.assertEqual(self._switches_from(org, repo), {"SYCL_ARC_RUNNER_ENABLED"})
+        bad_payloads = (
+            "{}",
+            json.dumps({"total_count": 3, "variables": []}),
+            json.dumps({"total_count": 1, "variables": ["x"]}),
+            *(json.dumps({"total_count": count, "variables": []}) for count in (False, -1)),
+            json.dumps({"total_count": 0, "variables": [{"name": "X", "value": ""}]}),
+            *(
+                json.dumps({"total_count": 1, "variables": [record]})
+                for record in (
+                    {"value": "true"},
+                    {"name": "", "value": "true"},
+                    {"name": ["X"], "value": "true"},
+                    {"name": "GPU_COVERAGE_ENABLED"},
+                    {"name": "GPU_COVERAGE_ENABLED", "value": True},
+                )
+            ),
+        )
+        for payload in bad_payloads:
+            for org_answer, repo_answer in ((payload, none), (none, payload)):
+                with (
+                    self.subTest(org=org_answer[:40], repo=repo_answer[:40]),
+                    self.assertRaises(guard.Refused),
+                ):
+                    self._switches_from(org_answer, repo_answer)
+
+    def test_hardware_switches_match_the_aggregator(self) -> None:
+        repo_root = Path(__file__).resolve().parents[3]
+        workflow = (repo_root / ".github/workflows/required-aggregator.yml").read_text()
+        found = set(re.findall(r"switchName: '([A-Z_]+)'", workflow))
+        self.assertEqual(found, set(guard.HARDWARE_SWITCHES))
+
+    def test_admit_fork_rechecks_eligibility_after_squash_message(self) -> None:
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        original_metadata = self.train.metadata.copy()
+        cases: tuple[tuple[dict[str, Any], str | None, str], ...] = (
+            ({"autoMergeRequest": {}}, None, "owner must disable it"),
+            ({"isDraft": True}, None, "draft PRs cannot be admitted"),
+            ({"mergeStateStatus": "BLOCKED"}, None, "expected CLEAN"),
+            ({"state": "CLOSED"}, None, "only open PRs targeting master"),
+            ({"baseRefName": "other"}, None, "only open PRs targeting master"),
+            ({"headRefOid": "d" * 40}, None, "head changed during squash message check"),
+            ({}, "hold.txt", "PR #1421 is held"),
+            ({}, "PAUSED", "train is paused"),
+        )
+        for changes, state_file, reason in cases:
+            self.train.metadata = original_metadata.copy()
+            (self.state / "hold.txt").write_text("")
+
+            def check_message(
+                *_args: Any,
+                changes: dict[str, Any] = changes,
+                state_file: str | None = state_file,
+            ) -> None:
+                self.train.metadata.update(changes)
+                if state_file:
+                    (self.state / state_file).write_text("1421 newly held\n")
+
+            with (
+                self.subTest(reason=reason, changes=changes),
+                patch.object(self.train, "_check_squash_message", side_effect=check_message),
+                self.assertRaisesRegex(guard.Refused, reason),
+            ):
+                self.train.admit_fork(1421, self.head)
+
+    def test_admit_fork_rechecks_required_checks_after_squash_message(self) -> None:
+        cases: tuple[tuple[list[dict[str, Any]], str], ...] = (
+            ([{"name": "Required Checks Aggregator", "bucket": "fail"}], "not eligible"),
+            ([{"name": "Required Checks Aggregator", "bucket": "pending"}], "not eligible"),
+            ([], "required checks are absent"),
+        )
+        for checks, reason in cases:
+            self.train.checks = [
+                {"name": "Required Checks Aggregator", "bucket": "pass", "state": "SUCCESS"}
+            ]
+            self.configure_fork_pr(("alice",))
+            self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+
+            def check_message(*_args: Any, checks: list[dict[str, Any]] = checks) -> None:
+                self.train.checks = checks
+
+            with (
+                self.subTest(reason=reason, checks=checks),
+                patch.object(self.train, "_check_squash_message", side_effect=check_message),
+                self.assertRaisesRegex(guard.Refused, reason),
+            ):
+                self.train.admit_fork(1421, self.head)
+
+    def test_admit_fork_uses_final_policy_and_reviews(self) -> None:
+        for reviewers in ((), ("bob",)):
+            with self.subTest(reviewers=reviewers):
+                self.configure_fork_pr(("alice",))
+                self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+                with (
+                    patch.object(
+                        self.train,
+                        "_check_squash_message",
+                        side_effect=lambda *_args, chosen=reviewers: self.write_fork_policy(chosen),
+                    ),
+                    self.assertRaises(guard.Refused) as error,
+                ):
+                    self.train.admit_fork(1421, self.head)
+                if not reviewers:
+                    self.assertIn("fork_reviewers must be non-empty", str(error.exception))
+
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        final_time = "2026-11-22T02:00:00Z"
+
+        def check_message(*_args: Any) -> None:
+            self.write_fork_policy(("bob",))
+            self.train.review_items.append(
+                self.review_record("bob", "APPROVED", self.head, final_time)
+            )
+
+        with patch.object(self.train, "_check_squash_message", side_effect=check_message):
+            receipt = self.train.admit_fork(1421, self.head)
+        self.assertEqual((receipt["reviewer"], receipt["submitted_at"]), ("bob", final_time))
+
+    def test_admit_fork_positive_receipt_never_merges_or_locks(self) -> None:
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [
+            self.review_record("alice", "APPROVED", self.head, "2026-11-22T01:30:00Z")
+        ]
+        with patch.object(guard, "load_squash_composer", return_value=self.stub_composer()):
+            receipt = self.train.admit_fork(1421, self.head)
+        self.assertEqual(
+            receipt,
+            {
+                "number": 1421,
+                "head": self.head,
+                "reviewer": "alice",
+                "submitted_at": "2026-11-22T01:30:00Z",
+                "merge_state": "CLEAN",
+                "checks": "pass",
+            },
+        )
+        self.assertFalse(any(call[:2] == ("pr", "merge") for call in self.train.calls))
+        self.assertFalse((self.state / "mutation.lock").exists())
+
+    def test_admit_fork_cli_validation_and_json_output(self) -> None:
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        bad_invocations = (
+            ["admit-fork", "1421", "--state-dir", str(self.state)],
+            ["admit-fork", "1421", "--reviewed-head", "not-a-sha", "--state-dir", str(self.state)],
+            [
+                "admit-fork",
+                "1421",
+                "--reviewed-head",
+                self.head,
+                "--apply",
+                "--state-dir",
+                str(self.state),
+            ],
+        )
+        with (
+            patch.object(guard, "Train", return_value=self.train),
+            patch.object(guard, "load_squash_composer", return_value=self.stub_composer()),
+        ):
+            for argv in bad_invocations:
+                stderr = io.StringIO()
+                with self.subTest(argv=argv), redirect_stderr(stderr):
+                    self.assertEqual(guard.main(argv), 1)
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                rc = guard.main(
+                    [
+                        "admit-fork",
+                        "1421",
+                        "--reviewed-head",
+                        self.head,
+                        "--state-dir",
+                        str(self.state),
+                    ]
+                )
+        self.assertEqual(rc, 0)
+        parsed = json.loads(stdout.getvalue())
+        self.assertEqual(parsed["head"], self.head)
+        self.assertEqual(parsed["reviewer"], "alice")
+        self.assertFalse((self.state / "mutation.lock").exists())
+
+    def test_audit_queue_and_cli(self) -> None:
+        self.configure_fork_pr(("alice",))
+        self.train.review_items = [self.review_record("alice", "APPROVED", self.head)]
+        moved = "d" * 40
+        same_repo_entry = {
+            "state": "QUEUED",
+            "headCommit": {"oid": "e" * 40},
+            "pullRequest": {"number": 1400, "isCrossRepository": False, "headRefOid": "f" * 40},
+        }
+        group_commit = "c" * 40
+        valid_fork_entry = {
+            "state": "QUEUED",
+            "headCommit": {"oid": group_commit},
+            "pullRequest": {"number": 1421, "isCrossRepository": True, "headRefOid": self.head},
+        }
+        moved_fork_entry = {
+            "state": "QUEUED",
+            "headCommit": {"oid": group_commit},
+            "pullRequest": {"number": 1421, "isCrossRepository": True, "headRefOid": moved},
+        }
+        self.train.queue = [same_repo_entry, valid_fork_entry]
+        self.assertEqual(self.train.audit_queue(), [])
+        for head_commit in (None, "unavailable"):
+            with self.subTest(head_commit=head_commit):
+                self.train.queue = [dict(valid_fork_entry, headCommit=head_commit)]
+                self.assertEqual(self.train.audit_queue(), [])
+                self.train.queue = [dict(moved_fork_entry, headCommit=head_commit)]
+                self.assertIn(f"on head {moved}", self.train.audit_queue()[0])
+        self.train.queue = [same_repo_entry, valid_fork_entry]
+        with patch.object(guard, "Train", return_value=self.train):
+            clean_out = io.StringIO()
+            with redirect_stdout(clean_out):
+                self.assertEqual(guard.main(["queue-audit", "--state-dir", str(self.state)]), 0)
+            self.assertEqual(clean_out.getvalue().strip(), "queue audit: 0 problems")
+            self.train.queue = [same_repo_entry, moved_fork_entry]
+            problems = self.train.audit_queue()
+            self.assertEqual(len(problems), 1)
+            self.assertIn(f"on head {moved}", problems[0])
+            problem_out = io.StringIO()
+            with redirect_stdout(problem_out):
+                self.assertEqual(guard.main(["queue-audit", "--state-dir", str(self.state)]), 1)
+            self.assertEqual(problem_out.getvalue().splitlines(), problems)
+        null_head_entry = {
+            "state": "QUEUED",
+            "headCommit": None,
+            "pullRequest": {
+                "number": 1421,
+                "isCrossRepository": True,
+                "headRefOid": self.head,
+            },
+        }
+        self.train.review_items = []
+        self.train.queue = [null_head_entry]
+        null_problems = self.train.audit_queue()
+        self.assertEqual(len(null_problems), 1)
+
+    def _queue_node(self) -> dict[str, object]:
+        return {
+            "state": "QUEUED",
+            "headCommit": {"oid": self.head},
+            "pullRequest": {"number": 1421, "isCrossRepository": True, "headRefOid": self.head},
+        }
+
+    @staticmethod
+    def _queue_graphql(*nodes: object) -> str:
+        return json.dumps(
+            {"data": {"repository": {"mergeQueue": {"entries": {"nodes": list(nodes)}}}}}
+        )
+
+    def test_queue_entries_parse_and_accept_a_null_head_commit(self) -> None:
+        real_train = guard.Train(self.root, self.state)
+        node = self._queue_node()
+        seen_argv: list[list[str]] = []
+
+        def fake_execute(argv: list[str], cwd: Path) -> str:
+            seen_argv.append(argv)
+            return self._queue_graphql(node, {**node, "headCommit": None})
+
+        with patch.object(guard, "execute", side_effect=fake_execute):
+            entries = real_train.queue_entries()
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(seen_argv[0][:3], ["gh", "api", "graphql"])
+        self.assertNotIn("--repo", seen_argv[0])
+        self.assertNotIn("headCommit", seen_argv[0][-1])
+        with patch.object(guard, "execute", return_value=self._queue_graphql(node)):
+            self.assertEqual(len(real_train.queue_entries()), 1)
+
+    def test_queue_entries_and_reviews_refuse_malformed_answers(self) -> None:
+        real_train = guard.Train(self.root, self.state)
+        node = self._queue_node()
+        bad_payloads = (
+            self._queue_graphql({**node, "pullRequest": None}),
+            "{}",
+            '{"errors":[{"message":"denied"}]}',
+            '{"data":{"repository":{}}}',
+        )
+        for bad_graphql in bad_payloads:
+            with (
+                self.subTest(payload=bad_graphql[:60]),
+                patch.object(guard, "execute", return_value=bad_graphql),
+                self.assertRaises(guard.Refused),
+            ):
+                real_train.queue_entries()
+        for bad_reviews in ("{}", '{"reviews":"bad"}'):
+            with (
+                self.subTest(reviews=bad_reviews),
+                patch.object(real_train, "gh", return_value=bad_reviews),
+                self.assertRaises(guard.Refused),
+            ):
+                real_train.reviews(1421)
 
 
 if __name__ == "__main__":
