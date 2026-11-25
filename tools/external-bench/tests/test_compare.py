@@ -13,17 +13,24 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
 
 import pytest
 
 HERE = pathlib.Path(__file__).resolve().parent
+REPO_ROOT = HERE.parents[2]
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(REPO_ROOT))
 
 import compare  # noqa: E402
 
+from scripts.lib import safe_subprocess  # noqa: E402
+
+COMMON_SH = HERE.parent / "lib" / "common.sh"
 SCRIPT_TIMEOUT_S = 60
+USAGE_EXIT = 2
 
 # --- test fixture constants -------------------------------------------------
 
@@ -31,6 +38,10 @@ EXPECTED_FRAMES_DEFAULT = 2
 EXPECTED_PLCC_CANNED = 0.95
 EXPECTED_RUNTIME_TOTAL_SUM = 300
 EXPECTED_FAILED_RC = 3
+NORMALISED_FRAME_COUNT = 2
+NORMALISED_RUNTIME_TOTAL_MS = 4.0
+_BASH_PATH = shutil.which("bash")
+BASH = str(pathlib.Path(_BASH_PATH).resolve(strict=True)) if _BASH_PATH is not None else "bash"
 EXPECTED_MISSING_CORPUS_RC = 4
 FIXTURE_WIDTH = 576
 FIXTURE_HEIGHT = 324
@@ -367,6 +378,7 @@ def test_render_json_maps_nonfinite_float_fields_to_null() -> None:
             "runtime_total_ms": None,
             "params": 0,
             "gflops": None,
+            "n_failed": 0,
         }
     ]
 
@@ -418,7 +430,7 @@ def test_main_out_json_is_strict_when_all_wrapper_rows_fail(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Missing optional runners stay visible without emitting bare NaN."""
+    """Failed wrapper runs stay visible, fail the run, and emit strict JSON."""
     src = tmp_path / "netflix" / "src01_576x324_24fps" / "ref"
     src.mkdir(parents=True)
     (src / "ref.yuv").write_bytes(b"\x00" * 16)
@@ -448,13 +460,14 @@ def test_main_out_json_is_strict_when_all_wrapper_rows_fail(
         ]
     )
 
-    assert rc == 0
+    assert rc == compare.EXIT_WRAPPER_FAILED
     raw = out_json.read_text(encoding="utf-8")
     assert "NaN" not in raw
     data = json.loads(raw, parse_constant=lambda token: pytest.fail(f"non-finite {token}"))
     assert {a["competitor"] for a in data} == set(compare.WRAPPERS)
     for aggregate in data:
         assert aggregate["n_clips"] == 0
+        assert aggregate["n_failed"] == 1
         assert aggregate["plcc_mean"] is None
         assert aggregate["srocc_mean"] is None
         assert aggregate["rmse_mean"] is None
@@ -696,12 +709,12 @@ def test_main_honours_limit_flag(
     assert agg[0]["n_clips"] == FIXTURE_DIS_COUNT  # 2 after --limit
 
 
-def test_main_skips_failing_wrapper_and_continues(
+def test_main_reports_failing_wrapper_and_continues(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A wrapper that errors for a corpus item logs ``skip`` and the run
+    """A wrapper that errors for a corpus item logs ``failed`` and the run
     still completes for the remaining wrappers / items."""
     src = tmp_path / "netflix" / "src01_576x324_24fps"
     (src / "ref").mkdir(parents=True)
@@ -732,11 +745,206 @@ def test_main_skips_failing_wrapper_and_continues(
             "dover-mobile",
         ]
     )
-    assert rc == 0
+    assert rc == compare.EXIT_WRAPPER_FAILED
 
     captured = capsys.readouterr()
-    assert "skip x264-pvmaf" in captured.err
+    assert "failed x264-pvmaf" in captured.err
+    assert "x264-pvmaf=1" in captured.err
     # Aggregated table still printed; dover-mobile produced data, x264-pvmaf
     # is present with n_clips=0.
     assert "x264-pvmaf" in captured.out
     assert "dover-mobile" in captured.out
+
+
+# --- normalise_output (via lib/common.sh) ------------------------------------
+
+
+def _run_normalise_output(
+    src: pathlib.Path,
+    dst: pathlib.Path,
+    competitor: str = "x264-pvmaf",
+    metric: str = "vmaf",
+) -> safe_subprocess.TextCommandResult:
+    return safe_subprocess.run(
+        [
+            BASH,
+            "-c",
+            '. "$1"; normalise_output "$2" "$3" "$4" "$5"',
+            "_",
+            str(COMMON_SH),
+            str(src),
+            str(dst),
+            competitor,
+            metric,
+        ],
+        allowed_executables=[BASH],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout_seconds=SCRIPT_TIMEOUT_S,
+    )
+
+
+def _invoke_normalise_output(
+    tmp_path: pathlib.Path,
+    raw: dict | None,
+    *,
+    write_empty: bool = False,
+) -> safe_subprocess.TextCommandResult:
+    src = tmp_path / "raw.json"
+    dst = tmp_path / "norm.json"
+    if write_empty:
+        src.write_text("")
+    elif raw is not None:
+        src.write_text(json.dumps(raw))
+    else:
+        src.write_text("{}")
+    return _run_normalise_output(src, dst)
+
+
+def _complete_raw_payload(*, include_runtime_total: bool = True) -> dict:
+    payload: dict = {
+        "frames": [
+            {"predicted_vmaf": 80.0, "runtime_ms": 1.5, "frame": 0},
+            {"vmaf": 81.0, "runtime_ms": 2.5, "idx": 1},
+        ],
+        "plcc": 0.95,
+        "srocc": 0.93,
+        "rmse": 2.5,
+        "params": 12345,
+        "gflops": 0.5,
+    }
+    if include_runtime_total:
+        payload["runtime_total_ms"] = 4.0
+    return payload
+
+
+def test_normalise_output_accepts_complete_raw_payload(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    proc = _invoke_normalise_output(tmp_path, _complete_raw_payload())
+    assert proc.returncode == 0
+    assert dst.is_file()
+    data = json.loads(dst.read_text())
+    assert data["summary"]["competitor"] == "x264-pvmaf"
+    assert len(data["frames"]) == NORMALISED_FRAME_COUNT
+    assert data["summary"]["runtime_total_ms"] == NORMALISED_RUNTIME_TOTAL_MS
+
+
+def test_normalise_output_rejects_empty_source(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    proc = _invoke_normalise_output(tmp_path, None, write_empty=True)
+    assert proc.returncode == 1
+    assert "empty source file" in proc.stderr
+    assert not dst.is_file()
+
+
+def test_normalise_output_rejects_no_frames(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    proc = _invoke_normalise_output(tmp_path, {"frames": [], "plcc": 0.9})
+    assert proc.returncode == 1
+    assert "no frames" in proc.stderr
+    assert not dst.is_file()
+
+
+def test_normalise_output_rejects_frame_without_score(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    raw = _complete_raw_payload()
+    raw["frames"][0] = {"runtime_ms": 1.0, "frame": 0}
+    proc = _invoke_normalise_output(tmp_path, raw)
+    assert proc.returncode == 1
+    assert "frame 0 has no score" in proc.stderr
+    assert not dst.is_file()
+
+
+def test_normalise_output_rejects_frame_without_runtime(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    raw = _complete_raw_payload()
+    raw["frames"][0] = {"predicted_vmaf": 80.0, "frame": 0}
+    proc = _invoke_normalise_output(tmp_path, raw)
+    assert proc.returncode == 1
+    assert "frame 0 has no runtime_ms" in proc.stderr
+    assert not dst.is_file()
+
+
+def test_normalise_output_rejects_missing_plcc(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    raw = _complete_raw_payload()
+    del raw["plcc"]
+    proc = _invoke_normalise_output(tmp_path, raw)
+    assert proc.returncode == 1
+    assert "missing plcc" in proc.stderr
+    assert not dst.is_file()
+
+
+def test_normalise_output_rejects_non_numeric_params(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    raw = _complete_raw_payload()
+    raw["params"] = True
+    proc = _invoke_normalise_output(tmp_path, raw)
+    assert proc.returncode == 1
+    assert "params is not numeric" in proc.stderr
+    assert not dst.is_file()
+
+
+def test_normalise_output_rejects_nan_score(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    raw = _complete_raw_payload()
+    raw["frames"][0]["predicted_vmaf"] = float("nan")
+    proc = _invoke_normalise_output(tmp_path, raw)
+    assert proc.returncode == 1
+    assert "frame 0 score is not numeric" in proc.stderr
+    assert not dst.is_file()
+
+
+def test_normalise_output_sums_runtime_without_total(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    proc = _invoke_normalise_output(tmp_path, _complete_raw_payload(include_runtime_total=False))
+    assert proc.returncode == 0
+    assert dst.is_file()
+    data = json.loads(dst.read_text())
+    assert data["summary"]["runtime_total_ms"] == pytest.approx(NORMALISED_RUNTIME_TOTAL_MS)
+
+
+def test_normalise_output_rejects_overflowing_runtime_sum(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    raw = _complete_raw_payload(include_runtime_total=False)
+    raw["frames"][0]["runtime_ms"] = 1e308
+    raw["frames"][1]["runtime_ms"] = 1e308
+    proc = _invoke_normalise_output(tmp_path, raw)
+    assert proc.returncode == 1
+    assert "runtime_total_ms is not numeric" in proc.stderr
+    assert not dst.is_file()
+
+
+def test_normalise_output_rejects_frames_that_are_not_a_list(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    raw = _complete_raw_payload()
+    raw["frames"] = {"0": raw["frames"][0]}
+    proc = _invoke_normalise_output(tmp_path, raw)
+    assert proc.returncode == 1
+    assert "frames is not a JSON array" in proc.stderr
+    assert not dst.is_file()
+
+
+def test_normalise_output_rejects_non_numeric_frame_index(tmp_path: pathlib.Path) -> None:
+    dst = tmp_path / "norm.json"
+    raw = _complete_raw_payload()
+    raw["frames"][0]["frame"] = "first"
+    proc = _invoke_normalise_output(tmp_path, raw)
+    assert proc.returncode == 1
+    assert "frame 0 index is not numeric" in proc.stderr
+    assert not dst.is_file()
+
+
+def test_normalise_output_module_refuses_wrong_argument_count(tmp_path: pathlib.Path) -> None:
+    script = HERE.parent / "lib" / "normalise_output.py"
+    proc = safe_subprocess.run(
+        [sys.executable, str(script), str(tmp_path / "raw.json")],
+        allowed_executables=[sys.executable],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout_seconds=SCRIPT_TIMEOUT_S,
+    )
+    assert proc.returncode == USAGE_EXIT
+    assert "usage: normalise_output.py" in proc.stderr
