@@ -19,7 +19,7 @@ import stat
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -30,13 +30,14 @@ sys.path.insert(0, str(ROOT))
 from scripts.lib.safe_subprocess import run as run_command  # noqa: E402
 from scripts.lib.scratch_program import (  # noqa: E402
     ATTEMPTS,
-    _retry_deletion,
     remove_file,
     remove_program,
     remove_tree,
 )
 
 REAL_UNLINK = os.unlink
+HAS_FD_WALKER = vars(shutil).get("_rmtree_impl") is vars(shutil)["_rmtree_safe_fd"]
+FD_WALKER_REASON = "requires shutil's active fd-based rmtree walker"
 
 
 def held_for(name: str, times: int) -> tuple[Callable[..., None], list[str]]:
@@ -51,6 +52,20 @@ def held_for(name: str, times: int) -> tuple[Callable[..., None], list[str]]:
         REAL_UNLINK(path, *args, **kwargs)
 
     return unlink, calls
+
+
+@contextlib.contextmanager
+def vanish_before_chmod(child: Path) -> Iterator[FileNotFoundError]:
+    """Refuse the child's unlink, then remove it just before chmod."""
+    missing = FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(child))
+    unlink, _ = held_for(child.name, 1)
+
+    def chmod(path: Path, mode: int, *, follow_symlinks: bool = True) -> None:
+        REAL_UNLINK(path)
+        raise missing
+
+    with mock.patch("os.unlink", unlink), mock.patch("os.chmod", chmod):
+        yield missing
 
 
 class RemoveProgram(unittest.TestCase):
@@ -151,7 +166,6 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
             path.write_bytes(b"object")
             path.chmod(0o444)
         (self.tree / "HEAD").write_text("ref: refs/heads/master\n", encoding="ascii")
-        self.enterContext(windows_rmtree())
 
     @staticmethod
     def windows_unlink(path: str) -> None:
@@ -162,6 +176,7 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
     def test_plain_rmtree_fails_on_a_read_only_object(self) -> None:
         """Negative: plain rmtree fails on a read-only Git object on Windows."""
         with (
+            windows_rmtree(),
             mock.patch("os.unlink", self.windows_unlink),
             self.assertRaises(PermissionError) as exc,
         ):
@@ -170,7 +185,7 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
 
     def test_remove_tree_clears_the_read_only_bit(self) -> None:
         """Positive: remove both read-only objects and the writable file."""
-        with mock.patch("os.unlink", self.windows_unlink):
+        with windows_rmtree(), mock.patch("os.unlink", self.windows_unlink):
             remove_tree(self.tree)
         self.assertFalse(self.tree.exists())
 
@@ -183,18 +198,29 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
                 refused(path)
             self.windows_unlink(path)
 
-        with mock.patch("os.unlink", unlink), self.assertRaises(PermissionError) as exc:
+        with (
+            windows_rmtree(),
+            mock.patch("os.unlink", unlink),
+            self.assertRaises(PermissionError) as exc,
+        ):
             remove_tree(self.tree)
         self.assertEqual(Path(exc.exception.filename), self.pack)
         self.assertEqual(refused.call_count, 2)
 
     def test_non_deletion_permission_errors_are_raised(self) -> None:
         """Negative: only deletion callbacks may chmod and retry."""
+        refused = PermissionError(errno.EACCES, "Access is denied", str(self.tree))
+
+        def fail_walk(path: Path, *, onexc: Callable[..., None]) -> None:
+            onexc(function, str(path), refused)
+
         for function in (os.lstat, os.open, os.scandir, os.path.islink, os.close):
             with self.subTest(function=function.__name__), mock.patch("os.chmod") as chmod:
-                refused = PermissionError(errno.EACCES, "Access is denied", str(self.tree))
-                with self.assertRaises(PermissionError) as exc:
-                    _retry_deletion(function, str(self.tree), refused)
+                with (
+                    mock.patch.object(shutil, "rmtree", fail_walk),
+                    self.assertRaises(PermissionError) as exc,
+                ):
+                    remove_tree(self.tree)
                 self.assertIs(exc.exception, refused)
                 chmod.assert_not_called()
 
@@ -211,7 +237,7 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
                 raise refused
             return real_lstat(path, *args, **kwargs)
 
-        with mock.patch("os.lstat", lstat), mock.patch("os.chmod") as chmod:
+        with windows_rmtree(), mock.patch("os.lstat", lstat), mock.patch("os.chmod") as chmod:
             with self.assertRaises(PermissionError) as exc:
                 remove_tree(self.tree)
         self.assertIs(exc.exception, refused)
@@ -228,7 +254,7 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
                 raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
             self.windows_unlink(path)
 
-        with mock.patch("os.unlink", unlink):
+        with windows_rmtree(), mock.patch("os.unlink", unlink):
             remove_tree(self.tree)
         self.assertFalse(self.tree.exists())
 
@@ -244,6 +270,63 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             remove_tree(self.tree / "absent")
 
+    @unittest.skipUnless(HAS_FD_WALKER, FD_WALKER_REASON)
+    def test_fd_child_vanished_before_chmod(self) -> None:
+        with (
+            vanish_before_chmod(self.loose) as missing,
+            self.assertRaises(FileNotFoundError) as exc,
+        ):
+            remove_tree(self.loose.parent)
+        self.assertIs(exc.exception, missing)
+        self.assertEqual(exc.exception.filename, str(self.loose))
+
+    @unittest.skipUnless(HAS_FD_WALKER, FD_WALKER_REASON)
+    def test_fd_child_busy(self) -> None:
+        busy = OSError(errno.EBUSY, os.strerror(errno.EBUSY), str(self.loose))
+        with (
+            mock.patch("os.unlink", side_effect=busy) as unlink,
+            mock.patch("os.chmod") as chmod,
+            self.assertRaises(OSError) as exc,
+        ):
+            remove_tree(self.loose.parent)
+        self.assertIs(exc.exception, busy)
+        self.assertEqual(exc.exception.filename, str(self.loose))
+        unlink.assert_called_once_with(self.loose.name, dir_fd=mock.ANY)
+        chmod.assert_not_called()
+
+    def test_postcondition_propagates_lstat_eacces(self) -> None:
+        refused = PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(self.tree))
+        with (
+            mock.patch.object(shutil, "rmtree"),
+            mock.patch("os.lstat", side_effect=refused) as lstat,
+            self.assertRaises(PermissionError) as exc,
+        ):
+            remove_tree(self.tree)
+        self.assertIs(exc.exception, refused)
+        lstat.assert_called_once_with(self.tree)
+
+    def test_refused_rmdir_retries_once_after_chmod(self) -> None:
+        for walker in ("windows", "fd"):
+            with self.subTest(walker=walker):
+                if walker == "fd" and not HAS_FD_WALKER:
+                    self.skipTest(FD_WALKER_REASON)
+                directory = self.tree / walker
+                directory.mkdir()
+                refused = PermissionError(errno.EACCES, os.strerror(errno.EACCES), str(directory))
+                calls = mock.Mock(wraps=os)
+                calls.rmdir.side_effect = [refused, mock.DEFAULT]
+                with (
+                    windows_rmtree() if walker == "windows" else contextlib.nullcontext(),
+                    mock.patch("os.rmdir", calls.rmdir),
+                    mock.patch("os.chmod", calls.chmod),
+                ):
+                    remove_tree(directory)
+                self.assertEqual(
+                    [call[0] for call in calls.mock_calls], ["rmdir", "chmod", "rmdir"]
+                )
+                self.assertEqual(calls.chmod.call_args.args[0], directory)
+                self.assertFalse(directory.exists())
+
     def test_other_errors_are_not_retried(self) -> None:
         """Boundary: a transient busy error still reaches the caller on its first occurrence."""
         busy = OSError(errno.EBUSY, "Device or resource busy", str(self.pack))
@@ -254,7 +337,7 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
                 attempts(path)
             self.windows_unlink(path)
 
-        with mock.patch("os.unlink", unlink), self.assertRaises(OSError) as exc:
+        with windows_rmtree(), mock.patch("os.unlink", unlink), self.assertRaises(OSError) as exc:
             remove_tree(self.tree)
         self.assertIs(exc.exception, busy)
         attempts.assert_called_once_with(str(self.pack))

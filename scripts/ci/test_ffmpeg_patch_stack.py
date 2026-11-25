@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.ci import ffmpeg_shared_series_fixture as shared_series
 from scripts.lib.safe_subprocess import run as run_command
 from scripts.lib.scratch_program import remove_file, remove_tree
+from scripts.lib.test_scratch_program import FD_WALKER_REASON, HAS_FD_WALKER, vanish_before_chmod
 
 SPEC = importlib.util.spec_from_file_location(
     "patch_stack", Path(__file__).with_name("ffmpeg_patch_stack.py")
@@ -136,6 +137,28 @@ class SourceCacheReset(unittest.TestCase):
             ["-C", str(self.cache.repo.parent)], "init", "--quiet", "--bare", "source.git"
         )
         self.assertTrue(self.cache.repo.is_dir())
+
+    @unittest.skipUnless(HAS_FD_WALKER, FD_WALKER_REASON)
+    def test_fd_reset_propagates_vanished_child(self) -> None:
+        self.cache.repo.mkdir(parents=True)
+        child = self.cache.repo / "object"
+        child.touch()
+        with vanish_before_chmod(child) as missing, self.assertRaises(FileNotFoundError) as exc:
+            self.cache.reset()
+        self.assertIs(exc.exception, missing)
+        self.assertEqual(exc.exception.filename, str(child))
+        self.replay.run_git.assert_not_called()
+
+    def test_reset_rejects_missing_root_error_for_existing_cache(self) -> None:
+        self.cache.repo.mkdir(parents=True)
+        missing = FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self.cache.repo))
+        with (
+            patch.object(STACK, "remove_tree", side_effect=missing),
+            self.assertRaises(FileNotFoundError) as exc,
+        ):
+            self.cache.reset()
+        self.assertIs(exc.exception, missing)
+        self.replay.run_git.assert_not_called()
 
     def test_reset_propagates_removal_errors_before_init(self) -> None:
         """Negative: failed removal of an existing cache stops initialization."""

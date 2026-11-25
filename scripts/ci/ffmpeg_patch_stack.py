@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.lib.safe_subprocess import CommandTimedOut
 from scripts.lib.safe_subprocess import run as run_command
-from scripts.lib.scratch_program import remove_tree
+from scripts.lib.scratch_program import _root_absent, remove_tree
 
 STABLE_TAG = re.compile(r"n(\d+)\.(\d+)(?:\.(\d+))?\Z")
 PATCH_NAME = re.compile(r"\d{4}-[A-Za-z0-9_.-]+\.patch\Z")
@@ -352,7 +352,7 @@ class SourceCache:
         try:
             remove_tree(self.repo)
         except FileNotFoundError as error:
-            if error.filename not in (self.repo, str(self.repo)):
+            if error.filename not in (self.repo, str(self.repo)) or not _root_absent(self.repo):
                 raise
         self.repo.parent.mkdir(parents=True, exist_ok=True)
         self.replay.run_git(

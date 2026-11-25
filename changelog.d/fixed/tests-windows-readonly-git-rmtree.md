@@ -1,3 +1,5 @@
-- **Python tests can remove scratch `.git` directories on Windows.** Read-only
-  Git objects no longer stop the cleanup. The FFmpeg patch-stack cache reset
-  now removes the old bare repository even when it contains read-only objects.
+- **Python tests can remove scratch `.git` directories on Windows.**
+  `remove_tree()` retries deletion of read-only Git objects and `remove_file()`
+  handles single Git object files. The `ReadOnlyTreeRemoval` tests cover both
+  helpers. The `SourceCacheReset` tests check that the FFmpeg patch-stack cache
+  is reinitialized only after its old root is gone.

@@ -53,6 +53,14 @@ def _unlink(path: Path, attempts: int, delay: float, unlink: Callable[[Path], No
         time.sleep(delay)
 
 
+def _root_absent(path: Path) -> bool:
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    return False
+
+
 def remove_program(
     path: Path,
     *,
@@ -65,7 +73,7 @@ def remove_program(
         raise ValueError(f"attempts must be at least 1, not {attempts}")
     remove = unlink if unlink is not None else os.unlink
     for candidate in (path, path.with_name(path.name + ".exe")):
-        if os.path.lexists(candidate):
+        if not _root_absent(candidate):
             _unlink(candidate, attempts, delay, remove)
 
 
@@ -82,16 +90,30 @@ def remove_file(path: Path) -> None:
         _retry_read_only(path, path.unlink)
 
 
+class _CallbackError(Exception):
+    """Carry the original error past rmtree's fd walker, which rewrites OSError.filename."""
+
+    def __init__(self, error: BaseException) -> None:
+        super().__init__(error)
+        self.error = error
+
+
 def _retry_deletion(
     function: Callable[..., object], failed_path: str, error: BaseException
 ) -> None:
     if not isinstance(error, PermissionError) or function not in (os.unlink, os.rmdir):
-        raise error
-    _retry_read_only(Path(failed_path), lambda: function(failed_path))
+        raise _CallbackError(error)
+    try:
+        _retry_read_only(Path(failed_path), lambda: function(failed_path))
+    except BaseException as retry_error:
+        raise _CallbackError(retry_error) from retry_error
 
 
 def remove_tree(path: Path) -> None:
     """Retry a refused unlink or rmdir once after chmod and verify that the tree is gone."""
-    shutil.rmtree(path, onexc=_retry_deletion)
-    if os.path.lexists(path):
+    try:
+        shutil.rmtree(path, onexc=_retry_deletion)
+    except _CallbackError as wrapped:
+        raise wrapped.error from None
+    if not _root_absent(path):
         raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), str(path))
