@@ -974,6 +974,12 @@ fragments so existing release-train history is preserved.
   Markdown bullet under `changelog.d/<section>/<topic>.md`. The fragment is
   the source of truth; the rendered `CHANGELOG.md` is a build artefact that a
   pull request does not carry ([ADR-2197](../adr/2197-render-generated-docs-at-landing.md)).
+  Two pull requests carry it: the render-only pull request
+  ([ADR-3295](../adr/3295-render-only-pull-request.md)), which adds no
+  fragment and owes no other deliverable (`scripts/ci/deliverables-check.sh`
+  section 2a'), and the generated release pull request at the cut
+  ([Cutting a release from fragments](#cutting-a-release-from-fragments)),
+  whose workflow does not run that gate.
 - **Filename convention:** lowercase kebab-case, optionally prefixed with the
   task ID (`T7-39-foo.md`) or ADR number (`adr-0312-deferral-retired.md`)
   for implicit lexical ordering within the section.
