@@ -20,6 +20,11 @@ differ only in the top-level ``uv_version`` value. The new value must be an exac
 release. Missing or invalid objects, malformed or duplicate-key JSON, and any
 other manifest change keep the trailer.
 
+ADR-3624 strips a single exact release-bot ``Co-authored-by:`` line in ``--landed`` mode
+when the commit author is that same release bot. A second line and any bot or
+coding-tool co-author keep the refusal; a human co-author passes, as on any commit.
+Another author keeps the refusal unless a Renovate exemption above applies.
+
 The forge must identify one PR with the squash SHA and a parseable ``merged_at``
 timestamp. Its complete commit list must have fewer than 250 entries and include
 a release-bot commit identified by normalized Git author name and email. Each
@@ -724,27 +729,45 @@ def python_lock_landed_exemption(
     return True
 
 
+def _drop_single_line(message: str, line: str) -> str | None:
+    """Drop exactly one message line whose strip equals line, or return None."""
+    lines = message.splitlines(keepends=True)
+    kept = [item for item in lines if item.strip() != line]
+    if len(lines) - len(kept) != 1:
+        return None
+    return "".join(kept)
+
+
 def landed_exempt_message(
     commit: Commit, root: Path = DEFAULT_ROOT, *, fetch: ci_tier.Fetcher | None = None
 ) -> str:
-    """Strip the single release-bot co-author line on a Renovate lock-refresh squash."""
+    """Strip one release-bot co-author line for release-bot authors or Renovate grants.
+
+    Covers any landed commit authored by the release bot (seen on render commit
+    800122efd8) and Renovate commits matching ADR-3555 or ADR-3560 grants.
+    """
     if input_bound_reason(
         commit.message, "COMMIT_MESSAGE", MAX_COMMIT_MESSAGE_BYTES, MAX_COMMIT_MESSAGE_LINES
     ):
         return commit.message
+    if (commit.author_name, commit.author_email.lower()) == (
+        RELEASE_BOT_NAME,
+        RELEASE_BOT_EMAIL,
+    ):
+        stripped = _drop_single_line(commit.message, RELEASE_BOT_COAUTHOR)
+        return commit.message if stripped is None else stripped
     if (commit.author_name, commit.author_email.lower()) != (
         RENOVATE_BOT_LOGIN,
         RENOVATE_BOT_EMAIL,
     ):
         return commit.message
-    lines = commit.message.splitlines(keepends=True)
-    kept = [line for line in lines if line.strip() != RELEASE_BOT_COAUTHOR]
-    if len(lines) - len(kept) != 1:
+    stripped = _drop_single_line(commit.message, RELEASE_BOT_COAUTHOR)
+    if stripped is None:
         return commit.message
     paths = commit_changed_paths(commit.sha)
     unexcepted = lint_exceptions.still_read(LANDED_COAUTHOR_EXCEPTION_RULE, paths, root)
     if len(unexcepted) < len(paths) or python_lock_landed_exemption(commit.sha, paths, root, fetch):
-        return "".join(kept)
+        return stripped
     return commit.message
 
 
