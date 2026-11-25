@@ -469,13 +469,13 @@ class RealReplay(unittest.TestCase):
     def test_empty_or_corrupt_cache_is_refetched(self) -> None:
         STACK.maintain(self.repo, self.output, True, False)
         (cache,) = self.cache_repos()
-        shutil.rmtree(cache)
+        remove_tree(cache)
         cache.mkdir()  # empty directory
         self.assertEqual(
             STACK.maintain(self.repo, self.output, False, False)["source"], "fetched into cache"
         )
         (cache / "HEAD").write_text("garbage\n")  # corrupt metadata
-        shutil.rmtree(cache / "objects")
+        remove_tree(cache / "objects")
         self.assertEqual(
             STACK.maintain(self.repo, self.output, False, False)["source"], "fetched into cache"
         )

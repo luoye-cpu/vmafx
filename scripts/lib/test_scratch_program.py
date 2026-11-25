@@ -199,35 +199,53 @@ class ReadOnlyTreeRemoval(unittest.TestCase):
 
 
 def bare_git_rmtree_calls(source: str, name: str) -> list[str]:
-    """Report rmtree calls whose first argument contains a literal .git component."""
+    """Report rmtree calls with .git, *.git or objects literals in the first argument or path=."""
     findings = []
     for node in ast.walk(ast.parse(source, filename=name)):
-        if not isinstance(node, ast.Call) or not node.args:
+        if not isinstance(node, ast.Call):
             continue
         match node.func:
             case ast.Name(id="rmtree") | ast.Attribute(value=ast.Name(id="shutil"), attr="rmtree"):
+                paths = node.args[:1] + [kw.value for kw in node.keywords if kw.arg == "path"]
                 if any(
-                    isinstance(n, ast.Constant) and n.value == ".git"
-                    for n in ast.walk(node.args[0])
+                    isinstance(n, ast.Constant)
+                    and isinstance(n.value, str)
+                    and (n.value.endswith(".git") or n.value == "objects")
+                    for path in paths
+                    for n in ast.walk(path)
                 ):
                     findings.append(f"{name}:{node.lineno}")
     return findings
 
 
+def tracked_python_files() -> list[str]:
+    tracked = run_command(
+        ["git", "ls-files", "-z", "--", "*.py"],
+        allowed_executables=("git",),
+        env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+        cwd=ROOT,
+        capture_output=True,
+        max_output_bytes=1024 * 1024,
+        check=True,
+    )
+    return [os.fsdecode(entry) for entry in tracked.stdout.split(b"\0") if entry]
+
+
 class GitDirectoryRemovalScan(unittest.TestCase):
+    def test_listing_ignores_an_inherited_git_index(self) -> None:
+        """Negative: a foreign Git index and directory cannot redirect the listing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            index = Path(tmp) / "index"
+            index.touch()
+            with mock.patch.dict(
+                os.environ, {"GIT_INDEX_FILE": str(index), "GIT_DIR": str(Path(tmp) / "missing")}
+            ):
+                self.assertIn("scripts/lib/test_scratch_program.py", tracked_python_files())
+
     def test_no_bare_rmtree_of_a_git_directory(self) -> None:
-        """Positive: every tracked Python file uses the read-only-aware cleanup for .git."""
-        tracked = run_command(
-            ["git", "ls-files", "-z", "--", "*.py"],
-            allowed_executables=("git",),
-            cwd=ROOT,
-            capture_output=True,
-            max_output_bytes=1024 * 1024,
-            check=True,
-        )
+        """Positive: tracked Python files use read-only-aware cleanup for literal Git paths."""
         findings = []
-        for entry in tracked.stdout.removesuffix(b"\0").split(b"\0"):
-            name = os.fsdecode(entry)
+        for name in tracked_python_files():
             findings.extend(bare_git_rmtree_calls((ROOT / name).read_text(encoding="utf-8"), name))
         self.assertFalse(findings, "\n".join(findings))
 
@@ -238,8 +256,15 @@ remove_tree(repo / ".git")
 shutil.rmtree(tmp, ignore_errors=True)
 rmtree(
     repo / '.git')
+shutil.rmtree(path=repo / ".git")
+shutil.rmtree(cache / "source.git")
+shutil.rmtree(cache / "objects")
+shutil.rmtree(tmp / "build")
 """
-        self.assertEqual(bare_git_rmtree_calls(source, "plant.py"), ["plant.py:1", "plant.py:4"])
+        self.assertEqual(
+            bare_git_rmtree_calls(source, "plant.py"),
+            ["plant.py:1", "plant.py:4", "plant.py:6", "plant.py:7", "plant.py:8"],
+        )
 
 
 if __name__ == "__main__":

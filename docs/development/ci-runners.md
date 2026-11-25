@@ -152,9 +152,9 @@ program from a temporary directory removes it with
 file, a bounded number of times, before the directory is cleaned up.
 
 Git writes object files read-only, and Windows refuses to delete a read-only
-file. Tests that remove a `.git` directory they created call `remove_tree()`
-from the same module. A scan in `scripts/lib/test_scratch_program.py` rejects
-bare `shutil.rmtree` calls on a `.git` path.
+file. Tests use `remove_tree()` for a `.git` directory, a bare repository or its
+`objects` directory. The scan in `scripts/lib/test_scratch_program.py` rejects
+bare `shutil.rmtree` calls with these path literals.
 
 CUDA is off in this lane. CUDA 13.3.1 shipped no `windows-arm64` packages and
 13.4.1 was the first release that does; the repository pin is now the CUDA
