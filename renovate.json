@@ -229,7 +229,15 @@
       "matchPackageNames": [
         "uv"
       ],
+      "matchDatasources": [
+        "pypi"
+      ],
+      "matchFileNames": [
+        "requirements/locks/tooling-tests.in",
+        "requirements/locks/manifest.json"
+      ],
       "groupName": "uv (lock generator, all managers)",
+      "minimumGroupSize": 2,
       "automerge": false
     },
     {
@@ -861,7 +869,7 @@
         "/^requirements/locks/manifest\\.json$/"
       ],
       "matchStrings": [
-        "\"uv_version\":\\s*\"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\""
+        "\"uv_version\"\\s*:\\s*\"(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)\""
       ],
       "datasourceTemplate": "pypi",
       "depNameTemplate": "uv",

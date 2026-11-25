@@ -564,7 +564,7 @@ def _uv_group_finding(config: dict[str, Any], update_type: str, version: str) ->
                 "matchPackageNames": "uv",
                 "matchDepNames": "uv",
                 "matchUpdateTypes": update_type,
-                "matchCurrentValue": version,
+                "matchCurrentValue": f"=={version}" if manager == "pip_requirements" else version,
                 "matchCurrentVersion": version,
             },
         )
@@ -629,6 +629,17 @@ class UvLockGeneratorGroup(unittest.TestCase):
         manifest = json.loads((ROOT / LOCK_MANIFEST).read_text(encoding="utf-8"))
         self.assertIn("uv_version", manifest)
         self.assertRegex(manifest["uv_version"], r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
+    def test_uv_group_requires_both_updates(self) -> None:
+        (rule,) = [r for r in self.config["packageRules"] if r.get("groupName") == UV_GROUP]
+        self.assertEqual(rule.get("minimumGroupSize"), 2)
+        self.assertEqual(rule.get("matchDatasources"), ["pypi"])
+        self.assertCountEqual(
+            rule.get("matchFileNames", []), ["requirements/locks/tooling-tests.in", LOCK_MANIFEST]
+        )
+
+    def test_manifest_allows_space_before_colon(self) -> None:
+        self.assertEqual(self.findings(read=lambda _: '{"uv_version" : "0.13.6"}'), [])
 
     def test_missing_manager_fails(self) -> None:
         def remove(config: dict[str, Any]) -> None:
@@ -701,7 +712,7 @@ class UvLockGeneratorGroup(unittest.TestCase):
                 {
                     "matchManagers": ["pip_requirements"],
                     "matchPackageNames": ["uv"],
-                    "matchCurrentValue": version,
+                    "matchCurrentValue": f"=={version}",
                     "groupName": "split",
                 }
             )

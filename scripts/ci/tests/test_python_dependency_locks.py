@@ -560,7 +560,10 @@ class LockValidationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             problems = self.checker.validate_lock(temp_root, manifest, entry)
-            self.assertTrue(any("generator version does not match manifest" in p for p in problems))
+            self.assertIn(
+                "dummy.txt: generator version 0.11.0 does not match manifest uv_version 0.12.18",
+                problems,
+            )
 
     def test_remote_output_is_rejected(self) -> None:
         entry = {
@@ -2400,32 +2403,37 @@ class UvBootstrapTests(unittest.TestCase):
         def compile_input(
             binary: str, args: list[str], *, cwd: Path
         ) -> subprocess.CompletedProcess[str]:
-            version = pinned_version(cwd / args[2])
+            pins = (cwd / args[2]).read_text(encoding="utf-8").splitlines()
             output = Path(args[args.index("-o") + 1])
-            output.write_text(f"uv=={version} \\\n    {self.digest}\n", encoding="utf-8")
+            output.write_text("".join(f"{pin} {self.digest}\n" for pin in pins), encoding="utf-8")
             return subprocess.CompletedProcess([binary, *args], 0, "", "")
 
         manifest = self.checker.load_manifest(self.root)
         entry = manifest["locks"][0]
         tooling_lock = self.root / entry["output"]
         tooling_input = self.root / entry["inputs"][0]
-        tooling_input.write_text(f"uv=={self.old}\n", encoding="utf-8")
-        tooling_lock.write_text(f"uv=={self.old} \\\n    {self.digest}\n", encoding="utf-8")
+        old_input = f"uv=={self.old}\nother==1\n"
+        tooling_input.write_text(old_input, encoding="utf-8")
+        self.run_uv.side_effect = compile_input
+        self.checker.compile_entry(self.root, sys.executable, entry, tooling_lock)
         self.checker.stamp_lock(self.root, dict(manifest, uv_version=self.old), entry, tooling_lock)
-        tooling_input.write_text(f"uv=={self.version}\n", encoding="utf-8")
+        tooling_input.write_text(f"uv=={self.version}\nother==1\n", encoding="utf-8")
 
         self.installed.return_value = pinned_version(tooling_lock)
-        self.run_uv.side_effect = compile_input
         with self.assertRaises(self.checker.ContractError) as raised:
             self.checker.write(self.root, sys.executable)
         self.assertIn(self.old, str(raised.exception))
         self.assertIn(self.version, str(raised.exception))
 
         self.assertEqual(self.bootstrap(), 0)
+        self.assertIn(
+            f"other==1 {self.digest}", self.output.read_text(encoding="utf-8").splitlines()
+        )
         self.installed.return_value = pinned_version(self.output)
         self.assertEqual(self.checker.write(self.root, sys.executable), 0)
         lock_lines = tooling_lock.read_text(encoding="utf-8").splitlines()
         self.assertIn(f"# vmafx-uv-version: {self.version}", lock_lines)
+        self.assertIn(f"other==1 {self.digest}", lock_lines)
         self.assertEqual(pinned_version(tooling_lock), self.version)
 
     def test_workflow_install_requires_its_bootstrap_producer(self) -> None:
@@ -2447,9 +2455,66 @@ class UvBootstrapTests(unittest.TestCase):
     def test_previous_compiled_pin_fails(self) -> None:
         """Negative: the previous uv pin cannot bootstrap the reviewed release."""
         self.compiled = f"uv=={self.old} {self.digest}\n"
-        with self.assertRaisesRegex(self.checker.ContractError, "expected uv==0\\.12\\.18"):
+        with self.assertRaises(self.checker.ContractError) as raised:
             self.bootstrap()
+        self.assertIn(f"found uv=={self.old}, expected uv=={self.version}", str(raised.exception))
         self.assertFalse(self.output.exists())
+
+    def test_hashed_other_requirement_is_accepted(self) -> None:
+        self.compiled += f"other==1 {self.digest}\n"
+        self.assertEqual(self.bootstrap(), 0)
+
+    def test_marked_other_requirement_is_accepted(self) -> None:
+        self.compiled += f'other==1 ; python_version >= "3.10" {self.digest}\n'
+        self.assertEqual(self.bootstrap(), 0)
+
+    def test_committed_tooling_lock_is_accepted(self) -> None:
+        version = self.checker.load_manifest(ROOT)["uv_version"]
+        self.checker._check_bootstrap_pin(ROOT / "requirements/locks/tooling-tests.txt", version)
+
+    def test_marked_uv_pin_fails(self) -> None:
+        self.compiled = f'uv=={self.version} ; sys_platform == "linux" {self.digest}\n'
+        with self.assertRaises(self.checker.ContractError):
+            self.bootstrap()
+
+    def test_uppercase_uv_pin_is_accepted(self) -> None:
+        self.compiled = f"UV=={self.version} {self.digest}\n"
+        self.assertEqual(self.bootstrap(), 0)
+
+    def test_unhashed_other_requirement_fails(self) -> None:
+        self.compiled += "other==1\n"
+        with self.assertRaisesRegex(self.checker.ContractError, "sha256 artifact hash"):
+            self.bootstrap()
+
+    def test_invalid_token_after_artifact_hash_fails(self) -> None:
+        self.compiled += f"other==1 {self.digest} --no-deps\n"
+        with self.assertRaisesRegex(self.checker.ContractError, "sha256 artifact hash"):
+            self.bootstrap()
+
+    def test_malformed_hash_alongside_valid_hash_fails(self) -> None:
+        self.compiled += f"other==1 {self.digest} --hash=sha256:abc\n"
+        with self.assertRaisesRegex(self.checker.ContractError, "sha256 artifact hash"):
+            self.bootstrap()
+
+    def test_missing_uv_pin_fails(self) -> None:
+        self.compiled = f"other==1 {self.digest}\n"
+        with self.assertRaises(self.checker.ContractError) as raised:
+            self.bootstrap()
+        self.assertIn(f"found no uv pin, expected uv=={self.version}", str(raised.exception))
+
+    def test_alternative_uv_requirement_fails(self) -> None:
+        for requirement in (f"uv>={self.version}", f"uv[extra]=={self.version}"):
+            with self.subTest(requirement=requirement):
+                self.compiled = f"{requirement} {self.digest}\nuv=={self.version} {self.digest}\n"
+                with self.assertRaises(self.checker.ContractError):
+                    self.bootstrap()
+
+    def test_duplicate_reviewed_uv_pin_fails(self) -> None:
+        self.compiled *= 2
+        with self.assertRaises(self.checker.ContractError) as raised:
+            self.bootstrap()
+        pin = f"uv=={self.version}"
+        self.assertIn(f"found {pin}, {pin}, expected {pin}", str(raised.exception))
 
     def test_missing_uv_hash_fails(self) -> None:
         """Negative: another package's hash or an inline comment cannot authorize uv."""
@@ -2460,8 +2525,12 @@ class UvBootstrapTests(unittest.TestCase):
     def test_conflicting_compiled_uv_pins_fail(self) -> None:
         """Negative: a hash for the reviewed version cannot authorize a conflicting uv pin."""
         self.compiled += f"uv=={self.old} {self.digest}\n"
-        with self.assertRaisesRegex(self.checker.ContractError, "expected uv=="):
+        with self.assertRaises(self.checker.ContractError) as raised:
             self.bootstrap()
+        self.assertIn(
+            f"found uv=={self.version}, uv=={self.old}, expected uv=={self.version}",
+            str(raised.exception),
+        )
 
     def test_multiline_uv_hash_is_accepted(self) -> None:
         """Boundary: recognize uv's backslash-continued artifact hashes."""

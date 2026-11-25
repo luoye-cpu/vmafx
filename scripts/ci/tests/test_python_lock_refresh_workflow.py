@@ -37,6 +37,7 @@ FORCE_RE = re.compile(r"(?:^|\s)(?:--force\S*|-f|\+HEAD\S*)(?:\s|$)")
 GENERATOR_RE = re.compile(r"pip-compile|uv\s+pip\s+compile|uv\s+lock")
 
 ORDER_FINDING = "guard, tooling install, bootstrap, bootstrap install, write and publish are missing or out of order"
+REQUIRED_STEP_FINDING = "bootstrap and write must run unconditionally and propagate failures"
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -85,26 +86,27 @@ def shape_findings(workflow: dict[str, Any], inputs: list[str]) -> list[str]:
     found += ["expression inside run:" for text in texts if "${{" in text]
     found += ["force push" for text in texts if FORCE_RE.search(text)]
     found += ["second generator" for text in texts if GENERATOR_RE.search(text)]
-    found += guard_order_findings(texts)
+    found += guard_order_findings(steps_of(workflow))
     return found
 
 
-def guard_order_findings(texts: list[str]) -> list[str]:
+def guard_order_findings(steps: list[dict[str, Any]]) -> list[str]:
     """Check command order and keep the bootstrap install in its producer's shell."""
     bootstrap = "python3 scripts/ci/check_python_dependency_locks.py bootstrap-uv"
     install = 'python -m pip install --no-build-isolation --require-hashes -r "$bootstrap"'
+    write = "python3 scripts/ci/check_python_dependency_locks.py write"
     markers = (
         "python3 scripts/ci/lock_refresh_publish.py refuse-non-renovate",
         "python -m pip install --require-hashes -r requirements/locks/package-build.txt",
         "python -m pip install --no-build-isolation --require-hashes -r requirements/locks/tooling-tests.txt",
         bootstrap,
         install,
-        "python3 scripts/ci/check_python_dependency_locks.py write",
+        write,
         "python3 scripts/ci/lock_refresh_publish.py publish",
     )
     positions: dict[str, tuple[int, int]] = {}
-    for step, text in enumerate(texts):
-        for line, command in lock_checker.logical_lines(text):
+    for index, step in enumerate(steps):
+        for line, command in lock_checker.logical_lines(step.get("run", "")):
             marker = (
                 command.partition(" --")[0]
                 if command.startswith("python3 scripts/ci/")
@@ -113,11 +115,15 @@ def guard_order_findings(texts: list[str]) -> list[str]:
             if marker in markers:
                 if marker in positions:
                     return [ORDER_FINDING]
-                positions[marker] = (step, line)
+                positions[marker] = (index, line)
     if sorted(positions, key=positions.__getitem__) != list(markers):
         return [ORDER_FINDING]
     if positions[bootstrap][0] != positions[install][0]:
         return [ORDER_FINDING]
+    for marker in (bootstrap, write):
+        step = steps[positions[marker][0]]
+        if "if" in step or "continue-on-error" in step:
+            return [REQUIRED_STEP_FINDING]
     return []
 
 
@@ -209,6 +215,15 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
             step for step in steps_of(wf) if "bootstrap-uv" not in step.get("run", "")
         ]
         self.assertIn(ORDER_FINDING, shape_findings(wf, self.inputs))
+
+    def test_planted_optional_refresh_steps_are_reported(self) -> None:
+        for command in ("bootstrap-uv", "check_python_dependency_locks.py write"):
+            for key, value in (("if", False), ("continue-on-error", True)):
+                with self.subTest(command=command, key=key):
+                    wf = self.planted()
+                    step = next(s for s in steps_of(wf) if command in s.get("run", ""))
+                    step[key] = value
+                    self.assertIn(REQUIRED_STEP_FINDING, shape_findings(wf, self.inputs))
 
     def test_planted_late_tooling_install_is_reported(self) -> None:
         """Negative: installing the tooling lock after bootstrap can restore the old uv."""

@@ -22,7 +22,7 @@ version of `uv` (`uv_version` in `requirements/locks/manifest.json`).
 `uv_version`. Renovate moves the `requirements/locks/tooling-tests.in` pin and
 `uv_version` in one pull request through the
 `uv (lock generator, all managers)` group in `renovate.json`, guarded by
-`UvLockGeneratorGroup` in `scripts/ci/tests/test_renovate_file_patterns.py`.
+`test_uv_group_requires_both_updates` in `scripts/ci/tests/test_renovate_file_patterns.py`.
 
 The checker recognizes `uv` by its case-insensitive, PEP 503-normalized package
 name. It checks `==` and `===` pins with optional extras, whitespace, and
@@ -104,6 +104,9 @@ A uv bump changes `tooling-tests.in` and the manifest's `uv_version` while
 `check_python_dependency_locks.py bootstrap-uv` uses it to compile the
 generator lock into a temporary hash-pinned file. The job installs the reviewed
 uv from that file and runs `write` to regenerate every lock with it.
+`test_stale_tooling_lock_regenerates_after_bootstrap` exercises this recovery.
+`test_checked_in_workflow_has_the_required_shape` in
+`scripts/ci/tests/test_python_lock_refresh_workflow.py` checks the step order.
 
 ## How to add or update a dependency
 

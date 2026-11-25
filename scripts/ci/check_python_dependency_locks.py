@@ -1890,7 +1890,10 @@ def validate_lock(root: Path, manifest: dict[str, Any], entry: dict[str, Any]) -
     if metadata.get("input-sha256") != expected:
         problems.append(f"{output}: source fingerprint is stale; run make python-locks-write")
     if metadata.get("uv-version") != manifest.get("uv_version"):
-        problems.append(f"{output}: generator version does not match manifest")
+        problems.append(
+            f"{output}: generator version {metadata.get('uv-version', '<missing>')} "
+            f"does not match manifest uv_version {manifest.get('uv_version', '<missing>')}"
+        )
     problems.extend(_validate_lock_requirements(text, output))
     return problems
 
@@ -2145,16 +2148,30 @@ def _check_bootstrap_pin(output: Path, version: str) -> None:
         text = output.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
         raise ContractError(f"cannot read bootstrap lock {output}: {error}") from error
-    pins = [
-        requirement.split()
-        for _, requirement in _requirements_file_lines(text)
-        if re.match(r"^\s*uv(?![a-z0-9_.-])", requirement, re.IGNORECASE)
-    ]
-    if len(pins) == 1:
-        name, *hashes = pins[0]
-        if name == pin and hashes and all(HASH_RE.fullmatch(token) for token in hashes):
-            return
-    raise ContractError(f"{output}: expected {pin} with a sha256 artifact hash")
+    problems = _validate_lock_requirements(text, str(output))
+    if problems:
+        raise ContractError("\n".join(problems))
+    uv_pins = []
+    for number, line in logical_lines(text):
+        content = line.partition("#")[0].strip()
+        if not content:
+            continue
+        # Keep the environment marker with its requirement, before the hash options.
+        requirement, *hashes = re.split(r"\s+(?=--)", content)
+        if not hashes or not all(HASH_RE.fullmatch(token) for token in hashes):
+            raise ContractError(
+                f"{output}:{number}: {requirement} requires valid sha256 artifact hashes"
+            )
+        match = EXACT_INPUT_PIN_RE.fullmatch(requirement)
+        if not match:
+            raise ContractError(
+                f"{output}:{number}: found {requirement}, expected {pin} and exact pins"
+            )
+        if re.sub(r"[-_.]+", "-", match[1]).lower() == "uv":
+            uv_pins.append("uv" + requirement.removeprefix(match[1]))
+    if uv_pins != [pin]:
+        found = ", ".join(uv_pins) or "no uv pin"
+        raise ContractError(f"{output}: found {found}, expected {pin}")
 
 
 def _git_metadata_dirs(root: Path) -> tuple[Path, Path]:
