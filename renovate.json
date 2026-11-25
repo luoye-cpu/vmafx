@@ -141,6 +141,37 @@
       "draftPR": false
     },
     {
+      "description": "These Python hook additional_dependencies pins mirror requirements/locks/tooling-tests.txt, which Renovate does not edit (ignorePaths), so the lock refresh moves them, not the pre-commit manager.",
+      "matchManagers": [
+        "pre-commit"
+      ],
+      "matchDepTypes": [
+        "pre-commit-python"
+      ],
+      "matchDepNames": [
+        "bandit",
+        "cfgv",
+        "colorama",
+        "distlib",
+        "filelock",
+        "flawfinder",
+        "identify",
+        "iniconfig",
+        "nodeenv",
+        "packaging",
+        "platformdirs",
+        "pluggy",
+        "pre-commit",
+        "pygments",
+        "pytest",
+        "pytest-timeout",
+        "python-discovery",
+        "pyyaml",
+        "virtualenv"
+      ],
+      "enabled": false
+    },
+    {
       "description": "Python patch updates auto-merge; minor + major need review.",
       "matchManagers": [
         "pep621",
