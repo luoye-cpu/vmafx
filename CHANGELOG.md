@@ -31,6 +31,12 @@
 - **Packaged Rust crate checks.** Bundle the documentation headers in `vmafx-sys` and check both Rust crate archives for size, uncompressed extraction limits, standalone docs.rs builds without GPU tools, and header drift, in Rust CI and as a pre-commit hook (#2320). Publish missing crate versions in dependency order from protected release tags via uncredentialed dry-run verification and `--no-verify` publication, with bootstrap-token-to-OIDC authentication (ADR-3399).
 
 
+- **VMAFx encode packages and torcul.** A new architecture page,
+  [`docs/architecture/torcul-capability-map.md`](docs/architecture/torcul-capability-map.md),
+  maps five VMAFx Go encode packages to their planned Rust counterparts in
+  torcul and lists the conditions for retiring each Go package (#2320).
+
+
 - **API documentation coverage check.** `scripts/ci/check_api_doc_coverage.py` mechanically enforces that every public VMAFx symbol (including `vmafx_*` functions, `Vmafx` types, and `VMAFX_*` enum constants and macros) declared in `core/include/vmafx/*.h` is reachable in `docs/api/` (#2436).
 
 
@@ -1842,6 +1848,9 @@ Contributed by luoye-cpu.
 - **HDR pins hold 5 decimal places on x86-64 and 3 on aarch64 and macOS.** libvmaf scores identical converted pictures bit-exact on every platform; the zimg conversion to ICtCp rounds differently on aarch64 and macOS, by up to 3.5e-4 on the pooled score. See [HDR models](docs/models/v1.md#hdr-models).
 
 
+- Narrow heavy-job `ninja` link steps to consumed targets when a matching Builds matrix row is active, keeping full compilation (ADR-3625).
+
+
 - **The chart no longer sets `VMAFX_BACKEND` on the scoring server.** The
   server's Deployment, StatefulSet and Job carried it, but `vmafx-server`
   never read it: it takes its backend from each request's `backend` score
@@ -1920,6 +1929,9 @@ Contributed by luoye-cpu.
 
 
 - **Lane briefs now carry the checks that missed three defects.** `.config/lane-brief.yaml` makes the lane launcher refuse a `task: fix` brief that lacks the isolated `mypy --no-site-packages --disable-error-code=import-not-found` command, and a `task: review` brief that lacks `grep the test tree for each changed literal` or `build-option change: meson setup`. `scripts/ci/tests/test_lane_brief_config.py` pins the lines and replays planted briefs against the launcher's reader; see [Lane brief requirements](docs/development/agent-reference.md).
+
+
+- **Fix lane briefs now carry a `markdownlint-cli2` check line.** `.config/lane-brief.yaml` makes the lane launcher refuse a `task: fix` brief that lacks `*.md change: markdownlint-cli2`, so every fix brief either names the touched Markdown files linted by the pre-commit hook or records that none apply. `scripts/ci/tests/test_lane_brief_config.py` pins the clause and replays planted briefs against the launcher's reader; see [Lane brief requirements](docs/development/agent-reference.md).
 
 
 - **`M_PI` and `M_E` come from `<math.h>` on every platform (Netflix/vmaf
@@ -2703,6 +2715,11 @@ Contributed by luoye-cpu.
   with its own `VmafFeatureExtractor` flags.
 
 
+- **CI:** the README no longer shows a Codacy grade badge and the README Badges
+  workflow (`.github/workflows/readme-badges.yml`) no longer reads Codacy, so
+  the workflow stops failing on a source that never answers.
+
+
 ### Fixed
 
 - **Docs:** the Python library page no longer walks readers through the
@@ -2853,6 +2870,19 @@ Contributed by luoye-cpu.
 
 
 - **CI:** wait on API rate limits and poll less often (issue 3582).
+
+
+- **The perf regression gate and the external-bench comparison no longer report success for runs that measured nothing.**
+  `scripts/perf/check-regression.py` exits 3 and names a state (`missing`, `failed`, `skipped`,
+  `incomparable`) for every cell it could not compare, including cells from different hardware or a
+  different workload; `--advisory` masks only the regression exit code. `tools/external-bench/compare.py`
+  exits 5 and counts failed wrapper runs per competitor, and `normalise_output` refuses to fill an empty or
+  incomplete wrapper output with zeros (ADR-3611).
+
+
+- **Landed check accepts a release-bot self co-author line** on any landed
+  commit authored by `vmafx-release-bot[bot]` (seen on render commit
+  `800122efd8`), so master `Landed commit messages` stays green (ADR-3624).
 
 
 - **Go security scan:** the node's eBPF binding no longer trips gosec G101 (hard-coded credentials): its bpf2go identifier is `rcloneTracker`, whose generated constant names hold no credential word, and `make lint-go` also scans generated Go files with `.gosec.json` (issue 3630).
@@ -3237,6 +3267,9 @@ Contributed by luoye-cpu.
 
 
 - **CI:** a refused or unreachable connection no longer ends a CI download on the first attempt: curl and wget fetches in shell scripts, workflows and container recipes retry connection and host-resolution failures, the tidy lane's APT downloads retry, and a contract test checks curl and wget fetches for the retry flags and requires retried downloads to write to a file before use.
+
+
+- **Preserve the first FFmpeg patch refresh error.** A temporary checkout cleanup failure is reported alongside the original replay error. Replay Git commands disable automatic maintenance and garbage collection to prevent cleanup races.
 
 
 - **The shared FFmpeg fix series fetches a failed github.com release download via the forge API.**
@@ -3814,6 +3847,10 @@ Contributed by luoye-cpu.
   another checkout's history and returned another landing order, and the ADR index of a head that
   `make docs-render-check` accepts on its own was refused. The check now runs with those variables
   unset.
+
+
+- **CI:** the hourly `docs-render-pr` workflow no longer fails while its render
+  pull request waits in the merge queue.
 
 
 - CI: the scheduled render pull request opener (`scripts/ci/open-render-pr.sh`) acts only on a
