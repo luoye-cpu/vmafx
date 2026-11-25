@@ -19,7 +19,7 @@ export default {
     'cmd/vmafx-node/providers.go:provideScorer',
     'cmd/vmafx-node/providers.go:provideFeedbackClient',
     'cmd/vmafx-node/online_feedback.go:feedbackSocketDefault',
-    'cmd/vmafx-node/bpf/rclonebypass_bpfel.go:rcloneBypassObjects',
+    'cmd/vmafx-node/bpf/rclonebypass_bpfel.go:rcloneTrackerObjects',
     'model/tiny/registry.json:models',
   ],
   describe: [

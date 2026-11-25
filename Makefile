@@ -232,8 +232,14 @@ observability-compose-smoke:
 
 # Go security scan (gosec): the one definition of the gate, run by `make lint`
 # and by the gosec step of .github/workflows/go-ci.yml. Every G* finding fails.
-# -exclude-generated: generated protobuf code (gen/) carries G103
-# (unsafe.Slice) and G115 (int -> uint32 cgo casts) by design.
+# The scan runs twice:
+# 1. Hand-written code, every rule. -exclude-generated: generated protobuf
+#    code (gen/) carries G103 (unsafe.Slice) and G115 (int -> uint32 cgo
+#    casts) by design.
+# 2. Generated code included, with .gosec.json (G103 and G115 off), the
+#    configuration the praetor standards gate runs. Fix a finding in a
+#    generated file in its generator: pass 1 never saw the four G101 findings
+#    the bpf2go identifier once put into the eBPF binding (issue 3630).
 # -exclude-dir=.config/hiss/testdata: the HISS rule engine's own fixtures,
 # whose planted defects (HISS-07 drops an os.Remove error, HISS-09
 # reinterprets &b[0] through unsafe.Pointer) are the evidence the standards
@@ -244,6 +250,8 @@ lint-go:
 	$(call require-tool,gosec,go install github.com/securego/gosec/v2/cmd/gosec@v2.29.1-0.20260914113419-9e8e5d91f2f3)
 	@echo "--- gosec (exclude-generated) ---"
 	@gosec -exclude-generated -exclude-dir=.config/hiss/testdata -quiet ./...
+	@echo "--- gosec (generated included, .gosec.json) ---"
+	@gosec -conf .gosec.json -exclude-dir=.config/hiss/testdata -quiet ./...
 
 # GitHub Actions lint. actionlint validates every workflow under
 # .github/workflows/ against .github/actionlint.yaml; actionlint cannot read a
@@ -917,26 +925,84 @@ install-hooks:
 
 hooks-install: install-hooks
 
-# pr-check — local equivalent of the rule-enforcement.yml deliverables gate.
-# Runs scripts/ci/deliverables-check.sh against an existing PR's body
-# (PR=<num>) or against a local body file (BODY=<path>). Exits non-zero
-# if the six-deliverable checklist or any ticked file reference is
-# inconsistent with the diff vs origin/master.
+# pr-check — local equivalent of the three rule-enforcement.yml PR-body gates:
+# deliverables-check.sh (ADR-0108), state-md-touch-check.sh (ADR-0165), and
+# ffmpeg-patches-surface-check.sh (ADR-0409), via scripts/ci/pr-body-gates.sh.
+# Runs against an existing PR (PR=<num>, fetching title, body and revisions in
+# one gh call) or a local body file (BODY=<path> with optional TITLE=<text>;
+# defaults to HEAD commit subject when TITLE is empty). PR mode diffs the PR's
+# own base and head revisions and fails if they cannot be fetched.
 #
 # Usage:
 #   make pr-check PR=260
-#   make pr-check BODY=pr-body.md
+#   make pr-check BODY=pr-body.md [TITLE="fix: summary"]
+# Read PR, BODY and TITLE from env (GNU Make 4.4.1 §5.7.2 "Communicating Variables to a Sub-make").
+ifeq ($(origin PR),command line)
+pr-check: override export PR := $(value PR)
+endif
+ifeq ($(origin BODY),command line)
+pr-check: override export BODY := $(value BODY)
+endif
+ifeq ($(origin TITLE),command line)
+pr-check: override export TITLE := $(value TITLE)
+endif
 pr-check:
-	@if [ -n "$(PR)" ]; then \
-	    echo "--- pr-check: fetching PR $(PR) body via gh ---"; \
-	    PR_BODY="$$(gh pr view $(PR) --json body -q .body)" \
-	        bash scripts/ci/deliverables-check.sh; \
-	elif [ -n "$(BODY)" ]; then \
-	    echo "--- pr-check: reading body from $(BODY) ---"; \
-	    PR_BODY="$$(cat "$(BODY)")" \
-	        bash scripts/ci/deliverables-check.sh; \
+	@usage="Usage: make pr-check PR=<number>  OR  make pr-check BODY=<file> [TITLE=<text>]"; \
+	if [ -n "$${PR:-}" ]; then \
+	    case "$${PR:-}" in \
+	        ''|0*|*[!0123456789]*) \
+	            printf '%s\n' "$$usage" >&2; \
+	            exit 2 ;; \
+	    esac; \
+	    printf '%s\n' "--- pr-check: fetching PR $${PR:-} title, body and revisions via gh ---"; \
+	    pr_json="$$(gh pr view "$${PR:-}" --json title,body,baseRefOid,headRefOid)" || exit $$?; \
+	    pr_title="$$(printf '%s' "$$pr_json" | python3 -c 'import json, sys; d = json.load(sys.stdin); sys.stdout.write(d.get("title") or "")')" || exit 2; \
+	    pr_body="$$(printf '%s' "$$pr_json" | python3 -c 'import json, sys; d = json.load(sys.stdin); sys.stdout.write(d.get("body") or "")')" || exit 2; \
+	    base_sha="$$(printf '%s' "$$pr_json" | python3 -c 'import json, sys; d = json.load(sys.stdin); v = d.get("baseRefOid"); sys.stdout.write(v if isinstance(v, str) else "")')" || exit 2; \
+	    head_sha="$$(printf '%s' "$$pr_json" | python3 -c 'import json, sys; d = json.load(sys.stdin); v = d.get("headRefOid"); sys.stdout.write(v if isinstance(v, str) else "")')" || exit 2; \
+	    check_rev() { \
+	        local rev_kind="$$1" rev_sha="$$2"; \
+	        if ! [[ "$$rev_sha" =~ ^[0123456789abcdef]{40}([0123456789abcdef]{24})?$$ ]]; then \
+	            printf 'pr-check: invalid %s revision %s of PR %s\n' "$$rev_kind" "$${rev_sha//[$$'\r\n']/?}" "$${PR:-}" >&2; \
+	            exit 2; \
+	        fi; \
+	    }; \
+	    fetch_rev() { \
+	        local rev_kind="$$1" rev_sha="$$2"; \
+	        if ! git cat-file -e "$$rev_sha^{commit}" 2>/dev/null; then \
+	            git fetch --no-tags origin "$$rev_sha" >/dev/null || true; \
+	            if ! git cat-file -e "$$rev_sha^{commit}" 2>/dev/null; then \
+	                printf 'pr-check: cannot obtain %s revision %s of PR %s\n' "$$rev_kind" "$$rev_sha" "$${PR:-}" >&2; \
+	                exit 2; \
+	            fi; \
+	        fi; \
+	    }; \
+	    check_rev base "$$base_sha"; \
+	    check_rev head "$$head_sha"; \
+	    fetch_rev base "$$base_sha"; \
+	    fetch_rev head "$$head_sha"; \
+	    PR_TITLE="$$pr_title" \
+	    PR_BODY="$$pr_body" \
+	    BASE_SHA="$$base_sha" \
+	    HEAD_SHA="$$head_sha" \
+	        bash scripts/ci/pr-body-gates.sh; \
+	elif [ -n "$${BODY:-}" ]; then \
+	    if [ ! -r "$${BODY:-}" ]; then \
+	        printf 'pr-check: cannot read BODY file: %s\n' "$${BODY:-}" >&2; \
+	        exit 2; \
+	    fi; \
+	    if [ -n "$${TITLE:-}" ]; then \
+	        pr_title="$${TITLE:-}"; \
+	        printf '%s\n' "--- pr-check: reading body from $${BODY:-} (using TITLE: $$pr_title) ---"; \
+	    else \
+	        pr_title="$$(git log -1 --format=%s HEAD)" || exit 2; \
+	        printf '%s\n' "--- pr-check: reading body from $${BODY:-} (using HEAD title: $$pr_title) ---"; \
+	    fi; \
+	    PR_TITLE="$$pr_title" \
+	    PR_BODY="$$(cat -- "$${BODY:-}")" \
+	        bash scripts/ci/pr-body-gates.sh; \
 	else \
-	    echo "Usage: make pr-check PR=<number>  OR  make pr-check BODY=<file>" >&2; \
+	    printf '%s\n' "$$usage" >&2; \
 	    exit 2; \
 	fi
 
@@ -1068,7 +1134,7 @@ help:
 	@echo "  make format-check     — same, no writes (CI gate)"
 	@echo "  make sec              — semgrep (CERT-C + CWE + fork rules)"
 	@echo "  make sbom             — SPDX + CycloneDX SBOMs via syft"
-	@echo "  make pr-check         — ADR-0108 deliverables gate (PR=<num> or BODY=<file>)"
+	@echo "  make pr-check         — deliverables, docs/state.md touch and ffmpeg-patches surface gates (PR=<num> or BODY=<file> [TITLE=<text>])"
 	@echo "  make silent-revert-check — ADR-1284: work this merge would remove from BASE"
 	@echo "  make test-netflix-golden — D24 gate: 3 Netflix CPU test pairs"
 	@echo "  make test-netflix-golden-arm64 — the same gate on an aarch64 cross build under qemu-user (GOLDEN_ARM64_CC=gcc|clang)"
@@ -1103,7 +1169,7 @@ help:
 # Issue 3468: governance targets run the engine the repository pins, the same one
 # lefthook and the Standards job run; never call standardsctl or praetorctl by name here.
 -include .config/praetor/engine.mk
-# cordanaLLM/praetor Governance Targets
+# tekmora/praetor Governance Targets
 .PHONY: verify-all compile-context audit hiss-coverage dedupe-check
 
 verify-all:

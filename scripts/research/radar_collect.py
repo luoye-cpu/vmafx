@@ -44,16 +44,17 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import tenacity
 import yaml  # type: ignore[import-untyped]
 
 SCHEMA = 1
 KINDS = ("github_owner", "github_repo", "arxiv_query", "openalex_query", "manual")
 AUTOMATED = ("github_owner", "github_repo", "arxiv_query", "openalex_query")
 SECTIONS = ("New repositories", "Releases", "Pushes", "New papers")
-USER_AGENT = "vmafx-research-radar (+https://github.com/VMAFx/vmafx)"
+USER_AGENT = "vmafx-research-radar (+https://github.com/vidiko/vmafx)"
 HTTP_TIMEOUT_S = 20.0
-HTTP_ATTEMPTS = 3
 HTTP_BACKOFF_S = (1.0, 4.0)
+HTTP_ATTEMPTS = len(HTTP_BACKOFF_S) + 1
 MAX_BODY_BYTES = 8 * 1024 * 1024
 MAX_REPOS_PER_OWNER = 100
 MAX_RELEASE_LOOKUPS = 10
@@ -223,29 +224,46 @@ class Window:
 
 # --------------------------------------------------------------------------- fetching
 
+_HTTP_RETRY_EXCEPTIONS = (urllib.error.URLError, TimeoutError, OSError)
 
-def http_fetch(url: str, token: str = "") -> bytes:
+
+def _http_wait() -> tenacity.wait_chain:
+    """Fixed backoff intervals between failed HTTP attempts."""
+    return tenacity.wait_chain(*(tenacity.wait_fixed(s) for s in HTTP_BACKOFF_S))
+
+
+def _http_get_once(url: str, headers: dict[str, str]) -> bytes:
+    """Issue one HTTPS GET with a bounded response body."""
+    request = urllib.request.Request(url, headers=headers)  # noqa: S310 (https checked)
+    with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:  # noqa: S310
+        body: bytes = response.read(MAX_BODY_BYTES + 1)
+    if len(body) > MAX_BODY_BYTES:
+        raise FetchError(f"{url}: body above {MAX_BODY_BYTES} bytes")
+    return body
+
+
+def http_fetch(
+    url: str, token: str | None = None, sleep: Callable[[float], None] = time.sleep
+) -> bytes:
     """GET ``url`` with a timeout and a bounded body, retrying a few times."""
+    if not url.startswith("https://"):
+        raise FetchError(f"{url}: only https is fetched")
     headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
     if token and url.startswith(GITHUB_API + "/"):
         headers["Authorization"] = f"Bearer {token}"
         headers["Accept"] = "application/vnd.github+json"
-    last: Exception | None = None
-    for attempt in range(HTTP_ATTEMPTS):
-        try:
-            if not url.startswith("https://"):
-                raise FetchError(f"{url}: only https is fetched")
-            request = urllib.request.Request(url, headers=headers)  # noqa: S310 (https checked)
-            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:  # noqa: S310
-                body: bytes = response.read(MAX_BODY_BYTES + 1)
-            if len(body) > MAX_BODY_BYTES:
-                raise FetchError(f"{url}: body above {MAX_BODY_BYTES} bytes")
-            return body
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            last = exc
-            if attempt < len(HTTP_BACKOFF_S):
-                time.sleep(HTTP_BACKOFF_S[attempt])
-    raise FetchError(f"{url}: {last}")
+    retrying = tenacity.Retrying(
+        stop=tenacity.stop_after_attempt(HTTP_ATTEMPTS),
+        wait=_http_wait(),
+        retry=tenacity.retry_if_exception_type(_HTTP_RETRY_EXCEPTIONS),
+        reraise=True,
+        sleep=sleep,
+    )
+    try:
+        body: bytes = retrying(_http_get_once, url, headers)
+    except _HTTP_RETRY_EXCEPTIONS as last:
+        raise FetchError(f"{url}: {last}") from last
+    return body
 
 
 def _token_fetcher(token: str) -> Fetcher:
@@ -502,7 +520,7 @@ def render_digest(result: Collected, win: Window) -> str:
         f"Sources read: {result.sources_read}. Items: {len(result.items)}.",
         "",
         "Triage this digest with the "
-        "[triage procedure](https://github.com/VMAFx/vmafx/blob/master/docs/research/radar/triage.md).",
+        "[triage procedure](https://github.com/vidiko/vmafx/blob/master/docs/research/radar/triage.md).",
         "",
     ]
     for name in SECTIONS:
