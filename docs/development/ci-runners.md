@@ -154,13 +154,17 @@ file, a bounded number of times, before the directory is cleaned up.
 Git writes object files read-only, and Windows refuses to delete a read-only
 file. Tests use `remove_tree()` for a `.git` directory, a bare repository or its
 `objects` directory and `remove_file()` for a single Git object file.
-If a permission error prevents symlink deletion, both helpers propagate it
-without changing permissions or retrying.
+Both helpers keep the first refusal with retry and later errors as notes and
+retry once with a non-following chmod only for a read-only, non-link, non-reparse
+directory or single-link regular file whose resolved parent, for tree removal,
+lies inside the resolved root (the public `onexc` callback has no `dir_fd` to
+detect an ancestor swap between that check and chmod).
 The `ReadOnlyTreeRemoval` tests in `scripts/lib/test_scratch_program.py` check
 that only permission failures on deletion get a retry and that `remove_tree()`
-verifies the root is gone. The `SourceCacheReset` tests in
-`scripts/ci/test_ffmpeg_patch_stack.py` check that a failed removal stops
-the cache from being reinitialized.
+verifies the root is gone with `path_absent()`, which treats only
+`FileNotFoundError` as absence and counts a dangling link as present.
+The `SourceCacheReset` tests in `scripts/ci/test_ffmpeg_patch_stack.py` check
+that a failed removal stops the cache from being reinitialized.
 The scan in `scripts/lib/test_scratch_program.py` rejects
 bare `shutil.rmtree` calls with these path literals.
 

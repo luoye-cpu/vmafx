@@ -143,10 +143,11 @@ class SourceCacheReset(unittest.TestCase):
         self.cache.repo.mkdir(parents=True)
         child = self.cache.repo / "object"
         child.touch()
-        with vanish_before_chmod(child) as missing, self.assertRaises(FileNotFoundError) as exc:
+        with vanish_before_chmod(child) as refused, self.assertRaises(PermissionError) as exc:
             self.cache.reset()
-        self.assertIs(exc.exception, missing)
+        self.assertIs(exc.exception, refused)
         self.assertEqual(exc.exception.filename, str(child))
+        self.assertIn("vanished before chmod", refused.__notes__[0])
         self.replay.run_git.assert_not_called()
 
     def test_reset_rejects_missing_root_error_for_existing_cache(self) -> None:

@@ -1,7 +1,8 @@
 - **Python tests can remove scratch `.git` directories on Windows.**
-  `remove_tree()` retries deletion of read-only Git objects and `remove_file()`
-  handles single Git object files. Both helpers propagate a permission error on
-  symlink deletion without changing permissions or retrying. The
-  `ReadOnlyTreeRemoval` tests cover both helpers. The `SourceCacheReset` tests
-  check that the FFmpeg patch-stack cache is reinitialized only after its old
-  root is gone.
+  `remove_file()` and `remove_tree()` keep the first refusal with retry and later
+  errors as notes and retry once with a non-following chmod only for a read-only,
+  non-link, non-reparse directory or single-link regular file, with tree cleanup
+  checking both the resolved parent before chmod (it must be inside the resolved
+  root, though an ancestor swap after the check goes undetected) and the root
+  after deletion (`path_absent()` treats only `FileNotFoundError` as absence and
+  counts a dangling link as present).
