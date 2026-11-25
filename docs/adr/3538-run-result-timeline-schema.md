@@ -90,18 +90,6 @@ the model, and with it whether `scoring_configuration` is a required section.
   ABI writer/reader PRs reuse this versioning rule for their own shape
   pinning.
 
-## Evidence
-
-- `req` (#2452, Scope): "A versioned JSON document (additive evolution,
-  HISS-14) holding: provenance record (#2142), per-frame series, per-window
-  statistics, events (alignment decisions, drops, repeats, freezes, switches,
-  masked area), and a time key that can carry frame index, timestamp and
-  timecode."
-- `Q-116`, `Q-139` (#2452 opening line): "One report format before alignment,
-  fields, masks and bits per pixel each invent their own (Q-116, Q-139)."
-- `req` (#2452, Acceptance): "A planted event without a time key is refused
-  by name; an unknown schema version is refused by name."
-
 ## Research
 
 Digest: [`docs/research/2452-run-result-timeline.md`](../research/2452-run-result-timeline.md).
@@ -119,6 +107,15 @@ Digest: [`docs/research/2452-run-result-timeline.md`](../research/2452-run-resul
 
 ## References
 
+- `req` (#2452, Scope): "A versioned JSON document (additive evolution,
+  HISS-14) holding: provenance record (#2142), per-frame series, per-window
+  statistics, events (alignment decisions, drops, repeats, freezes, switches,
+  masked area), and a time key that can carry frame index, timestamp and
+  timecode."
+- `Q-116`, `Q-139` (#2452 opening line): "One report format before alignment,
+  fields, masks and bits per pixel each invent their own (Q-116, Q-139)."
+- `req` (#2452, Acceptance): "A planted event without a time key is refused
+  by name; an unknown schema version is refused by name."
 - [#2452](https://github.com/VMAFx/vmafx/issues/2452) — the run-result timeline issue.
 - [ADR-3311](3311-stream-metadata-field-list.md) — the append-only precedent.
 - `docs/hardware-reports/report.schema.json` — the closed-object precedent.
