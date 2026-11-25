@@ -912,11 +912,22 @@ SENTINEL_HOOK_ROOTS = frozenset(
 LOCK_PIN = re.compile(r"^([A-Za-z0-9_.-]+)==([^ \\;]+)")
 LOCK_VIA = re.compile(r"^\s+#\s+(?:via\s+)?([A-Za-z0-9_.-]+)\s*$")
 MAX_LOCK_LINES = 20000
+MAX_CONFIG_REPOS = 200
+MAX_REPO_HOOKS = 500
+MAX_TOTAL_HOOKS = 1000
+MAX_HOOK_DEPS = 200
+MAX_JSON_PAIRS = 2000
+MAX_PACKAGE_RULES = 500
+MAX_RULE_DEPS = 500
+PATTERN_VALUE = re.compile(r"^/|[*!{]")
+ALLOWED_SKIP_RULE_KEYS = frozenset(
+    {"description", "matchManagers", "matchDepTypes", "matchDepNames", "enabled"}
+)
 
 
 def package_key(name: str) -> str:
-    """Normalise a distribution name the way the lock and the hook spell it."""
-    return name.lower().replace("_", "-")
+    """Normalise a distribution name to its PEP 503 key."""
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def lock_graph(lock: str) -> tuple[dict[str, str], dict[str, set[str]]]:
@@ -946,21 +957,46 @@ def sentinel_hook_requirements(lock: str) -> dict[str, str]:
     return {name: pins.get(name, "") for name in needed}
 
 
+def repo_hook_dicts(repo: object) -> list[dict[object, object]] | None:
+    """Return hook dicts from one pre-commit repo entry, or None if over bound."""
+    if not isinstance(repo, dict) or not isinstance(repo.get("hooks"), list):
+        return []
+    entries = repo["hooks"]
+    if len(entries) > MAX_REPO_HOOKS:
+        return None
+    return [hook for hook in entries[:MAX_REPO_HOOKS] if isinstance(hook, dict)]
+
+
+def pre_commit_hooks(config: str) -> list[dict[object, object]] | None:
+    """Return hook mappings from a pre-commit config, or None when malformed."""
+    try:
+        data: object = yaml.safe_load(config)
+    except yaml.YAMLError:
+        return None
+    repos = data.get("repos") if isinstance(data, dict) else None
+    if not isinstance(repos, list) or len(repos) > MAX_CONFIG_REPOS:
+        return None
+    hooks: list[dict[object, object]] = []
+    for repo in repos[:MAX_CONFIG_REPOS]:
+        found = repo_hook_dicts(repo)
+        if found is None:
+            return None
+        hooks.extend(found)
+    return hooks
+
+
 def sentinel_hook_dependencies(config: str) -> list[object] | None:
     """Return the sentinel hook's additional_dependencies when it is a python hook."""
-    data: object = yaml.safe_load(config)
-    if not isinstance(data, dict) or not isinstance(data.get("repos"), list):
+    hooks = pre_commit_hooks(config)
+    if hooks is None or len(hooks) > MAX_TOTAL_HOOKS:
         return None
-    for repo in data["repos"]:
-        if not isinstance(repo, dict) or not isinstance(repo.get("hooks"), list):
+    for hook in hooks[:MAX_TOTAL_HOOKS]:
+        if hook.get("id") != "test-git-fixture-isolation":
             continue
-        for hook in repo["hooks"]:
-            if not isinstance(hook, dict) or hook.get("id") != "test-git-fixture-isolation":
-                continue
-            deps = hook.get("additional_dependencies")
-            if hook.get("language") != "python" or not isinstance(deps, list):
-                return None
-            return deps
+        deps = hook.get("additional_dependencies")
+        if hook.get("language") != "python" or not isinstance(deps, list):
+            return None
+        return deps
     return None
 
 
@@ -979,6 +1015,150 @@ def sentinel_hook_matches_lock(config: str, lock: str) -> bool:
     }
     wanted = sentinel_hook_requirements(lock)
     return len(versions) == len(deps) and all(wanted.values()) and versions == wanted
+
+
+def unique_json_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build a JSON object while refusing duplicate keys."""
+    if len(pairs) > MAX_JSON_PAIRS:
+        raise ValueError("JSON object exceeds pair bound")
+    mapping = dict(pairs[:MAX_JSON_PAIRS])
+    if len(mapping) != len(pairs):
+        raise ValueError("duplicate JSON key")
+    return mapping
+
+
+def lock_tied_pin(dep: str, lock_pins: dict[str, str]) -> tuple[str, str, str] | None:
+    """Return (key, hook_version, lock_version) when dep is an exact pin in lock_pins."""
+    match = LOCK_PIN.fullmatch(dep)
+    if match is None or "=" in match.group(2):
+        return None
+    key = package_key(match.group(1))
+    lock_version = lock_pins.get(key)
+    return (key, match.group(2), lock_version) if lock_version is not None else None
+
+
+def hook_exact_pin_keys(
+    hook: dict[object, object],
+    lock_pins: dict[str, str],
+    mismatches: list[str] | None = None,
+) -> set[str] | None:
+    """Return lock-pinned exact dependency keys for one python hook, or None if invalid."""
+    if hook.get("language") != "python":
+        return set()
+    deps = hook.get("additional_dependencies", [])
+    if not isinstance(deps, list) or len(deps) > MAX_HOOK_DEPS:
+        return None
+    tied: set[str] = set()
+    for dep in deps[:MAX_HOOK_DEPS]:
+        if not isinstance(dep, str):
+            return None
+        tied_pin = lock_tied_pin(dep, lock_pins)
+        if tied_pin is None:
+            continue
+        key, version, lock_version = tied_pin
+        if version != lock_version:
+            if mismatches is not None:
+                mismatches.append(f"{hook.get('id', '?')}: {key}=={version} != {lock_version}")
+            return None
+        tied.add(key)
+    return tied
+
+
+def lock_tied_hook_pins(
+    config: str, lock: str, mismatches: list[str] | None = None
+) -> set[str] | None:
+    """Collect package keys of exact python-hook pins matching the lock versions."""
+    hooks = pre_commit_hooks(config)
+    pins, _ = lock_graph(lock)
+    if hooks is None or not pins or len(hooks) > MAX_TOTAL_HOOKS:
+        return None
+    tied: set[str] = set()
+    ok = True
+    for hook in hooks[:MAX_TOTAL_HOOKS]:
+        keys = hook_exact_pin_keys(hook, pins, mismatches)
+        if keys is None:
+            ok = False
+        else:
+            tied |= keys
+    return tied if ok else None
+
+
+def renovate_package_rules(renovate: str) -> list[dict[str, object]] | None:
+    """Parse renovate.json without duplicate keys and return its packageRules dicts."""
+    try:
+        doc: object = json.loads(renovate, object_pairs_hook=unique_json_pairs)
+    except ValueError:
+        return None
+    rules = doc.get("packageRules") if isinstance(doc, dict) else None
+    if not isinstance(rules, list) or len(rules) > MAX_PACKAGE_RULES:
+        return None
+    parsed = [rule for rule in rules[:MAX_PACKAGE_RULES] if isinstance(rule, dict)]
+    return parsed if len(parsed) == len(rules) else None
+
+
+def is_lock_tied_skip_rule(rule: dict[str, object], tied: set[str]) -> bool:
+    """True when a Renovate packageRule disables pre-commit-python for the lock-tied set."""
+    required = (rule.get("matchManagers"), rule.get("matchDepTypes"))
+    if required != (["pre-commit"], ["pre-commit-python"]) or rule.get("enabled") is not False:
+        return False
+    names = rule.get("matchDepNames")
+    if (
+        not isinstance(names, list)
+        or len(names) > MAX_RULE_DEPS
+        or not (set(rule) <= ALLOWED_SKIP_RULE_KEYS)
+    ):
+        return False
+    normalised = {package_key(name) for name in names[:MAX_RULE_DEPS] if isinstance(name, str)}
+    return len(normalised) == len(names) and normalised == tied
+
+
+def selector_can_match(
+    values: object,
+    allowed: set[str] | frozenset[str],
+    normalise: Callable[[str], str] = str,
+) -> bool:
+    """True when a Renovate match* value is absent, non-literal, or intersects allowed."""
+    if values is None:
+        return True
+    if not isinstance(values, list) or not (0 < len(values) <= MAX_RULE_DEPS):
+        return True
+    for item in values[:MAX_RULE_DEPS]:
+        if (
+            not isinstance(item, str)
+            or PATTERN_VALUE.search(item) is not None
+            or normalise(item) in allowed
+        ):
+            return True
+    return False
+
+
+def rule_can_override_lock_tied(rule: dict[str, object], tied: set[str]) -> bool:
+    """True when a later packageRule can re-enable a lock-tied pre-commit-python pin."""
+    if rule.get("enabled") is not True:
+        return False
+    return (
+        selector_can_match(rule.get("matchManagers"), {"pre-commit"})
+        and selector_can_match(rule.get("matchDepTypes"), {"pre-commit-python"})
+        and selector_can_match(rule.get("matchDepNames"), tied, package_key)
+        and selector_can_match(rule.get("matchPackageNames"), tied, package_key)
+    )
+
+
+def renovate_skips_lock_tied_hook_pins(config: str, lock: str, renovate: str) -> bool:
+    """The lock-tied python-hook pins match one disabled pre-commit-python rule."""
+    tied = lock_tied_hook_pins(config, lock)
+    rules = renovate_package_rules(renovate)
+    if not tied or rules is None:
+        return False
+    matches = [
+        index
+        for index, rule in enumerate(rules[:MAX_PACKAGE_RULES])
+        if is_lock_tied_skip_rule(rule, tied)
+    ]
+    if len(matches) != 1:
+        return False
+    later = rules[matches[0] + 1 : MAX_PACKAGE_RULES]
+    return not any(rule_can_override_lock_tied(rule, tied) for rule in later[:MAX_PACKAGE_RULES])
 
 
 def sentinel_damage(script: str, directory: Path) -> list[str]:
@@ -1775,6 +1955,86 @@ class GitFixtureIsolation(unittest.TestCase):
         self.assertEqual(sentinel_hook_requirements(grown).get("newdep"), "1.0")
         self.assertFalse(sentinel_hook_matches_lock(config, grown))
 
+    def test_renovate_skips_lock_tied_hook_pins(self) -> None:
+        config = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        lock = (ROOT / "requirements/locks/tooling-tests.txt").read_text(encoding="utf-8")
+        renovate = (ROOT / "renovate.json").read_text(encoding="utf-8")
+        mismatches: list[str] = []
+        self.assertIsNotNone(lock_tied_hook_pins(config, lock, mismatches), ", ".join(mismatches))
+        self.assertTrue(renovate_skips_lock_tied_hook_pins(config, lock, renovate))
+        anchor = renovate.index('"pre-commit-python"')
+        start = renovate.rindex("    {\n", 0, anchor)
+        end = renovate.index("    },\n", anchor) + len("    },\n")
+        head, rule, tail = renovate[:start], renovate[start:end], renovate[end:]
+        dep_types = '      "matchDepTypes": [\n        "pre-commit-python"\n      ],\n'
+        later_bandit = (
+            '    {\n      "matchManagers": ["pre-commit"],\n'
+            '      "matchDepNames": ["bandit"],\n      "enabled": true\n    },\n'
+        )
+        later_pattern = (
+            '    {\n      "matchPackageNames": ["/.*/"],\n      "enabled": true\n    },\n'
+        )
+        later_other_key = (
+            '    {\n      "matchDatasources": ["pypi"],\n      "enabled": true\n    },\n'
+        )
+        planted = {
+            "removed": head + tail,
+            "missing_bandit": head + rule.replace('        "bandit",\n', "", 1) + tail,
+            "extra_zopfli": head
+            + rule.replace('        "bandit",\n', '        "bandit",\n        "zopfli",\n', 1)
+            + tail,
+            "enabled_true": head + rule.replace('"enabled": false', '"enabled": true', 1) + tail,
+            "missing_dep_types": head + rule.replace(dep_types, "", 1) + tail,
+            "duplicate_key": head
+            + rule.replace('"enabled": false', '"enabled": false,\n      "enabled": false', 1)
+            + tail,
+            "later_matching_bandit": head + rule + later_bandit + tail,
+            "later_pattern": head + rule + later_pattern + tail,
+            "later_other_match_key": head + rule + later_other_key + tail,
+        }
+        for name, edited in list(planted.items())[:12]:
+            with self.subTest(planted=name):
+                if name != "duplicate_key":
+                    self.assertIsInstance(json.loads(edited), dict)
+                self.assertNotEqual(edited, renovate)
+                self.assertFalse(renovate_skips_lock_tied_hook_pins(config, lock, edited))
+        later_actions = (
+            '    {\n      "matchManagers": ["github-actions"],\n      "enabled": true\n    },\n'
+        )
+        unrelated = head + rule + later_actions + tail
+        self.assertIsInstance(json.loads(unrelated), dict)
+        self.assertTrue(renovate_skips_lock_tied_hook_pins(config, lock, unrelated))
+        bandit_deps = '["bandit==1.9.4", "identify==2.6.20"]'
+        already = config.replace(bandit_deps, bandit_deps[:-1] + ', "iniconfig==2.3.1"]', 1)
+        self.assertNotEqual(already, config)
+        self.assertTrue(renovate_skips_lock_tied_hook_pins(already, lock, renovate))
+        unlisted = config.replace(bandit_deps, bandit_deps[:-1] + ', "click==8.5.0"]', 1)
+        self.assertNotEqual(unlisted, config)
+        self.assertFalse(renovate_skips_lock_tied_hook_pins(unlisted, lock, renovate))
+
+    def test_renovate_lock_tied_hook_pin_versions_and_names(self) -> None:
+        config = (ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        lock = (ROOT / "requirements/locks/tooling-tests.txt").read_text(encoding="utf-8")
+        renovate = (ROOT / "renovate.json").read_text(encoding="utf-8")
+        self.assertEqual(package_key("Foo.Bar_baz--qux"), "foo-bar-baz-qux")
+        hook_anchor = config.index("      - id: test-semgrep-float-identity\n")
+        stale = config[:hook_anchor] + config[hook_anchor:].replace(
+            '"pyyaml==6.0.3"', '"pyyaml==0.0.1"', 1
+        )
+        self.assertNotEqual(stale, config)
+        mismatches: list[str] = []
+        self.assertIsNone(lock_tied_hook_pins(stale, lock, mismatches))
+        self.assertEqual(mismatches, ["test-semgrep-float-identity: pyyaml==0.0.1 != 6.0.3"])
+        self.assertFalse(renovate_skips_lock_tied_hook_pins(stale, lock, renovate))
+        pyyaml_spelled = config[:hook_anchor] + config[hook_anchor:].replace(
+            '"pyyaml==6.0.3"', '"PyYAML==6.0.3"', 1
+        )
+        self.assertNotEqual(pyyaml_spelled, config)
+        self.assertTrue(renovate_skips_lock_tied_hook_pins(pyyaml_spelled, lock, renovate))
+        dotted_hook = config.replace("- pytest-timeout==2.4.0", "- pytest.timeout==2.4.0", 1)
+        self.assertNotEqual(dotted_hook, config)
+        self.assertTrue(renovate_skips_lock_tied_hook_pins(dotted_hook, lock, renovate))
+
     def test_sentinel_expected_failures_are_live(self) -> None:
         scripts = scratch_scripts()
         for name, (reason, tests) in SENTINEL_EXPECTED_FAILURES.items():
@@ -1956,6 +2216,8 @@ class GitFixtureIsolation(unittest.TestCase):
             "scripts/ci/test-classify-dependency-pr.sh",
             "scripts/ci/tests/test_level_zero_single_source.py",
             ".pre-commit-config.yaml",
+            "renovate.json",
+            "requirements/locks/tooling-tests.txt",
         ):
             self.assertIsNotNone(re.search(pattern, path), path)
         workflow = (ROOT / ".github/workflows/lint-and-format.yml").read_text()
