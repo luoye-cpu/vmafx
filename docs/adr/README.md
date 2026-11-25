@@ -1575,4 +1575,3 @@ public authority; documentation never links into either local root.
 | [ADR-3611](3611-measurement-non-success-states.md) | Report measurement cells and wrapper runs that were not compared as non-success | Accepted | perf, bench, testing |
 | [ADR-3625](3625-heavy-job-link-profile.md) | Heavy CI job link profiles | Accepted | ci, build |
 | [ADR-3624](3624-landed-release-bot-self-coauthor.md) | Strip the release bot's own co-author line on landed commits | Accepted | ci |
-| [ADR-3538](3538-run-result-timeline-schema.md) | Run-result timeline schema closes objects and bumps the version per change; scoring_configuration stays optional; non-finite results spell null | Accepted | api, schema, versioning, interop |
