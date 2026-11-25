@@ -64,7 +64,7 @@ def has_xxd(all_stages: dict[str, tuple[str, str]], name: str) -> bool:
         seen.add(name)
         parent, body = all_stages[name]
         # xxd in the package list of an apt-get install, on its own line or not.
-        if re.search(r"apt-get install(?:(?!&&)[\s\S])*?\bxxd\b", body):
+        if re.search(r"apt-get(?:\s+-o\s+\S+)*\s+install(?:(?!&&)[\s\S])*?\bxxd\b", body):
             return True
         name = parent
     return False
