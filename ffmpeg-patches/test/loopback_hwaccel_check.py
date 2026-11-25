@@ -272,25 +272,33 @@ def probe_gpu_device(args: argparse.Namespace, rows: list[tuple[str, str, str]])
         )
         return "error"
     if probe.returncode != 0:
-        if args.require_gpu:
-            rows.append(
-                (
-                    "FAIL",
-                    f"gpu device of type {args.hwaccel} usable (--require-gpu)",
-                    probe.stderr[-300:],
-                )
-            )
-        else:
-            rows.append(
-                (
-                    "SKIP",
-                    f"gpu branch (hwaccel={args.hwaccel}): no {args.hwaccel} device on this runner",
-                    "gpu rows not run; the software-path rows above are the evidence, "
-                    "and a FAIL above still fails the check",
-                )
-            )
+        record_gpu_unavailable(args, probe, rows)
         return "unavailable"
     return "ok"
+
+
+def record_gpu_unavailable(
+    args: argparse.Namespace,
+    probe: subprocess.CompletedProcess[str],
+    rows: list[tuple[str, str, str]],
+) -> None:
+    if args.require_gpu:
+        rows.append(
+            (
+                "FAIL",
+                f"gpu device of type {args.hwaccel} usable (--require-gpu)",
+                probe.stderr[-300:],
+            )
+        )
+    else:
+        rows.append(
+            (
+                "SKIP",
+                f"gpu branch (hwaccel={args.hwaccel}): no {args.hwaccel} device on this runner",
+                "gpu rows not run; the software-path rows above are the evidence, "
+                "and a FAIL above still fails the check",
+            )
+        )
 
 
 def check_gpu_round_trip(
