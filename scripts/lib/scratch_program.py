@@ -1,29 +1,17 @@
 # Copyright 2026 Lusoris
 # SPDX-License-Identifier: EUPL-1.2
-"""Clean up scratch programs, files and directory trees.
+"""Remove caller-created, caller-owned scratch files and trees with no concurrent writer.
 
-Microsoft Defender's real-time protection stays on on the Windows ARM64
-runner image (Tamper Protection keeps the image build from turning it off;
-the x64 images turn it off). For a short time after a freshly built program
-has run and exited, deleting it fails with ``PermissionError`` (WinError 5,
-Access is denied). ``TemporaryDirectory.cleanup()`` stops at the first such
-error, so a test whose assertions had all passed failed in its cleanup.
+`remove_program` tries both program spellings (with and without an added .exe)
+and waits a bounded time for a held executable. `remove_file` unlinks one file.
+`remove_tree` finishes the walk, reports the first error with bounded notes,
+and checks that the root is gone. `path_absent` checks even for dangling links.
 
-:func:`remove_program` deletes the program before the directory is cleaned
-up. It retries only a ``PermissionError`` on that one file, at most
-``attempts`` times, ``delay`` seconds apart, and raises the last error. Any
-other error is raised at once. Windows toolchains append ``.exe`` to an
-output name without an extension, so both spellings are tried. Everything
-else in the directory is left to the normal cleanup, whose errors still fail
-the test.
-
-Git writes object files read-only. Windows refuses to unlink a read-only
-file, so :func:`remove_file` and :func:`remove_tree` can retry a refused
-unlink or rmdir once after a non-following chmod (see :func:`_retry_read_only`).
-Tree removal also checks that the root is gone.
-
-Standard library only: suites import it as ``scripts.lib.scratch_program``
-with the repository root on ``sys.path``.
+On Windows only, a refused unlink or rmdir of a read-only directory or single-link
+regular file gets one retry after a non-following chmod. Links and reparse points
+are ineligible. A hard-linked read-only object keeps its refusal. POSIX never
+retries read-only deletion. Concurrent replacement of a leaf or ancestor during
+removal is outside the helpers' threat model.
 """
 
 from __future__ import annotations
@@ -40,6 +28,11 @@ ATTEMPTS = 20
 DELAY_SECONDS = 0.25  # 5 seconds in all, far beyond the scans seen in CI
 
 
+_RETRY_READ_ONLY = os.name == "nt"
+_chmod = os.chmod
+_MAX_NOTES = 32
+
+
 def _unlink(path: Path, attempts: int, delay: float, unlink: Callable[[Path], None]) -> None:
     for attempt in range(attempts):
         try:
@@ -51,15 +44,6 @@ def _unlink(path: Path, attempts: int, delay: float, unlink: Callable[[Path], No
             if attempt == attempts - 1:
                 raise
         time.sleep(delay)
-
-
-def path_absent(path: Path) -> bool:
-    """Return true only for a missing directory entry. Propagate other lstat errors."""
-    try:
-        os.lstat(path)
-    except FileNotFoundError:
-        return True
-    return False
 
 
 def remove_program(
@@ -74,111 +58,87 @@ def remove_program(
         raise ValueError(f"attempts must be at least 1, not {attempts}")
     remove = unlink if unlink is not None else os.unlink
     for candidate in (path, path.with_name(path.name + ".exe")):
-        if not path_absent(candidate):
+        if os.path.lexists(candidate):
             _unlink(candidate, attempts, delay, remove)
 
 
-def _can_retry(st: os.stat_result, path: Path, root: str | None) -> bool:
+def path_absent(path: Path) -> bool:
+    """Return true only for a missing directory entry. Propagate other lstat errors."""
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return True
+    return False
+
+
+def _can_retry(st: os.stat_result) -> bool:
     mode = st.st_mode
     if (
-        stat.S_ISLNK(mode)
+        mode & stat.S_IWUSR
         or getattr(st, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
     ):
         return False
-    if mode & stat.S_IWUSR or not (stat.S_ISDIR(mode) or (stat.S_ISREG(mode) and st.st_nlink == 1)):
-        return False
-    if root is None:
-        return True
-    parent = os.path.realpath(path.parent, strict=True)
-    return os.path.commonpath((root, parent)) == root
-
-
-def _chmod_read_only(path: Path, st: os.stat_result) -> None:
-    mode = stat.S_IMODE(st.st_mode) | stat.S_IWUSR
-    chmod = os.chmod
-    if chmod in os.supports_follow_symlinks:
-        chmod(path, mode, follow_symlinks=False)
-        return
-    if not hasattr(os, "O_NOFOLLOW"):
-        raise NotImplementedError("no non-following chmod available")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
-    try:
-        if not os.path.samestat(st, os.fstat(fd)):
-            raise OSError("opened object differs from lstat")
-        os.fchmod(fd, mode)
-    finally:
-        os.close(fd)
+    return stat.S_ISDIR(mode) or (stat.S_ISREG(mode) and st.st_nlink == 1)
 
 
 def _retry_read_only(
-    path: Path, operation: Callable[[], object], refusal: PermissionError, root: str | None = None
+    path: Path, operation: Callable[[], object], note: Callable[[str], None]
 ) -> bool:
-    """Retry a read-only, non-link, non-reparse directory or single-link regular file only
-    with a non-following chmod and, for tree removal, a parent inside the resolved root.
-
-    Use only for scratch trees because the public onexc callback has no dir_fd to detect
-    an ancestor replaced between the confinement check and chmod.
-    """
+    if not _RETRY_READ_ONLY:
+        return False
+    step = "lstat"
     try:
         st = os.lstat(path)
-    except OSError as error:
-        refusal.add_note(f"retry lstat({path!s}): {error}")
-        return False
-    step = "confinement check"
-    try:
-        if not _can_retry(st, path, root):
+        if not _can_retry(st):
             return False
         step = "chmod"
-        _chmod_read_only(path, st)
+        _chmod(path, stat.S_IMODE(st.st_mode) | stat.S_IWUSR, follow_symlinks=False)
         step = "deletion"
         operation()
-    except Exception as error:
-        refusal.add_note(f"retry {step}({path!s}): {error}")
+    except OSError as error:
+        note(f"retry {step}({path!s}): {error}")
         return False
     return True
 
 
 def remove_file(path: Path) -> None:
-    """Unlink one file, retrying once after chmod on a permission failure."""
+    """Unlink one file, preserving the original refusal if the retry fails."""
     try:
         path.unlink()
     except PermissionError as refusal:
-        if not _retry_read_only(path, path.unlink, refusal):
+        if not _retry_read_only(path, path.unlink, refusal.add_note):
             raise
 
 
-class _CallbackError(Exception):
-    """Carry the original error past rmtree's fd walker, which rewrites OSError.filename."""
-
-    def __init__(self, error: BaseException) -> None:
-        super().__init__(error)
-        self.error = error
-
-
 def remove_tree(path: Path) -> None:
-    """Retry a refused unlink or rmdir once after chmod and verify that the tree is gone."""
-    root = os.path.realpath(path, strict=os.path.ALLOW_MISSING)
-    first_error: BaseException | None = None
+    """Remove the tree, raising the first failure after the walk finishes."""
+    first_error: OSError | None = None
+    note_count = 0
 
     def onexc(function: Callable[..., object], failed_path: str, error: BaseException) -> None:
-        nonlocal first_error
-        if first_error is not None:
-            first_error.add_note(f"{function.__name__}({failed_path!r}): {error}")
+        nonlocal first_error, note_count
+        if not isinstance(error, OSError):
+            raise error
+        notes: list[str] = []
+        if (
+            isinstance(error, PermissionError)
+            and function in (os.unlink, os.rmdir)
+            and _retry_read_only(Path(failed_path), lambda: function(failed_path), notes.append)
+        ):
             return
-        if isinstance(error, PermissionError) and function in (os.unlink, os.rmdir):
-            try:
-                if _retry_read_only(Path(failed_path), lambda: function(failed_path), error, root):
-                    return
-            except BaseException as retry_error:
-                error = retry_error
-        first_error = error
-        raise _CallbackError(error)
+        if first_error is None:
+            first_error = error
+        else:
+            notes.insert(0, f"{failed_path}: {error}")
+        for note in notes:  # At most one walk error and one retry error.
+            note_count += 1
+            if note_count <= _MAX_NOTES:
+                first_error.add_note(note)
 
-    try:
-        shutil.rmtree(path, onexc=onexc)
-    except _CallbackError as wrapped:
-        first_error = wrapped.error
+    shutil.rmtree(path, onexc=onexc)
     if first_error is not None:
+        if note_count > _MAX_NOTES:
+            first_error.add_note(f"{note_count - _MAX_NOTES} additional error(s) omitted")
         raise first_error
     if not path_absent(path):
         raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), str(path))

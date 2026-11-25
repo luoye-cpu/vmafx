@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.ci import ffmpeg_shared_series_fixture as shared_series
 from scripts.lib.safe_subprocess import run as run_command
 from scripts.lib.scratch_program import remove_file, remove_tree
-from scripts.lib.test_scratch_program import FD_WALKER_REASON, HAS_FD_WALKER, vanish_before_chmod
+from scripts.lib.test_scratch_program import windows_rmtree
 
 SPEC = importlib.util.spec_from_file_location(
     "patch_stack", Path(__file__).with_name("ffmpeg_patch_stack.py")
@@ -138,16 +138,26 @@ class SourceCacheReset(unittest.TestCase):
         )
         self.assertTrue(self.cache.repo.is_dir())
 
-    @unittest.skipUnless(HAS_FD_WALKER, FD_WALKER_REASON)
-    def test_fd_reset_propagates_vanished_child(self) -> None:
+    def test_reset_propagates_child_refusal_after_failed_retry(self) -> None:
         self.cache.repo.mkdir(parents=True)
         child = self.cache.repo / "object"
         child.touch()
-        with vanish_before_chmod(child) as refused, self.assertRaises(PermissionError) as exc:
+        child.chmod(0o444)
+        refused = PermissionError(errno.EACCES, "unlink refused", str(child))
+        with (
+            windows_rmtree(),
+            patch("scripts.lib.scratch_program._RETRY_READ_ONLY", True),
+            patch("os.unlink", side_effect=refused),
+            patch(
+                "scripts.lib.scratch_program._chmod",
+                side_effect=FileNotFoundError("missing object"),
+            ),
+            self.assertRaises(PermissionError) as exc,
+        ):
             self.cache.reset()
         self.assertIs(exc.exception, refused)
         self.assertEqual(exc.exception.filename, str(child))
-        self.assertIn("vanished before chmod", refused.__notes__[0])
+        self.assertIn("missing object", refused.__notes__[0])
         self.replay.run_git.assert_not_called()
 
     def test_reset_rejects_missing_root_error_for_existing_cache(self) -> None:
