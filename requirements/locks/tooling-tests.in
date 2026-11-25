@@ -12,6 +12,7 @@
 # jsonschema validates the winget manifests in scripts/release/tests.
 # Semgrep is not here: it pins its own dependencies exactly and runs from the
 # semgrep-local hook's environment or the pinned image (ADR-3375).
+# tenacity is imported by research radar (.github/workflows/research-radar.yml:41-43) and tests.
 # uv is the lock generator scripts/ci/check_python_floors.py resolves with;
 # it must equal uv_version in requirements/locks/manifest.json (tested by
 # scripts/ci/tests/test_check_python_floors.py).
@@ -25,4 +26,5 @@ pytest-timeout==2.4.0
 pyyaml==6.0.3
 reuse==6.2.0
 ruamel.yaml==0.19.1
+tenacity==9.2.1
 uv==0.13.6
