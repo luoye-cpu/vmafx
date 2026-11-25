@@ -3,13 +3,13 @@
 
 VMAFx plans to write one report format for a scoring run instead of letting
 alignment, fields, masks and bits-per-pixel each invent their own
-([VMAFx/vmafx#2452](https://github.com/VMAFx/vmafx/issues/2452), RC5): a
+([vidiko/vmafx#2452](https://github.com/vidiko/vmafx/issues/2452), RC5): a
 versioned JSON document that carries the run's provenance, its per-frame
 scores, its per-window statistics and its events - alignment decisions, drops,
 repeats, freezes, switches, masked areas - each located by one time key that
 can carry a frame index, a timestamp or a timecode.
 
-[`api/run-result-timeline.schema.json`](https://github.com/VMAFx/vmafx/blob/master/api/run-result-timeline.schema.json)
+[`api/run-result-timeline.schema.json`](https://github.com/vidiko/vmafx/blob/master/api/run-result-timeline.schema.json)
 is the contract of that document, and this page is its human reference. It is
 the shape only, not the reporting code: no CLI flag, C call or server endpoint
 writes the document yet. The writer/reader C ABI and the identity checks land
@@ -29,7 +29,7 @@ XML/JSON/CSV outputs follow them.
 
 The time key mirrors what a run actually knows: a frame score carries the
 0-based display-order frame index (the stream-metadata `display_index` of
-[`api/stream-metadata-fields.json`](https://github.com/VMAFx/vmafx/blob/master/api/stream-metadata-fields.json)),
+[`api/stream-metadata-fields.json`](https://github.com/vidiko/vmafx/blob/master/api/stream-metadata-fields.json)),
 a wall-clock event carries the nanosecond timestamp, and a writer may add the
 SMPTE-style timecode when the run has one. When a time key carries more than
 one coordinate, all of them must describe the same instant. Timecode order
@@ -52,7 +52,7 @@ fixes the event vocabulary and `schema_version` to the version it defines, so
 every added member this schema owns - required or optional - and every added
 event type is a new schema version rather than an older reader's transparent
 extension (the model of
-[`docs/hardware-reports/report.schema.json`](https://github.com/VMAFx/vmafx/blob/master/docs/hardware-reports/report.schema.json);
+[`docs/hardware-reports/report.schema.json`](https://github.com/vidiko/vmafx/blob/master/docs/hardware-reports/report.schema.json);
 [ADR-3538](../adr/3538-run-result-timeline-schema.md) records the choice).
 The three pass-through members named above stay open because their field
 contracts live with their single sources; the `scores` map stays open because
@@ -60,9 +60,9 @@ its keys are feature names, not schema members.
 `schema_version` is the integer a document was written against; a reader that
 meets a version it does not know refuses the document by name rather than
 guessing. The acceptance fixtures that pin today's shape live in
-[`api/testdata/run-result-timeline/`](https://github.com/VMAFx/vmafx/tree/master/api/testdata/run-result-timeline)
+[`api/testdata/run-result-timeline/`](https://github.com/vidiko/vmafx/tree/master/api/testdata/run-result-timeline)
 and run in
-[`scripts/ci/tests/test_run_result_timeline_schema.py`](https://github.com/VMAFx/vmafx/blob/master/scripts/ci/tests/test_run_result_timeline_schema.py)
+[`scripts/ci/tests/test_run_result_timeline_schema.py`](https://github.com/vidiko/vmafx/blob/master/scripts/ci/tests/test_run_result_timeline_schema.py)
 (the `tooling` suite):
 
 ```bash
@@ -79,7 +79,7 @@ series order, and it cannot see the OpenAPI contracts behind `provenance` and
 python scripts/ci/run_result_timeline_contract.py api/testdata/run-result-timeline/valid-full.json
 ```
 
-[`scripts/ci/run_result_timeline_contract.py`](https://github.com/VMAFx/vmafx/blob/master/scripts/ci/run_result_timeline_contract.py)
+[`scripts/ci/run_result_timeline_contract.py`](https://github.com/vidiko/vmafx/blob/master/scripts/ci/run_result_timeline_contract.py)
 applies the JSON Schema, the OpenAPI `Provenance` and `ScoreOptions`
 components, and the semantic rules: frame keys strictly ascend without
 duplicates, event keys are non-decreasing, and window endpoints share a
