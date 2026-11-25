@@ -66,7 +66,7 @@ class VerifyAllPullRequestJob(unittest.TestCase):
             s for s in steps if s.get("name") == "Run make verify-all and publish its log"
         )
         self.assertEqual(go["with"]["go-version-file"], "go.mod")
-        self.assertEqual(node["with"]["node-version"], "24")
+        self.assertEqual(node["with"]["node-version"], "26.13.1")
         self.assertEqual(
             node["with"]["cache-dependency-path"], "tools/markdownlint/package-lock.json"
         )
@@ -124,7 +124,7 @@ class VerifyAllPullRequestJob(unittest.TestCase):
         github_upload = next(
             u for u in uploads if u["uses"].startswith("actions/upload-artifact@cf430e03")
         )
-        self.assertTrue(github_upload["with"]["overwrite"])
+        self.assertNotIn("overwrite", github_upload["with"])
 
     def test_every_action_is_pinned_to_a_commit(self) -> None:
         for step_definition in job()["steps"]:
