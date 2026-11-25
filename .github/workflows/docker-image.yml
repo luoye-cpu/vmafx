@@ -122,6 +122,30 @@ jobs:
           echo "${expected_sha}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
           tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}/trivy-bin" trivy
           echo "${RUNNER_TEMP}/trivy-bin" >> "${GITHUB_PATH}"
+      - name: Prove the Trivy ignore policy drops only kernel header findings
+        shell: bash
+        run: |
+          set -euo pipefail
+          policy="scripts/ci/trivy-linux-libc-dev.rego"
+          fixture="scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json"
+          filtered="${RUNNER_TEMP}/trivy-linux-libc-dev-policy-report.json"
+          trivy convert --format json --ignore-policy "${policy}" -o "${filtered}" "${fixture}"
+          python3 - "${filtered}" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              report = json.load(handle)
+          packages = {
+              finding["PkgName"]
+              for result in report.get("Results", [])
+              for finding in result.get("Vulnerabilities", [])
+          }
+          if "linux-libc-dev" in packages:
+              raise SystemExit("policy did not drop the linux-libc-dev finding")
+          if "libssl3t64" not in packages:
+              raise SystemExit("policy dropped the libssl3t64 control finding")
+          PY
       - name: Build planted vulnerable image
         run: docker build -f scripts/ci/fixtures/trivy-negative.Dockerfile -t vmafx-trivy-negative .
       - name: Prove trivy rejects the planted image

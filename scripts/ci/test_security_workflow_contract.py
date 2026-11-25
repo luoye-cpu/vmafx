@@ -148,16 +148,38 @@ class SecurityWorkflowContractTest(unittest.TestCase):
 
     def test_real_image_scan_ignores_only_kernel_header_vulnerabilities(self) -> None:
         workflow = (REPO_ROOT / ".github/workflows/docker-image.yml").read_text(encoding="utf-8")
+        policy_step = workflow.split(
+            "- name: Prove the Trivy ignore policy drops only kernel header findings", 1
+        )[1].split("- name: Build planted vulnerable image", 1)[0]
+        self.assertIn("trivy convert --format json --ignore-policy", policy_step)
+        self.assertIn("scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json", policy_step)
+        self.assertIn('if "linux-libc-dev" in packages', policy_step)
+        self.assertIn('if "libssl3t64" not in packages', policy_step)
         scan = workflow.split("- name: Trivy image scan", 1)[1].split(
             "- name: Smoke-test image", 1
         )[0]
         self.assertIn("--ignore-policy scripts/ci/trivy-linux-libc-dev.rego", scan)
         policy = (REPO_ROOT / "scripts/ci/trivy-linux-libc-dev.rego").read_text(encoding="utf-8")
+        self.assertIn("import rego.v1", policy)
         self.assertIn("ignore if {", policy)
         self.assertIn('input.Type == "vulnerability"', policy)
         self.assertIn('input.PkgName == "linux-libc-dev"', policy)
+        fixture = json.loads(
+            (REPO_ROOT / "scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        packages = {
+            finding["PkgName"]
+            for result in fixture["Results"]
+            for finding in result["Vulnerabilities"]
+        }
+        self.assertEqual(packages, {"linux-libc-dev", "libssl3t64"})
         tier = json.loads((REPO_ROOT / ".github/ci-tier.json").read_text(encoding="utf-8"))
         self.assertIn("scripts/ci/trivy-linux-libc-dev.rego", tier["full_paths"])
+        self.assertIn(
+            "scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json", tier["full_paths"]
+        )
 
     def test_concurrency_is_scoped_by_event_and_ref(self) -> None:
         workflow = SECURITY_WORKFLOW.read_text(encoding="utf-8")

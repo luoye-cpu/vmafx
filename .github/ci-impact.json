@@ -361,7 +361,8 @@
         "build-config.env",
         "scripts/ci/fixtures/trivy-negative.Dockerfile",
         "scripts/ci/install-cuda-toolkit.sh",
-        "scripts/ci/trivy-linux-libc-dev.rego"
+        "scripts/ci/trivy-linux-libc-dev.rego",
+        "scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json"
       ]
     },
     "docker_image_inputs": {
@@ -376,7 +377,8 @@
         "build-config.env",
         "scripts/ci/fixtures/trivy-negative.Dockerfile",
         "scripts/ci/install-cuda-toolkit.sh",
-        "scripts/ci/trivy-linux-libc-dev.rego"
+        "scripts/ci/trivy-linux-libc-dev.rego",
+        "scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json"
       ]
     },
     "dev_container": {

@@ -1,0 +1,41 @@
+{
+  "SchemaVersion": 2,
+  "CreatedAt": "2026-11-25T00:00:00Z",
+  "ArtifactName": "policy-fixture",
+  "ArtifactType": "container_image",
+  "Metadata": {
+    "OS": {
+      "Family": "ubuntu",
+      "Name": "26.04"
+    }
+  },
+  "Results": [
+    {
+      "Target": "policy-fixture (ubuntu 26.04)",
+      "Class": "os-pkgs",
+      "Type": "ubuntu",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2026-0001",
+          "PkgID": "linux-libc-dev@6.8.0",
+          "PkgName": "linux-libc-dev",
+          "InstalledVersion": "6.8.0",
+          "FixedVersion": "",
+          "Status": "affected",
+          "Severity": "HIGH",
+          "Title": "kernel header finding"
+        },
+        {
+          "VulnerabilityID": "CVE-2026-0002",
+          "PkgID": "libssl3t64@3.0.0",
+          "PkgName": "libssl3t64",
+          "InstalledVersion": "3.0.0",
+          "FixedVersion": "3.0.1",
+          "Status": "fixed",
+          "Severity": "HIGH",
+          "Title": "openssl control finding"
+        }
+      ]
+    }
+  ]
+}
