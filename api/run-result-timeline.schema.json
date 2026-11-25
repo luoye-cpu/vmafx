@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/VMAFx/vmafx/api/run-result-timeline.schema.json",
   "title": "VMAFx run-result timeline, schema version 1",
-  "description": "One versioned report format for a scoring run's provenance, per-frame scores, per-window statistics and events (VMAFx/vmafx#2452, RC5). Every object this schema owns is closed (additionalProperties false), with three pass-through exceptions whose field contracts live elsewhere: provenance is the record of vmafx_context_provenance_json() (RC4 WP5, #2288; the authoritative field contract is the OpenAPI Provenance schema in api/openapi/vmafx-server-v1.yaml and the VmafxProvenance definition in core/api/vmafx.toml), scoring_configuration is the option surface of #2258 (the ScoreOptions component of the same OpenAPI document), and an event's detail object is writer-defined. Those three stay open, so a field added by their single source does not take a timeline-schema version. The event vocabulary is fixed, so a change that adds an event type takes a new schema version and a version-1 reader refuses a document it does not know by name; newer versions are additive supersets (never removed, renamed or retyped). The versioning model is ADR-3538. docs/api/run-result-timeline.md is the human reference. The skeleton pins the four sections' identities, not yet their full field contracts. A window's start and end must use the same time-key kind and start must strictly precede end; JSON Schema cannot compare time keys, so the writer and reader enforce that rule. A time key carrying more than one coordinate kind must have all of them describe the same instant. The C ABI writer/reader and the byte-equal write-read-write identity check land in the follow-up PRs of the same issue.",
+  "description": "One versioned report format for a scoring run's provenance, per-frame scores, per-window statistics and events (VMAFx/vmafx#2452, RC5). Every object this schema owns is closed (additionalProperties false), with three pass-through exceptions whose field contracts live elsewhere: provenance is the record of vmafx_context_provenance_json() (RC4 WP5, #2288; the authoritative field contract is the OpenAPI Provenance schema in api/openapi/vmafx-server-v1.yaml and the VmafxProvenance definition in core/api/vmafx.toml), scoring_configuration is the option surface of #2258 (the ScoreOptions component of the same OpenAPI document), and an event's detail object is writer-defined. Those three stay open, so a field added by their single source does not take a timeline-schema version. The scores object is a different exception: it is a dynamic feature-name map, not a closed object with fixed members, so a new feature name does not take a version. The event vocabulary is fixed, so a change that adds an event type takes a new schema version and a version-1 reader refuses a document it does not know by name; newer versions are additive supersets (never removed, renamed or retyped). The versioning model is ADR-3538. docs/api/run-result-timeline.md is the human reference. The skeleton pins the four sections' identities, not yet their full field contracts. A window's start and end must use the same time-key kind and start must strictly precede end; a frame or event series must use one common set of time-key kinds and compare strictly (frames) or non-decreasingly (events). JSON Schema cannot compare time keys, so api/run_result_timeline_contract.py enforces those rules together with the OpenAPI sections. A time key carrying more than one coordinate kind must have all of them describe the same instant. The C ABI writer/reader and the byte-equal write-read-write identity check land in the follow-up PRs of the same issue.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -25,7 +25,7 @@
     },
     "frames": {
       "type": "array",
-      "description": "The per-frame series, in ascending time-key order: one entry per scored frame.",
+      "description": "The per-frame series, in strictly ascending time-key order: one entry per scored frame, each with a non-empty feature-score map. The semantic validator orders entries by the first common coordinate (frame_index, then timestamp_ns, then timecode) and rejects duplicate or out-of-order keys.",
       "items": {
         "$ref": "#/$defs/frame_score"
       }
@@ -39,7 +39,7 @@
     },
     "events": {
       "type": "array",
-      "description": "The run's events, in ascending time-key order: alignment decisions, drops, repeats, freezes, switches and masked areas.",
+      "description": "The run's events, in non-decreasing time-key order, ordered by the first common coordinate (frame_index, then timestamp_ns, then timecode): alignment decisions, drops, repeats, freezes, switches and masked areas. The semantic validator rejects out-of-order event keys.",
       "items": {
         "$ref": "#/$defs/event"
       }
@@ -47,7 +47,7 @@
   },
   "$defs": {
     "time_key": {
-      "description": "Where an entry sits on the timeline: at least one of the 0-based frame index, the presentation timestamp in nanoseconds from the run's zero, or the SMPTE-style timecode. A writer carries what the run knows - a frame score carries the frame index, a wall-clock event carries the timestamp - and an empty time key is refused. When more than one coordinate is present, all of them must describe the same instant.",
+      "description": "Where an entry sits on the timeline: at least one of the 0-based frame index, the presentation timestamp in nanoseconds from the run's zero, or the SMPTE-style timecode. A writer carries what the run knows - a frame score carries the frame index, a wall-clock event carries the timestamp - and an empty time key is refused. A frame or event series is ordered by the first coordinate every entry carries, in the fixed priority frame_index, timestamp_ns, timecode; this makes a series with mixed optional coordinates sortable. When an entry carries more than one kind they must describe the same instant. Timecode comparison is by its HH:MM:SS[:FF] fields, not by a frame-rate-dependent drop-frame count.",
       "type": "object",
       "additionalProperties": false,
       "anyOf": [
@@ -86,21 +86,22 @@
       }
     },
     "scoring_configuration": {
-      "description": "The scoring-option surface in effect for the run (#2258, WP8): the ScoreOptions component of the scoring group in api/openapi/vmafx-server-v1.yaml. The skeleton leaves the members to that single source.",
+      "description": "The scoring-option surface in effect for the run (#2258, WP8): the ScoreOptions component of the scoring group in api/openapi/vmafx-server-v1.yaml. The skeleton leaves the members to that single source; a timeline-only JSON-Schema validator therefore accepts any object here. Callers validate this section through api/run_result_timeline_contract.py, which applies the ScoreOptions contract too.",
       "type": "object"
     },
     "frame_score": {
-      "description": "One scored frame: its time key and the scores written for it.",
+      "description": "One scored frame: its time key and the non-empty map of scores written for it.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["time"],
+      "required": ["time", "scores"],
       "properties": {
         "time": {
           "$ref": "#/$defs/time_key"
         },
         "scores": {
           "type": "object",
-          "description": "Keys are feature names as the mounted models name them (for example vmaf, integer_adm2); values are that frame's numbers for the feature, null for a non-finite result as the CLI's JSON output writes it (core/src/output.cpp, json_write_frame_metric). A frame without scores is an empty object.",
+          "description": "Dynamic feature-name map: keys are feature names as the mounted models name them (for example vmaf, integer_adm2); values are that frame's numbers for the feature, null for a non-finite result as the CLI's JSON output writes it (core/src/output.cpp, json_write_frame_metric). A frame must carry at least one score; a new feature name does not take a schema version because the keys are not schema-owned members.",
+          "minProperties": 1,
           "additionalProperties": {
             "type": ["number", "null"]
           }
@@ -108,7 +109,7 @@
       }
     },
     "window_statistic": {
-      "description": "One statistic computed over a window of the timeline. The start and end must use the same time-key kind and start must strictly precede end; JSON Schema cannot compare time keys, so the writer and reader enforce that rule. When both ends are frame indices the interval is half-open (start inclusive, end exclusive).",
+      "description": "One statistic computed over a window of the timeline. The start and end must share a sortable time-key coordinate and start must strictly precede end; JSON Schema cannot compare time keys, so api/run_result_timeline_contract.py enforces that rule. When both ends are frame indices the interval is half-open (start inclusive, end exclusive).",
       "type": "object",
       "additionalProperties": false,
       "required": ["start", "end", "statistic", "value"],

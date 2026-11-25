@@ -28,6 +28,11 @@ path = [
     "api/testdata/run-result-timeline/*.json",
     "changelog.d/added/run-result-timeline-schema.md",
     "docs/api/run-result-timeline.md",
+    "docs/adr/3538-run-result-timeline-schema.md",
+    "docs/adr/_index_fragments/3538-run-result-timeline-schema.md",
+    "docs/research/2452-run-result-timeline.md",
+    "scripts/ci/AGENTS.d/run-result-timeline-schema.md",
+    "scripts/ci/run_result_timeline_contract.py",
     "scripts/ci/tests/test_run_result_timeline_schema.py",
 ]
 precedence = "closest"

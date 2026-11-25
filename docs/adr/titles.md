@@ -5891,3 +5891,7 @@ Every ADR, one heading each (1470), so the site search finds an ADR by its title
 ## ADR-3625: Heavy CI job link profiles
 
 [3625-heavy-job-link-profile](3625-heavy-job-link-profile.md)
+
+## ADR-3538: Run-result timeline schema closes objects and bumps the version per change
+
+[3538-run-result-timeline-schema](3538-run-result-timeline-schema.md)

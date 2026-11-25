@@ -12,8 +12,8 @@ The run-result timeline schema (`api/run-result-timeline.schema.json`, #2452)
 is the versioned report format a scoring run writes and the C ABI writer/reader
 (the follow-up PRs of the same issue) serialises byte-for-byte. The skeleton
 closes every object it defines (`additionalProperties: false`) apart from three
-pass-through members (Decision 1), fixes the event vocabulary to an enum and
-pins `schema_version` with `const: 1`.
+pass-through members (Decision 1) and the `scores` feature-name map, fixes the
+event vocabulary to an enum and pins `schema_version` with `const: 1`.
 
 The repository carries two disagreeing precedents for how such a versioned
 document evolves:
@@ -37,20 +37,25 @@ the model, and with it whether `scoring_configuration` is a required section.
 
 1. **The timeline schema follows the closed-object model**: every object this
    schema owns refuses unknown members, the event vocabulary is closed, and a
-   change that adds a member or an event type takes a new schema version. The
-   three pass-through members - `provenance`, `scoring_configuration` and an
-   event's `detail` - stay open because their field contracts live with their
-   single sources, so a field added there does not take a timeline-schema
-   version. A version-1 reader refuses a version-2 document by name; it never
-   silently drops unknown members. The schema evolves as additive supersets at
-   version granularity: a newer version adds members and never removes, renames
-   or retypes one (the HISS-14 discipline continues, one level up).
+   change that adds a schema-owned member (required or optional) or an event
+   type takes a new schema version. The three pass-through members -
+   `provenance`, `scoring_configuration` and an event's `detail` - stay open
+   because their field contracts live with their single sources, so a field
+   added there does not take a timeline-schema version. The `scores` object is
+   a different, dynamic exception: its keys are feature names supplied by the
+   mounted models, not members this schema owns, so a new feature name does
+   not take a version either. A version-1 reader refuses a version-2 document
+   by name; it never silently drops unknown members. The schema evolves as
+   additive supersets at version granularity: a newer version adds members and
+   never removes, renames or retypes one (the HISS-14 discipline continues,
+   one level up).
 2. **`scoring_configuration` stays optional** in version 1 (not in the
    top-level `required`): a timeline can come from a CLI run that has no
    server-side scoring surface to record. `schema_version`, `provenance`,
    `frames`, `windows` and `events` stay required. When the section is
-   present, its members follow the OpenAPI `ScoreOptions` component, and the
-   acceptance test refuses members the component does not name.
+   present, its members follow the OpenAPI `ScoreOptions` component; the
+   combined validator `scripts/ci/run_result_timeline_contract.py` applies
+   that component and refuses members the component does not name.
 3. **Non-finite results spell `null`**, one spelling for NaN, `+Inf` and
    `-Inf` alike, matching the CLI's JSON output
    (`core/src/output.cpp`, `json_write_frame_metric`). Telling NaN apart from
@@ -75,12 +80,42 @@ the model, and with it whether `scoring_configuration` is a required section.
 - **Positive**: a version-1 reader's refusal is exact (one named error at the
   offending member); the acceptance fixtures can pin one expected error list;
   the later byte-equal write-read-write check holds against a frozen shape.
-- **Negative**: every added member or event type ships a new schema version,
-  and readers refuse newer documents until they learn the version — visible
-  breakage instead of silent ignorance.
+- **Negative**: every added schema-owned member (required or optional) or
+  event type ships a new schema version, and readers refuse newer documents
+  until they learn the version — visible breakage instead of silent ignorance.
+  A new feature name in `scores` or a new field in a pass-through section is
+  the exception and does not bump.
 - **Neutral / follow-ups**: the schema description and the docs page now state
-  the closed model and point at this ADR; the C ABI writer/reader PRs reuse
-  this versioning rule for their own shape pinning.
+  the closed model, the `scores` dynamic map and the combined validator; the C
+  ABI writer/reader PRs reuse this versioning rule for their own shape
+  pinning.
+
+## Evidence
+
+- `req` (#2452, Scope): "A versioned JSON document (additive evolution,
+  HISS-14) holding: provenance record (#2142), per-frame series, per-window
+  statistics, events (alignment decisions, drops, repeats, freezes, switches,
+  masked area), and a time key that can carry frame index, timestamp and
+  timecode."
+- `Q-116`, `Q-139` (#2452 opening line): "One report format before alignment,
+  fields, masks and bits per pixel each invent their own (Q-116, Q-139)."
+- `req` (#2452, Acceptance): "A planted event without a time key is refused
+  by name; an unknown schema version is refused by name."
+
+## Research
+
+Digest: [`docs/research/2452-run-result-timeline.md`](../research/2452-run-result-timeline.md).
+
+- The issue names one envelope and a three-form time key; the skeleton keeps
+  that address and refuses an entry without one.
+- The two in-tree precedents disagree on additive evolution. The closed
+  hardware-report model wins because a closed object cannot accept unknown
+  members under version 1 without lying about its shape.
+- The three pass-through sections and the dynamic `scores` map are the only
+  places where a change does not take a timeline version; they are named in
+  Decision 1 and enforced by the combined validator.
+- `scores` must be required and non-empty; a per-frame entry without a score
+  is not a score.
 
 ## References
 
@@ -88,3 +123,5 @@ the model, and with it whether `scoring_configuration` is a required section.
 - [ADR-3311](3311-stream-metadata-field-list.md) — the append-only precedent.
 - `docs/hardware-reports/report.schema.json` — the closed-object precedent.
 - `api/openapi/vmafx-server-v1.yaml` — the single sources this schema references.
+- [`docs/research/2452-run-result-timeline.md`](../research/2452-run-result-timeline.md) — the research digest.
+- [`scripts/ci/run_result_timeline_contract.py`](../../scripts/ci/run_result_timeline_contract.py) — the combined validator.
