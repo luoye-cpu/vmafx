@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -55,7 +56,10 @@ def write_class(
     """Write independent exceptions and a fixture manifest under ``exc_root``."""
     if rule:
         write_exception_list(
-            exc_root, paths=tuple(lock_checker.manifest_outputs(ROOT)), expires=expires, rule=RULE
+            exc_root,
+            paths=(*lock_checker.manifest_outputs(ROOT), ".pre-commit-config.yaml"),
+            expires=expires,
+            rule=RULE,
         )
     target = exc_root / MANIFEST
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -180,6 +184,9 @@ class PythonLockOpenerTest(unittest.TestCase):
             "Requirements/locks/build.txt",
         )
         for neighbour in neighbours:
+            if os.path.normcase(neighbour) == os.path.normcase(OUT_IN_LOCKS):
+                # A case-insensitive filesystem cannot hold two distinct paths here.
+                continue
             for paths in ((neighbour,), (OUT_IN_LOCKS, neighbour)):
                 with self.subTest(paths=paths):
                     tmp, repo = self.fresh()
