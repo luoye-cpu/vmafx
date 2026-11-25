@@ -122,6 +122,19 @@ entries:
   evidence:
   - scripts/ci/tests/test-toolchain-probe-mingw.sh
   note: luoye-cpu wrote the planted-stub test for the toolchain probe's MinGW thread-model and runtime-DLL entry, in PR 3317.
+- id: contribution-luoye-cpu-community-metrics
+  name: luoye-cpu's community metrics report
+  url: https://github.com/VMAFx/vmafx/pull/3340
+  kind: code
+  relation: used-by-CI
+  license: EUPL-1.2
+  paths:
+  - scripts/dev/community_metrics.py
+  - scripts/dev/tests/test_community_metrics.py
+  evidence:
+  - scripts/dev/community_metrics.py
+  - scripts/dev/tests/test_community_metrics.py
+  note: luoye-cpu wrote the maintainer community-metrics report and its fixture tests, in PR 3340.
 - id: contribution-luoye-cpu-near-dup-spot-window
   name: luoye-cpu's near-duplicate spot-check tests
   url: https://github.com/vidiko/vmafx/pull/3444
