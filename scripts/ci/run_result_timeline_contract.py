@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import jsonschema
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "api" / "run-result-timeline.schema.json"

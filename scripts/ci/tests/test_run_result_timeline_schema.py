@@ -20,25 +20,27 @@ lands with it in a later PR of the same issue.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, cast
 
 import jsonschema
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 ROOT = Path(__file__).resolve().parents[3]
 SCHEMA_PATH = ROOT / "api" / "run-result-timeline.schema.json"
 FIXTURE_DIR = ROOT / "api" / "testdata" / "run-result-timeline"
 OPENAPI_PATH = ROOT / "api" / "openapi" / "vmafx-server-v1.yaml"
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts" / "ci"))
 
 from run_result_timeline_contract import (  # noqa: E402
     TimelineContractError,
     validate_timeline,
 )
+
+from scripts.lib.safe_subprocess import run  # noqa: E402
 
 
 def openapi_validator(name: str) -> jsonschema.Draft4Validator:
@@ -50,15 +52,17 @@ def openapi_validator(name: str) -> jsonschema.Draft4Validator:
 class RunResultTimelineSchemaTests(unittest.TestCase):
     """The shape rules the #2452 skeleton must hold."""
 
+    validator: ClassVar[jsonschema.Draft202012Validator]
+
     @classmethod
     def setUpClass(cls) -> None:
         schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
-        cls.validator: Any = jsonschema.Draft202012Validator(schema)
+        cls.validator = jsonschema.Draft202012Validator(schema)
 
-    def load(self, name: str) -> dict:
-        return json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8"))
+    def load(self, name: str) -> dict[str, Any]:
+        return cast(dict[str, Any], json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8")))
 
-    def series_keys(self, entries: list[dict], label: str) -> list:
+    def series_keys(self, entries: list[dict[str, Any]], label: str) -> list[Any]:
         for key in ("frame_index", "timestamp_ns", "timecode"):
             if all(key in entry["time"] for entry in entries):
                 return [entry["time"][key] for entry in entries]
@@ -264,15 +268,17 @@ class RunResultTimelineSchemaTests(unittest.TestCase):
         )
         for name, expected in cases:
             with self.subTest(fixture=name):
-                completed = subprocess.run(  # noqa: S603 - fixed repository paths
+                completed = run(
                     [
                         sys.executable,
                         str(ROOT / "scripts" / "ci" / "run_result_timeline_contract.py"),
                         str(FIXTURE_DIR / name),
                     ],
+                    allowed_executables=(sys.executable,),
                     check=False,
                     capture_output=True,
                     text=True,
+                    timeout_seconds=60,
                 )
                 self.assertEqual(completed.returncode, 1)
                 self.assertIn(expected, completed.stderr)

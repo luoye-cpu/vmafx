@@ -4,7 +4,7 @@ paths:
   - api/testdata/run-result-timeline/*.json
   - scripts/ci/run_result_timeline_contract.py
   - scripts/ci/tests/test_run_result_timeline_schema.py
-invariant: Timeline schema grows additively (HISS-14); new required or optional member or event type = new schema_version; every new version keeps every existing member and readers dispatch by version; no remove, rename or retype.
+invariant: Additive only: new member/event/enum needs a new schema_version; old versions keep all members; no remove/rename/retype.
 area: tests
 ---
 <!-- markdownlint-disable MD013 -->
