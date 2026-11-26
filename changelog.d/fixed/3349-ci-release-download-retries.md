@@ -2,10 +2,11 @@
   `scripts/ci/download-release.sh` validates a `github.com/<owner>/<repo>/releases/download/...` URL and runs
   `compat/python-vmaf/tools/retrying_download.py` (seven attempts, waits of 5/10/20/40/80/120 s). Each transfer
   is streamed with deadline-aware `read1` calls (each socket wait capped by the remaining 300 s deadline, plus a
-  60 s per-read timeout), so a stalled or slowly trickling socket fails and is retried instead of hanging the job.
+  60 s per-read timeout), and the deadline starts before the request, so a stalled body or one that keeps
+  sending past the transfer deadline fails and is retried instead of hanging the job. Chunk framing may take
+  more than one socket read, but each socket wait is capped by the remaining deadline.
   A `Content-Length` short-body check is kept. The Linux
-  workflow installers (ONNX Runtime in `build.yml`, `go-ci.yml`, `libvmaf-build-matrix.yml` and
-  `tests-and-quality-gates.yml`; Spectral and Trivy in `lint-and-format.yml`; Gitleaks in `security-scans.yml`;
+  workflow installers (Spectral and Trivy in `lint-and-format.yml`; Gitleaks in `security-scans.yml`;
   kuttl in `e2e-k8s.yml`) and `scripts/ci/pinned-tool.sh` now call it instead of their own `curl` flags.
   `scripts/ci/tests/test_release_downloads_retry.py` audits every workflow step and CI script, including
   release URLs declared in workflow- or job-level `env`, refuses a direct `curl`/`wget` of a release asset,

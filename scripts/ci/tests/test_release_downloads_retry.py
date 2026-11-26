@@ -106,6 +106,9 @@ def shell_commands(block: str, offset: int) -> list[tuple[int, str]]:
             index += 1
         index += 1
         logical = "".join(lines[start:index])
+        # Drop continuation backslashes; keep the newlines so reported line
+        # numbers still match the source.
+        logical = logical.replace("\\\r\n", "\r\n").replace("\\\n", "\n")
         line = offset + start
         for piece in re.split(r"(?:&&|\|\||;)", logical):
             commands.append((line, piece))
@@ -159,6 +162,17 @@ class ReleaseDownloadRetryTest(unittest.TestCase):
         self.assertEqual(
             [(4, "fetch a release asset through " + WRAPPER)], findings("fixture.yml", step)
         )
+
+    def test_planted_curl_with_flags_on_the_next_line_is_refused(self) -> None:
+        step = (
+            "      - name: Install tool\n"
+            "        run: |\n"
+            "          curl \\\n"
+            "            -fsSL https://github.com/owner/repo/releases/download/v1/tool -o /tmp/tool\n"
+        )
+        found = findings("fixture.yml", step)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0][1], "fetch a release asset through " + WRAPPER)
 
     def test_wrapper_call_with_a_url_variable_passes(self) -> None:
         step = (

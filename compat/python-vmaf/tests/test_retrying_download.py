@@ -105,12 +105,35 @@ def test_a_slow_trickle_hits_the_total_deadline(
             )
 
 
+def test_a_slow_header_hits_the_total_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deadline starts before the request, so a slow status line/header counts."""
+    monkeypatch.setattr(retrying_download, "TRANSFER_TIMEOUT_S", 0.2)
+
+    def slow_urlopen(*_args: object, **_kwargs: object) -> _Trickle:
+        time.sleep(0.3)
+        return _Trickle([b"x"])
+
+    monkeypatch.setattr(retrying_download.urllib.request, "urlopen", slow_urlopen)
+    with pytest.raises(TimeoutError, match="transfer exceeded"):
+        retrying_download.retrieve(
+            "https://example.invalid/f", str(tmp_path / "f"), delays=(), sleep=lambda _: None
+        )
+
+
 class _Trickle:
     """A response that yields the given chunks and then an empty body."""
 
     def __init__(self, chunks: list[bytes]) -> None:
         self.headers: dict[str, str] = {}
         self._chunks = list(chunks)
+
+    def __enter__(self) -> _Trickle:
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
 
     def read1(self, _size: int) -> bytes:
         return self._chunks.pop(0) if self._chunks else b""

@@ -38,8 +38,9 @@ from collections.abc import Callable
 RETRY_DELAYS_S: tuple[float, ...] = (5, 10, 20, 40, 80, 120)
 TRANSIENT_HTTP_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 522, 524})
 # One transfer is bounded: a socket read waits at most READ_TIMEOUT_S, and the
-# whole body must arrive within TRANSFER_TIMEOUT_S. CI tool downloads used
-# curl --max-time 300 before #3349; the fixture downloads keep the same bound.
+# response headers and body must arrive within TRANSFER_TIMEOUT_S. CI tool
+# downloads used curl --max-time 300 before #3349; the fixture downloads keep
+# the same bound. Chunk framing can take more than one socket read.
 READ_TIMEOUT_S = 60
 TRANSFER_TIMEOUT_S = 300
 READ_CHUNK = 1 << 20
@@ -74,8 +75,10 @@ def _copy_body(response: object, path: str, deadline: float) -> None:
             if remaining <= 0:
                 raise TimeoutError(f"transfer exceeded {TRANSFER_TIMEOUT_S} s")
             _set_read_timeout(response, min(READ_TIMEOUT_S, remaining))
-            # read1 performs at most one socket read, so a trickling server
+            # read1 returns after at most one body read, so a trickling body
             # cannot hold the loop for a whole chunk between deadline checks.
+            # A chunked response may also read its chunk framing first; each
+            # socket wait is still capped by the remaining deadline.
             chunk = response.read1(READ_CHUNK)  # type: ignore[attr-defined]
             if not chunk:
                 break
@@ -105,8 +108,9 @@ def retrieve(
     last error, or the first one that is not transient, is raised unchanged.
 
     Each transfer is bounded: a read waits at most ``READ_TIMEOUT_S`` and the
-    whole body must arrive within ``TRANSFER_TIMEOUT_S``. A stalled connection
-    therefore raises and joins the retry loop instead of hanging the job.
+    response headers and body must arrive within ``TRANSFER_TIMEOUT_S``. A
+    stalled connection therefore raises and joins the retry loop instead of
+    hanging the job.
     """
     attempts = len(delays) + 1
     wait = time.sleep if sleep is None else sleep
@@ -117,9 +121,13 @@ def retrieve(
     for attempt, delay in enumerate((*delays, None), start=1):
         try:
             # The URL is the caller's fixture address, checked above for this
-            # and the script form.
+            # and the script form. The deadline starts before the request so
+            # time spent waiting for the status line and headers counts.
+            deadline = time.monotonic() + TRANSFER_TIMEOUT_S
             with open_url(url, timeout=READ_TIMEOUT_S) as response:
-                _copy_body(response, path, time.monotonic() + TRANSFER_TIMEOUT_S)
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"transfer exceeded {TRANSFER_TIMEOUT_S} s")
+                _copy_body(response, path, deadline)
         except Exception as error:
             if delay is None or not transient(error):
                 raise
