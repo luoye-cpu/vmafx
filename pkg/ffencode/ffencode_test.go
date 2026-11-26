@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/VMAFx/vmafx/pkg/ffencode"
 	"github.com/VMAFx/vmafx/pkg/hdr"
@@ -1084,6 +1085,44 @@ func TestInputArgs(t *testing.T) {
 			got := ffencode.InputArgs(tc.req)
 			if !slices.Equal(got, tc.want) {
 				t.Errorf("InputArgs(%+v) = %v, want %v", tc.req, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEncodeTimeout_DefaultWhenUnset(t *testing.T) {
+	t.Setenv("VMAFX_TUNE_ENCODE_TIMEOUT", "")
+	if got := ffencode.EncodeTimeout(); got != ffencode.DefaultEncodeTimeout {
+		t.Errorf("ffencode.EncodeTimeout() = %v, want %v (the default)", got, ffencode.DefaultEncodeTimeout)
+	}
+}
+
+func TestEncodeTimeout_HonoursEnvOverride(t *testing.T) {
+	t.Setenv("VMAFX_TUNE_ENCODE_TIMEOUT", "7s")
+	if got := ffencode.EncodeTimeout(); got != 7*time.Second {
+		t.Errorf("ffencode.EncodeTimeout() = %v, want 7s", got)
+	}
+}
+
+func TestEncodeTimeout_InvalidEnvFallsBackToDefault(t *testing.T) {
+	t.Setenv("VMAFX_TUNE_ENCODE_TIMEOUT", "not-a-duration")
+	if got := ffencode.EncodeTimeout(); got != ffencode.DefaultEncodeTimeout {
+		t.Errorf("ffencode.EncodeTimeout() with invalid env = %v, want default %v", got, ffencode.DefaultEncodeTimeout)
+	}
+}
+
+func TestEncodeTimeout_NonPositiveDisablesTheTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"0s", 0},
+		{"-1s", -time.Second},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			t.Setenv("VMAFX_TUNE_ENCODE_TIMEOUT", tc.raw)
+			if got := ffencode.EncodeTimeout(); got != tc.want {
+				t.Errorf("ffencode.EncodeTimeout() with %q = %v, want %v", tc.raw, got, tc.want)
 			}
 		})
 	}
