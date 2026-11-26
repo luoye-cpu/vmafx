@@ -9,13 +9,17 @@
 #
 # Mirrors the deliverables-check.sh / ffmpeg-patches-check.sh
 # convention so a contributor can run the same gate locally before
-# `gh pr create`. Reads the PR body for an opt-out line, computes
-# the diff between BASE_SHA..HEAD_SHA (or merge-base origin/master),
-# and intersects the diff against a "consumed set" extracted from
-# the patches under ffmpeg-patches/.
+# `gh pr create`. Section 0's tree checks read raw regular blobs from
+# the $HEAD_SHA tree when $HEAD_SHA is non-empty (ignoring archive
+# attributes and filters, and reading the checkout otherwise). The pull
+# request gate reads the PR body for an opt-out line, computes the diff
+# from the merge base of BASE_SHA and HEAD_SHA to HEAD_SHA (or merge-base
+# origin/master..HEAD), and intersects the diff against a "consumed set"
+# read from ffmpeg-patches/*.patch at that same diff head revision, not
+# from the checkout.
 #
 # Detection algorithm (bash + grep, no AST):
-#   1. Parse ffmpeg-patches/*.patch once, extract the union of:
+#   1. Parse ffmpeg-patches/*.patch at the diff head revision once, extract the union of:
 #        - vmaf_<ident>          (libvmaf public C symbols)
 #        - Vmaf<TitleCase>       (libvmaf public types: VmafModelConfig, VmafLogLevel, ...)
 #        - --enable-libvmaf-*    (FFmpeg configure flags)
@@ -41,19 +45,26 @@
 #       surface still fails. Classification lives in
 #       scripts/ci/pr-body-input.sh — see it for why `[ ! -t 0 ]` is
 #       the wrong test.
-#       Diff is computed from $BASE_SHA..$HEAD_SHA env vars,
-#       or falls back to $(git merge-base origin/master HEAD)..HEAD.
+#       Section 0's tree checks read raw regular blobs from the
+#       $HEAD_SHA tree when $HEAD_SHA is non-empty (without archive
+#       attributes or filters), or the checkout when $HEAD_SHA is unset
+#       or empty.
+#       Diff is computed from the merge base of $BASE_SHA and $HEAD_SHA
+#       up to $HEAD_SHA, or falls back to
+#       $(git merge-base origin/master HEAD)..HEAD; the consumed patch
+#       set is read from that same diff head revision, not the checkout.
 #
 #   PR_BODY="$(gh pr view 999 --json body -q .body)" \
 #       scripts/ci/ffmpeg-patches-surface-check.sh
 #
 #   scripts/ci/ffmpeg-patches-surface-check.sh --surface-only
 #       Runs only the tree checks of section 0 (patch series, fork build
-#       configs, documentation examples, patch tests) and stops. They
-#       read the checkout, so this mode needs no PR body, no BASE_SHA /
-#       HEAD_SHA and no origin/master; the pre-commit hook
-#       ffmpeg-patches-surface-docs runs it. The pull request gate below
-#       (opt-out line, consumed-surface diff) runs in CI only.
+#       configs, documentation examples, patch tests) and stops. Section
+#       0 reads the checkout in this mode even if $HEAD_SHA is set, so
+#       it needs no PR body, no BASE_SHA / HEAD_SHA and no
+#       origin/master; the pre-commit hook ffmpeg-patches-surface-docs
+#       runs it. The pull request gate below (opt-out line,
+#       consumed-surface diff) runs in CI only.
 #
 # Exits 0 on PASS or no-public-surface-touched, 1 on a missing
 # patch update or a failed tree check, 2 on an environment / setup
@@ -88,6 +99,31 @@ nomatch_ok() {
 
 REPO_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 PATCHES_DIR="${REPO_ROOT}/ffmpeg-patches"
+_ffmpeg_surface_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+FORK_BUILD_CONFIGS=(
+  "Containerfile.vmafx"
+  "Dockerfile"
+  "Dockerfile.ffmpeg"
+  "dev/Containerfile"
+  "docker/Dockerfile.node"
+  "scripts/test/sycl-dev-container.sh"
+  ".github/workflows/ffmpeg-patch-stack.yml"
+  "scripts/ci/tidy-integrations-build.sh"
+  "ffmpeg-patches/test/build-and-run.sh"
+)
+
+tmp_surface_root=""
+head_surface_sha=""
+tmp_docs=""
+tmp_docs_nul=""
+tmp_body=""
+tmp_diff=""
+tmp_patch_tree=""
+tmp_consumed=""
+tmp_diff_syms=""
+tmp_diff_flags=""
+trap '[ -z "$tmp_docs" ] || rm -f "$tmp_docs"; [ -z "$tmp_docs_nul" ] || rm -f "$tmp_docs_nul"; [ -z "$tmp_body" ] || rm -f "$tmp_body"; [ -z "$tmp_diff" ] || rm -f "$tmp_diff"; [ -z "$tmp_patch_tree" ] || rm -f "$tmp_patch_tree"; [ -z "$tmp_consumed" ] || rm -f "$tmp_consumed"; [ -z "$tmp_diff_syms" ] || rm -f "$tmp_diff_syms"; [ -z "$tmp_diff_flags" ] || rm -f "$tmp_diff_flags"; [ -z "$tmp_surface_root" ] || rm -rf "$tmp_surface_root"' EXIT
 
 # ---------- 0. Invariant surface checks (Issue #2435, ADR-2166) ----------
 
@@ -134,19 +170,8 @@ check_surface_series() {
 
 check_surface_fork_build_configs() {
   local fail=0
-  local configs=(
-    "Containerfile.vmafx"
-    "Dockerfile"
-    "Dockerfile.ffmpeg"
-    "dev/Containerfile"
-    "docker/Dockerfile.node"
-    "scripts/test/sycl-dev-container.sh"
-    ".github/workflows/ffmpeg-patch-stack.yml"
-    "scripts/ci/tidy-integrations-build.sh"
-    "ffmpeg-patches/test/build-and-run.sh"
-  )
   local relpath fullpath
-  for relpath in "${configs[@]}"; do
+  for relpath in "${FORK_BUILD_CONFIGS[@]}"; do
     fullpath="${REPO_ROOT}/${relpath}"
     [ -f "$fullpath" ] || continue
     local m_flag
@@ -171,7 +196,7 @@ check_surface_fork_build_configs() {
   if [ "$fail" -ne 0 ]; then
     return 1
   fi
-  echo "ffmpeg-patches-surface-check: [PASS] fork build configs: zero retired filters/options in ${#configs[@]} allow-listed configs."
+  echo "ffmpeg-patches-surface-check: [PASS] fork build configs: zero retired filters/options in ${#FORK_BUILD_CONFIGS[@]} allow-listed configs."
   return 0
 }
 
@@ -236,25 +261,54 @@ scan_single_doc() {
   return "$doc_fail"
 }
 
+list_surface_docs() {
+  local use_find="${1:-0}"
+  if [ "$use_find" -eq 0 ] && git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "${REPO_ROOT}" ls-files -z "docs/*.md" "docs/**/*.md" "README.md" "ffmpeg-patches/README.md"
+    return $?
+  fi
+  if [ "$use_find" -eq 0 ]; then
+    (cd "${REPO_ROOT}" && find docs README.md ffmpeg-patches/README.md -name "*.md" 2>/dev/null | sed "s|^\./||")
+    return $?
+  fi
+  local doc_roots=()
+  local root_rel
+  for root_rel in docs README.md ffmpeg-patches/README.md; do
+    [ -e "${REPO_ROOT}/${root_rel}" ] && doc_roots+=("$root_rel")
+  done
+  if [ "${#doc_roots[@]}" -eq 0 ]; then
+    return 0
+  fi
+  (cd "${REPO_ROOT}" && find "${doc_roots[@]}" -name "*.md" 2>/dev/null | sed "s|^\./||")
+}
+
 check_surface_docs_examples() {
+  local use_find="${1:-0}"
   local fail=0
   local all_docs=()
-  local docs_list
-  if git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    docs_list="$(git -C "${REPO_ROOT}" ls-files "docs/*.md" "docs/**/*.md" "README.md" "ffmpeg-patches/README.md")" || {
-      echo "ffmpeg-patches-surface-check: [FAIL] cannot list docs" >&2
-      return 1
-    }
-  else
-    docs_list="$(cd "${REPO_ROOT}" && find docs README.md ffmpeg-patches/README.md -name "*.md" 2>/dev/null | sed "s|^\./||")" || {
-      echo "ffmpeg-patches-surface-check: [FAIL] cannot list docs" >&2
-      return 1
-    }
+  # HISS-02 scalar loop bound: git ls-files -z matches 5,083 doc blobs at
+  # af6ef25d1f; 16384 matches extract_tree_blobs.py DEFAULT_MAX_ENTRIES (>3x).
+  local max_surface_docs=16384
+  tmp_docs="$(mktemp)"
+  list_surface_docs "$use_find" >"$tmp_docs" || {
+    echo "ffmpeg-patches-surface-check: [FAIL] cannot list docs" >&2
+    return 1
+  }
+  if [ "$use_find" -ne 0 ] || ! git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    tmp_docs_nul="$(mktemp)"
+    tr '\n' '\0' <"$tmp_docs" >"$tmp_docs_nul"
+    mv "$tmp_docs_nul" "$tmp_docs"
   fi
 
-  while IFS= read -r p; do
+  local p doc_records=0
+  while IFS= read -r -d '' p; do
+    doc_records=$((doc_records + 1))
+    if [ "$doc_records" -gt "$max_surface_docs" ]; then
+      echo "ffmpeg-patches-surface-check: [FAIL] doc list exceeds ${max_surface_docs} entries" >&2
+      return 1
+    fi
     [ -n "$p" ] && all_docs+=("$p")
-  done <<<"$docs_list"
+  done <"$tmp_docs"
 
   local relpath
   local doc_count=0
@@ -342,11 +396,53 @@ check_surface_patch_tests() {
   return 0
 }
 
+prepare_head_surface_tree() {
+  local checkout_root="$1"
+  if ! head_surface_sha="$(git -C "${checkout_root}" rev-parse --verify --quiet "${HEAD_SHA}^{commit}" 2>/dev/null)"; then
+    echo "ffmpeg-patches-surface-check: cannot resolve HEAD_SHA '${HEAD_SHA}' to a commit." >&2
+    exit 2
+  fi
+  if ! tmp_surface_root="$(mktemp -d 2>/dev/null)"; then
+    echo "ffmpeg-patches-surface-check: cannot create temporary directory for ${HEAD_SHA}." >&2
+    exit 2
+  fi
+  local extract_err extract_rc=0
+  extract_err="$(python3 "${_ffmpeg_surface_dir}/extract_tree_blobs.py" \
+    --repo "${checkout_root}" \
+    --rev "${head_surface_sha}" \
+    --dest "${tmp_surface_root}" \
+    -- ffmpeg-patches docs README.md "${FORK_BUILD_CONFIGS[@]}" 2>&1 >/dev/null)" || extract_rc=$?
+  if [ "$extract_rc" -ne 0 ]; then
+    extract_err="$(printf '%s' "$extract_err" | tr '\r\n' '  ')"
+    extract_err="${extract_err#extract_tree_blobs: }"
+    if [ "$extract_rc" -eq 3 ]; then
+      echo "ffmpeg-patches-surface-check: cannot list surface inputs at ${HEAD_SHA}.${extract_err:+ ${extract_err}}" >&2
+    else
+      echo "ffmpeg-patches-surface-check: cannot extract surface inputs at ${HEAD_SHA}.${extract_err:+ ${extract_err}}" >&2
+    fi
+    exit 2
+  fi
+}
+
 # Run #2435 invariant surface checks
+checkout_repo_root="${REPO_ROOT}"
+checkout_patches_dir="${PATCHES_DIR}"
+surface_use_find=0
+if [ "$surface_only" -eq 0 ] && [ -n "${HEAD_SHA:-}" ]; then
+  prepare_head_surface_tree "${checkout_repo_root}"
+  REPO_ROOT="${tmp_surface_root}"
+  PATCHES_DIR="${tmp_surface_root}/ffmpeg-patches"
+  surface_use_find=1
+  echo "ffmpeg-patches-surface-check: tree checks read HEAD_SHA ${head_surface_sha} (extracted to ${tmp_surface_root})."
+fi
+
 check_surface_series || exit 1
 check_surface_fork_build_configs || exit 1
-check_surface_docs_examples || exit 1
+check_surface_docs_examples "$surface_use_find" || exit 1
 check_surface_patch_tests || exit 1
+
+REPO_ROOT="${checkout_repo_root}"
+PATCHES_DIR="${checkout_patches_dir}"
 
 if [ "$surface_only" -eq 1 ]; then
   echo "ffmpeg-patches-surface-check: --surface-only: tree checks passed; the pull request surface gate (PR body opt-out, diff from the merge base) runs in CI."
@@ -361,7 +457,6 @@ fi
 # different question from whether anybody piped a body, and `PR_BODY="$(cat)"`
 # on a closed fd 0 does not fail — it deadlocks. See
 # scripts/ci/pr-body-input.sh.
-_ffmpeg_surface_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/ci/pr-body-input.sh
 . "${_ffmpeg_surface_dir}/pr-body-input.sh"
 # shellcheck source=scripts/ci/pr-diff-base.sh
@@ -392,10 +487,10 @@ fi
 
 tmp_body="$(mktemp)"
 tmp_diff="$(mktemp)"
+tmp_patch_tree="$(mktemp)"
 tmp_consumed="$(mktemp)"
 tmp_diff_syms="$(mktemp)"
 tmp_diff_flags="$(mktemp)"
-trap 'rm -f "$tmp_body" "$tmp_diff" "$tmp_consumed" "$tmp_diff_syms" "$tmp_diff_flags"' EXIT
 
 # Strip markdown emphasis for opt-out matching, mirroring
 # deliverables-check.sh.
@@ -419,7 +514,10 @@ else
   diff_src="auto (merge-base origin/master..HEAD)"
 fi
 
-git diff --name-only "${diff_base}..${diff_head}" >"$tmp_diff"
+if ! git diff -z --no-relative --name-only "${diff_base}..${diff_head}" >"$tmp_diff" 2>/dev/null; then
+  echo "ffmpeg-patches-surface-check: cannot list changed paths ${diff_base}..${diff_head}." >&2
+  exit 2
+fi
 
 echo "ffmpeg-patches-surface-check: PR body from ${body_src}, diff from ${diff_src}"
 
@@ -432,13 +530,48 @@ fi
 
 # ---------- 4. Build the "consumed set" from patches ----------
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-PATCHES_DIR="${REPO_ROOT}/ffmpeg-patches"
+# Read patches from ${diff_head}, not the checkout, so both sides of the
+# surface intersection come from the same revision.
+if ! git ls-tree -z --full-tree --name-only "${diff_head}" -- ffmpeg-patches/ >"$tmp_patch_tree" 2>/dev/null; then
+  echo "ffmpeg-patches-surface-check: cannot list ffmpeg-patches/ at ${diff_head}." >&2
+  exit 2
+fi
 
-if [ ! -d "$PATCHES_DIR" ]; then
-  echo "ffmpeg-patches-surface-check: ${PATCHES_DIR} missing; nothing to check." >&2
+# HISS-02 scalar loop bound: ffmpeg-patches/ holds 8 direct tree entries at
+# af6ef25d1f (4 patches, README.md, series.txt, src/, test/); 1024 gives 128x
+# headroom for series growth while bounding NUL-record iteration.
+MAX_PATCH_TREE_RECORDS=1024
+patch_paths=()
+patch_tree_records=0
+while IFS= read -r -d '' patch_path; do
+  patch_tree_records=$((patch_tree_records + 1))
+  if [ "$patch_tree_records" -gt "$MAX_PATCH_TREE_RECORDS" ]; then
+    echo "ffmpeg-patches-surface-check: ffmpeg-patches/ at ${diff_head} exceeds ${MAX_PATCH_TREE_RECORDS} tree entries." >&2
+    exit 2
+  fi
+  case "$patch_path" in
+    ffmpeg-patches/*.patch)
+      case "${patch_path#ffmpeg-patches/}" in
+        .* | */*) ;;
+        *) patch_paths+=("$patch_path") ;;
+      esac
+      ;;
+  esac
+done <"$tmp_patch_tree"
+
+if [ "${#patch_paths[@]}" -eq 0 ]; then
+  echo "ffmpeg-patches-surface-check: ffmpeg-patches/*.patch at ${diff_head} missing; nothing to check." >&2
   exit 0
 fi
+
+patch_text=""
+for patch_path in ${patch_paths[@]+"${patch_paths[@]}"}; do
+  if ! one_patch="$(git show "${diff_head}:${patch_path}" 2>/dev/null)"; then
+    echo "ffmpeg-patches-surface-check: cannot read ${patch_path} at ${diff_head}." >&2
+    exit 2
+  fi
+  patch_text="${patch_text}${one_patch}"$'\n'
+done
 
 # Concatenate added + context lines from every patch, then extract:
 #   - vmaf_[a-zA-Z0-9_]+          public C symbol names
@@ -451,9 +584,8 @@ fi
 # Filter false positives: drop tokens that are too short (<= 5 chars)
 # or that match a small ignore list of generic tokens like "vmaf_v0"
 # (pkg-config version literal, not a libvmaf symbol).
-{
-  cat "${PATCHES_DIR}"/*.patch 2>/dev/null
-} | grep -hoE '\b(vmaf_[a-zA-Z0-9_]+|Vmaf[A-Z][a-zA-Z0-9]+|libvmaf_[a-zA-Z0-9_]+|--enable-libvmaf[a-zA-Z0-9_-]*)\b' |
+printf '%s' "$patch_text" |
+  grep -hoE '\b(vmaf_[a-zA-Z0-9_]+|Vmaf[A-Z][a-zA-Z0-9]+|libvmaf_[a-zA-Z0-9_]+|--enable-libvmaf[a-zA-Z0-9_-]*)\b' |
   sort -u |
   grep -vE '^vmaf_v[0-9]+$' |
   grep -vE '^vmaf_(pre|tune)$' \
@@ -461,7 +593,7 @@ fi
 
 consumed_count=$(wc -l <"$tmp_consumed" | tr -d ' ')
 if [ "${consumed_count}" -eq 0 ]; then
-  echo "ffmpeg-patches-surface-check: WARN: extracted zero symbols from ${PATCHES_DIR}/*.patch; pattern likely broken." >&2
+  echo "ffmpeg-patches-surface-check: WARN: extracted zero symbols from ffmpeg-patches/*.patch at ${diff_head}; pattern likely broken." >&2
   exit 2
 fi
 
@@ -476,7 +608,7 @@ fi
 # We extract identifiers from the union of `+` and `-` lines (added or
 # removed in the diff). Pure `+ // comment` or `+ /* comment */` lines
 # are filtered.
-header_diff="$(git diff "${diff_base}..${diff_head}" -- 'core/include/libvmaf/*.h' || nomatch_ok $?)"
+header_diff="$(git diff --no-relative "${diff_base}..${diff_head}" -- ':(top)core/include/libvmaf/*.h' || nomatch_ok $?)"
 
 if [ -n "$header_diff" ]; then
   printf '%s\n' "$header_diff" |
@@ -488,7 +620,7 @@ fi
 
 # meson_options.txt changes — capture any `option('<name>'` declaration
 # touched in `+` or `-` lines.
-meson_diff="$(git diff "${diff_base}..${diff_head}" -- 'core/meson_options.txt' || nomatch_ok $?)"
+meson_diff="$(git diff --no-relative "${diff_base}..${diff_head}" -- ':(top)core/meson_options.txt' || nomatch_ok $?)"
 
 if [ -n "$meson_diff" ]; then
   printf '%s\n' "$meson_diff" |
@@ -513,10 +645,24 @@ if [ -n "$meson_diff" ]; then
 fi
 
 # Did the diff touch any ffmpeg-patches/*.patch file?
+# HISS-02 scalar loop bound: full tracked tree is ~5,200 blobs at af6ef25d1f;
+# 65536 bounds changed-path iteration with >12x full-tree headroom.
+MAX_DIFF_PATHS=65536
 patch_touched=0
-if grep -qE '^ffmpeg-patches/.*\.patch$' "$tmp_diff"; then
-  patch_touched=1
-fi
+diff_records=0
+while IFS= read -r -d '' changed_path; do
+  diff_records=$((diff_records + 1))
+  if [ "$diff_records" -gt "$MAX_DIFF_PATHS" ]; then
+    echo "ffmpeg-patches-surface-check: changed-path list ${diff_base}..${diff_head} exceeds ${MAX_DIFF_PATHS} entries." >&2
+    exit 2
+  fi
+  case "$changed_path" in
+    ffmpeg-patches/*.patch)
+      patch_touched=1
+      break
+      ;;
+  esac
+done <"$tmp_diff"
 
 # Compute symbol-level intersections.
 sym_hit_count=0
