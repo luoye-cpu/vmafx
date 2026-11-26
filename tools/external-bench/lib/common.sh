@@ -115,37 +115,7 @@ normalise_output() {
   local dst="$2"
   local competitor="$3"
   local metric="${4:-vmaf}"
-
-  python3 - "$src" "$dst" "$competitor" "$metric" <<'PY'
-import json, sys, pathlib
-src = pathlib.Path(sys.argv[1])
-dst = pathlib.Path(sys.argv[2])
-competitor = sys.argv[3]
-metric = sys.argv[4]
-
-raw = json.loads(src.read_text()) if src.stat().st_size else {}
-frames_in = raw.get("frames", raw.get("per_frame", []))
-frames = []
-for i, f in enumerate(frames_in):
-    if metric == "mos":
-        score = float(f.get("predicted_mos", f.get("score", 0.0)))
-    else:
-        score = float(f.get("predicted_vmaf", f.get("vmaf", 0.0)))
-    frames.append({
-        "frame_idx": int(f.get("frame", f.get("idx", i))),
-        "predicted_vmaf_or_mos": score,
-        "runtime_ms": float(f.get("runtime_ms", 0.0)),
-    })
-summary = {
-    "competitor": competitor,
-    "plcc": float(raw.get("plcc", 0.0)),
-    "srocc": float(raw.get("srocc", 0.0)),
-    "rmse": float(raw.get("rmse", 0.0)),
-    "runtime_total_ms": float(raw.get("runtime_total_ms",
-                                      sum(f["runtime_ms"] for f in frames))),
-    "params": int(raw.get("params", 0)),
-    "gflops": float(raw.get("gflops", 0.0)),
-}
-dst.write_text(json.dumps({"frames": frames, "summary": summary}, indent=2))
-PY
+  local lib_dir
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  python3 "$lib_dir/normalise_output.py" "$src" "$dst" "$competitor" "$metric"
 }
