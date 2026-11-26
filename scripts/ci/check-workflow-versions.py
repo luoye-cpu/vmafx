@@ -101,7 +101,7 @@ LEVEL_ZERO_FETCHER_CALL_RE = re.compile(
 
 PYTHON_RE = re.compile(r'python-version:\s*[\'"]?([0-9]+\.[0-9]+\.[0-9]+)[\'"]?')
 RESOURCE_ARG_RE = re.compile(r"(?im)^[ \t]*ARG[ \t]+VMAF_RESOURCE_COMMIT=(\S*)")
-RESOURCE_CONFIG_RE = re.compile(r'(?m)^VMAF_RESOURCE_COMMIT="?([^"\s#]+)')
+RESOURCE_CONFIG_LINE_RE = re.compile(r'VMAF_RESOURCE_COMMIT="([0-9a-f]{40})"')
 RESOURCE_RECORD_RE = re.compile(
     r'"source":\s*"https://github\.com/Netflix/vmaf_resource/tree/([0-9a-f]{40})/'
 )
@@ -194,22 +194,34 @@ def check_level_zero_container(root: Path) -> list[str]:
     return problems
 
 
-def check_vmaf_resource_commit(root: Path, want: str | None) -> list[str]:
-    """The fixture source commit is owned by build-config.env and checked everywhere.
-
-    `docker/Dockerfile.tester` keeps an `ARG` mirror because an image build
-    cannot read `build-config.env` at parse time. The tester-bundle workflows
-    load the value at run time. The seven fixture records in
-    `tools/rc1-tester/image/licensing.json` name the same commit and are compared
-    here, so missing, duplicated or differing values fail.
-    """
-    if not want:
-        return ["build-config.env defines no VMAF_RESOURCE_COMMIT"]
+def _resource_config_commit(root: Path, want: str | None) -> list[str]:
+    """Hold build-config.env to the single spelling both bundle workflows parse."""
     problems: list[str] = []
     config = root / "build-config.env"
-    declarations = RESOURCE_CONFIG_RE.findall(config.read_text(encoding="utf-8"))
-    if len(declarations) != 1:
+    lines = [
+        line
+        for line in config.read_text(encoding="utf-8").splitlines()
+        if "VMAF_RESOURCE_COMMIT" in line and not line.lstrip().startswith("#")
+    ]
+    if len(lines) != 1:
         problems.append("build-config.env must declare VMAF_RESOURCE_COMMIT exactly once")
+        return problems
+    match = RESOURCE_CONFIG_LINE_RE.fullmatch(lines[0])
+    if match is None:
+        problems.append(
+            'build-config.env VMAF_RESOURCE_COMMIT must be exactly VMAF_RESOURCE_COMMIT="<40 hex>"'
+        )
+        return problems
+    if want and match.group(1) != want:
+        problems.append(
+            f"build-config.env VMAF_RESOURCE_COMMIT is {match.group(1)}; expected {want}"
+        )
+    return problems
+
+
+def _check_resource_mirrors(root: Path, want: str) -> list[str]:
+    """Compare every pinned container mirror with build-config.env."""
+    problems: list[str] = []
     for rel, pattern in RESOURCE_MIRRORS:
         path = root / rel
         if not path.is_file():
@@ -223,10 +235,15 @@ def check_vmaf_resource_commit(root: Path, want: str | None) -> list[str]:
             problems.append(
                 f"{rel} pins VMAF_RESOURCE_COMMIT {values[0]}; build-config.env says {want}"
             )
+    return problems
+
+
+def _check_resource_records(root: Path, want: str) -> list[str]:
+    """Compare the seven licensing records with build-config.env."""
+    problems: list[str] = []
     records = root / RESOURCE_RECORD_FILE
     if not records.is_file():
-        problems.append(f"{RESOURCE_RECORD_FILE} is missing")
-        return problems
+        return [f"{RESOURCE_RECORD_FILE} is missing"]
     values = RESOURCE_RECORD_RE.findall(records.read_text(encoding="utf-8"))
     if len(values) != RESOURCE_RECORD_COUNT:
         problems.append(
@@ -239,6 +256,23 @@ def check_vmaf_resource_commit(root: Path, want: str | None) -> list[str]:
                 f"{RESOURCE_RECORD_FILE} names VMAF_RESOURCE_COMMIT {value}; "
                 f"build-config.env says {want}"
             )
+    return problems
+
+
+def check_vmaf_resource_commit(root: Path, want: str | None) -> list[str]:
+    """The fixture source commit is owned by build-config.env and checked everywhere.
+
+    `docker/Dockerfile.tester` keeps an `ARG` mirror because an image build
+    cannot read `build-config.env` at parse time. The tester-bundle workflows
+    load the value at run time. The seven fixture records in
+    `tools/rc1-tester/image/licensing.json` name the same commit and are compared
+    here, so missing, duplicated or differing values fail.
+    """
+    if not want:
+        return ["build-config.env defines no VMAF_RESOURCE_COMMIT"]
+    problems = _resource_config_commit(root, want)
+    problems.extend(_check_resource_mirrors(root, want))
+    problems.extend(_check_resource_records(root, want))
     return problems
 
 

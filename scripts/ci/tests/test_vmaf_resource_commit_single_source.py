@@ -113,6 +113,24 @@ class VmafResourceCommitSingleSource(unittest.TestCase):
                 self.assertEqual(len(problems), 1)
                 self.assertIn(expected, problems[0])
 
+    def test_config_spellings_are_enforced(self) -> None:
+        cases = {
+            "trailing comment": (
+                f'VMAF_RESOURCE_COMMIT="{WANT}" # pinned\n',
+                "must be exactly",
+            ),
+            "indented duplicate": (
+                f'VMAF_RESOURCE_COMMIT="{WANT}"\n  VMAF_RESOURCE_COMMIT="dddd"\n',
+                "exactly once",
+            ),
+        }
+        for name, (body, expected) in cases.items():
+            with self.subTest(name=name):
+                self.write("build-config.env", body)
+                problems = CHECK(self.repo, WANT)
+                self.assertEqual(len(problems), 1)
+                self.assertIn(expected, problems[0])
+
     def test_duplicate_config_declaration_fails(self) -> None:
         self.write(
             "build-config.env",

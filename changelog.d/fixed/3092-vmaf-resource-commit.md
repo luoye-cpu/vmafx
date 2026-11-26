@@ -1,1 +1,1 @@
-- **CI:** Define the tester fixture commit once as `VMAF_RESOURCE_COMMIT` in `build-config.env` and fail `check-workflow-versions.py` when the tester image or either tester-bundle workflow mirror drifts.
+- **CI:** Define the tester fixture commit once as `VMAF_RESOURCE_COMMIT` in `build-config.env` and fail `check-workflow-versions.py` when `docker/Dockerfile.tester` or any of the seven records in `tools/rc1-tester/image/licensing.json` drifts; both tester-bundle workflows read that config value at run time.

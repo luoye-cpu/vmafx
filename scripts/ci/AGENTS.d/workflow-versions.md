@@ -15,16 +15,14 @@ area: release
 
 ## VMAF resource commit (ADR-1231)
 
-`VMAF_RESOURCE_COMMIT` in `build-config.env` owns the Netflix/vmaf_resource
-fixture commit. `docker/Dockerfile.tester` keeps an `ARG` mirror because an
-image build cannot source the config at parse time. Both macOS and Windows
-tester-bundle workflows read the recipe commit at run time with
-`git show FETCH_HEAD:build-config.env`, extract the value with `sed`, and append
-`VMAF_RESOURCE_COMMIT=<sha>` to `$GITHUB_ENV`; they read the fetched commit,
-not the checked-out source tree, so they carry no parse-time mirror. The seven
-fixture `source` records in `tools/rc1-tester/image/licensing.json` name the
-same commit and are checked. Fixture:
-`tests/test_vmaf_resource_commit_single_source.py`.
+`VMAF_RESOURCE_COMMIT` in `build-config.env` owns Netflix/vmaf_resource
+fixture commit. `docker/Dockerfile.tester` keeps `ARG` mirror; image build
+cannot source config at parse time. macOS and Windows tester-bundle workflows
+read recipe commit at run time with `git show FETCH_HEAD:build-config.env`,
+extract value via `sed`, append `VMAF_RESOURCE_COMMIT=<sha>` to
+`$GITHUB_ENV`. They read fetched commit, not checked-out tree. Seven fixture
+`source` records in `tools/rc1-tester/image/licensing.json` name same commit
+and are checked. Fixture: `tests/test_vmaf_resource_commit_single_source.py`.
 
 ## Level Zero version consumption (ADR-1231)
 
