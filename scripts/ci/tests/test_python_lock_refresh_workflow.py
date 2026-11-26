@@ -90,11 +90,14 @@ def shape_findings(workflow: dict[str, Any], inputs: list[str]) -> list[str]:
     return found
 
 
-def unconditional_refresh_command(step: dict[str, Any], line: int, command: str) -> bool:
+def unconditional_refresh_command(
+    step: dict[str, Any], line: int, command: str, install: str
+) -> bool:
     """Only the reviewed setup commands may precede the required invocation."""
     if "if" in step or "continue-on-error" in step:
         return False
-    prefix = step["run"].splitlines()[:line]
+    lines = step["run"].splitlines()
+    prefix = lines[:line]
     commands = [
         text.strip() for text in prefix if text.strip() and not text.lstrip().startswith("#")
     ]
@@ -102,6 +105,9 @@ def unconditional_refresh_command(step: dict[str, Any], line: int, command: str)
     if command.endswith("bootstrap-uv"):
         setup.append('bootstrap="$RUNNER_TEMP/uv-bootstrap.txt"')
         command += ' --output "$bootstrap"'
+        block = ['if [ -s "$bootstrap" ]; then', install, "fi"]
+        if [text.strip() for text in lines[line : line + len(block)]] != block:
+            return False
     return commands == [*setup, command]
 
 
@@ -137,7 +143,7 @@ def guard_order_findings(steps: list[dict[str, Any]]) -> list[str]:
         return [ORDER_FINDING]
     for marker in (bootstrap, write):
         index, line = positions[marker]
-        if not unconditional_refresh_command(steps[index], line, marker):
+        if not unconditional_refresh_command(steps[index], line, marker, install):
             return [REQUIRED_STEP_FINDING]
     return []
 
@@ -230,6 +236,12 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
             step for step in steps_of(wf) if "bootstrap-uv" not in step.get("run", "")
         ]
         self.assertIn(ORDER_FINDING, shape_findings(wf, self.inputs))
+
+    def test_planted_unreachable_bootstrap_install_is_reported(self) -> None:
+        wf = self.planted()
+        step = next(s for s in steps_of(wf) if "bootstrap-uv" in s.get("run", ""))
+        step["run"] = step["run"].replace('if [ -s "$bootstrap" ]', "if false")
+        self.assertIn(REQUIRED_STEP_FINDING, shape_findings(wf, self.inputs))
 
     def test_planted_unreachable_write_is_reported(self) -> None:
         wf = self.planted()

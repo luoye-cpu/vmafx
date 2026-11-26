@@ -607,7 +607,7 @@ def _uv_group_finding(
         enabled = config.get(manager, {}).get("enabled", True)
         for index in indices:
             enabled = rules[index].get("enabled", enabled)
-        if not enabled:
+        if not enabled or manager not in config.get("enabledManagers", (manager,)):
             return f"{path}: {manager} uv ({update_type}) disabled"
         shared.intersection_update(indices)
         matches[manager] = indices
@@ -639,8 +639,9 @@ def uv_lock_generator_findings(config: dict[str, Any], read: Callable[[str], str
     patterns = config["pip_requirements"]["managerFilePatterns"]
     if not any(re.search(pattern[1:-1], TOOLING_INPUT) for pattern in patterns):
         errors.append(f"{TOOLING_INPUT}: outside pip_requirements file patterns")
-    if any(fnmatch.fnmatchcase(TOOLING_INPUT, pattern) for pattern in config["ignorePaths"]):
-        errors.append(f"{TOOLING_INPUT}: ignored by Renovate")
+    for path in (TOOLING_INPUT, LOCK_MANIFEST):
+        if any(fnmatch.fnmatchcase(path, pattern) for pattern in config["ignorePaths"]):
+            errors.append(f"{path}: ignored by Renovate")
     for update_type in ("patch", "minor", "major"):
         group_finding = _uv_group_finding(config, update_type, version, pins[0])
         if group_finding is not None:
@@ -708,6 +709,21 @@ class UvLockGeneratorGroup(unittest.TestCase):
             f"{TOOLING_INPUT}: pip_requirements uv (patch) disabled", self.findings(disable)
         )
 
+    def test_uv_managers_must_be_enabled(self) -> None:
+        pip_disabled = f"{TOOLING_INPUT}: pip_requirements uv (patch) disabled"
+        manifest_disabled = f"{LOCK_MANIFEST}: custom.regex uv (patch) disabled"
+        self.assertIn(
+            pip_disabled, self.findings(lambda cfg: cfg.update(enabledManagers=["custom.regex"]))
+        )
+        self.assertIn(
+            manifest_disabled,
+            self.findings(lambda cfg: cfg.update(enabledManagers=["pip_requirements"])),
+        )
+        self.assertIn(
+            manifest_disabled,
+            self.findings(lambda cfg: cfg.update({"custom.regex": {"enabled": False}})),
+        )
+
     def test_missing_tooling_input_pin_fails(self) -> None:
         self.assertIn(
             f"{TOOLING_INPUT}: expected one exact uv pin",
@@ -725,6 +741,12 @@ class UvLockGeneratorGroup(unittest.TestCase):
         self.assertIn(
             f"{TOOLING_INPUT}: outside pip_requirements file patterns", self.findings(exclude)
         )
+
+    def test_ignored_uv_manifest_fails(self) -> None:
+        def ignore(config: dict[str, Any]) -> None:
+            config["ignorePaths"].append(LOCK_MANIFEST)
+
+        self.assertIn(f"{LOCK_MANIFEST}: ignored by Renovate", self.findings(ignore))
 
     def test_manifest_allows_space_before_colon(self) -> None:
         self.assertEqual(self.findings(files={LOCK_MANIFEST: '{"uv_version" : "0.13.6"}'}), [])

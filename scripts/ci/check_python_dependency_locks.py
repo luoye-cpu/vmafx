@@ -51,6 +51,8 @@ GIT_TIMEOUT_S = 60
 # 10x the slowest cold-cache uv pip compile of the manifest: 10.6 s.
 SUBPROCESS_TIMEOUT_S = 120
 MAX_LOCK_BYTES = 4 * 1024 * 1024
+MAX_INSTALL_SURFACE_BYTES = 256 * 1024
+MAX_INSTALL_SURFACE_LINES = 4096
 MAX_REQUIREMENTS_LINES = 65_536
 MAX_HASHES_PER_REQUIREMENT = 1024
 # pip removes a comment only at the start of the line or after whitespace.
@@ -492,11 +494,12 @@ def _requirements_file_lines(text: str, source: str) -> Iterator[tuple[int, str]
                 pending.append(line.strip("\\"))
                 continue
             pending.append(line)
-        yield start, REQUIREMENT_COMMENT_RE.sub("", "".join(pending)).strip()
+        if content := REQUIREMENT_COMMENT_RE.sub("", "".join(pending)).strip():
+            yield start, content
         pending.clear()
         start = number + 1
-    if pending:
-        yield start, REQUIREMENT_COMMENT_RE.sub("", "".join(pending)).strip()
+    if pending and (content := REQUIREMENT_COMMENT_RE.sub("", "".join(pending)).strip()):
+        yield start, content
 
 
 def _toml_requirement_arrays(data: dict[str, Any]) -> Iterator[tuple[str, object]]:
@@ -1286,6 +1289,18 @@ def _bootstrap_install_line(path: Path, text: str) -> int | None:
     return text.count("\n", 0, match.start("install")) + 1 if match else None
 
 
+def _check_install_surface_size(path: Path, text: str) -> None:
+    if (
+        len(text) > MAX_INSTALL_SURFACE_BYTES
+        or len(text.encode("utf-8")) > MAX_INSTALL_SURFACE_BYTES
+    ):
+        raise ContractError(f"{path}: install surface exceeds {MAX_INSTALL_SURFACE_BYTES} bytes")
+    if len(text.splitlines()) > MAX_INSTALL_SURFACE_LINES:
+        raise ContractError(
+            f"{path}: install surface exceeds {MAX_INSTALL_SURFACE_LINES} physical lines"
+        )
+
+
 def scan_install_commands(
     path: Path,
     text: str,
@@ -1293,6 +1308,7 @@ def scan_install_commands(
     root: Path | None = None,
 ) -> list[str]:
     """Return unsafe executable pip-install commands in one supported surface."""
+    _check_install_surface_size(path, text)
     search_root = _resolve_search_root(root)
 
     if valid_lock_outputs is None:
@@ -1916,19 +1932,28 @@ def validate_lock(root: Path, manifest: dict[str, Any], entry: dict[str, Any]) -
     return problems
 
 
+def _split_hash_options(content: str, output: str, line: int) -> tuple[str, list[str]]:
+    """Keep environment markers with the requirement and bound the option list."""
+    requirement, *hashes = re.split(
+        r"(?<!\s)\s+(?=--)", content, maxsplit=MAX_HASHES_PER_REQUIREMENT + 1
+    )
+    if len(hashes) > MAX_HASHES_PER_REQUIREMENT:
+        raise ContractError(f"{output}:{line}: exceeds {MAX_HASHES_PER_REQUIREMENT} hash options")
+    return requirement, hashes
+
+
 def _validate_lock_requirements(text: str, output: str) -> list[str]:
     problems: list[str] = []
     requirements = 0
     for line, stripped in _requirements_file_lines(text, output):
-        if not stripped:
-            continue
         if stripped.startswith(("-", "--")):
             problems.append(
                 f"{output}:{line}: lock file cannot contain unpinned directive {stripped.split()[0]!r}"
             )
             continue
         requirements += 1
-        if not EXACT_REQUIREMENT_RE.match(stripped):
+        requirement, _ = _split_hash_options(stripped, output, line)
+        if not EXACT_REQUIREMENT_RE.match(requirement):
             problems.append(f"{output}:{line}: dependency is not exactly version-pinned")
         if not HASH_RE.search(stripped):
             problems.append(f"{output}:{line}: dependency has no sha256 artifact hash")
@@ -2102,7 +2127,7 @@ def stamp_lock(
     root: Path, manifest: dict[str, Any], entry: dict[str, Any], generated: Path
 ) -> None:
     output = entry["output"]
-    lines = generated.read_text(encoding="utf-8").splitlines()
+    lines = _read_lock(generated).splitlines()
     while lines and lines[0].startswith("#"):
         lines.pop(0)
     body = "\n".join(lines).lstrip("\n")
@@ -2115,10 +2140,13 @@ def stamp_lock(
             "",
         ]
     )
+    stamped = (header + body + "\n").encode("utf-8")
+    if len(stamped) > MAX_LOCK_BYTES:
+        raise ContractError(f"{output}: lock exceeds {MAX_LOCK_BYTES} bytes")
     destination = root / output
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")
-    temporary.write_text(header + body + "\n", encoding="utf-8")
+    temporary.write_bytes(stamped)
     temporary.replace(destination)
 
 
@@ -2168,16 +2196,7 @@ def _check_bootstrap_pin(output: Path, version: str) -> None:
     problems = _validate_lock_requirements(text, str(output))
     uv_pins = []
     for number, content in _requirements_file_lines(text, str(output)):
-        if not content:
-            continue
-        # Keep the environment marker with its requirement, before the hash options.
-        requirement, *hashes = re.split(
-            r"(?<!\s)\s+(?=--)", content, maxsplit=MAX_HASHES_PER_REQUIREMENT + 1
-        )
-        if len(hashes) > MAX_HASHES_PER_REQUIREMENT:
-            raise ContractError(
-                f"{output}:{number}: exceeds {MAX_HASHES_PER_REQUIREMENT} hash options"
-            )
+        requirement, hashes = _split_hash_options(content, str(output), number)
         if not problems and (not hashes or not all(HASH_RE.fullmatch(token) for token in hashes)):
             problems.append(
                 f"{output}:{number}: {requirement} requires valid sha256 artifact hashes"

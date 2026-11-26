@@ -79,6 +79,21 @@ class InstallCommandTests(unittest.TestCase):
         except TypeError:
             return cast(list[str], self.checker.scan_install_commands(Path(path), text))
 
+    def test_install_surface_byte_limit(self) -> None:
+        limit = self.checker.MAX_INSTALL_SURFACE_BYTES
+        text = "#" + "é" * ((limit - 1) // 2)
+        text += " " * (limit - len(text.encode("utf-8")))
+        self.assertEqual(self.findings(text), [])
+        with self.assertRaisesRegex(self.checker.ContractError, f"exceeds {limit} bytes"):
+            self.findings(text + " ")
+
+    def test_install_surface_line_limit(self) -> None:
+        limit = self.checker.MAX_INSTALL_SURFACE_LINES
+        text = "\n" * limit
+        self.assertEqual(self.findings(text), [])
+        with self.assertRaisesRegex(self.checker.ContractError, f"exceeds {limit} physical lines"):
+            self.findings(text + "#")
+
     def test_hash_locked_requirements_install_is_accepted(self) -> None:
         text = "run: python -m pip install --require-hashes -r requirements/locks/build.txt\n"
         self.assertEqual(self.findings(text), [])
@@ -507,6 +522,26 @@ class LockValidationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.checker = load_checker()
+
+    def test_requirement_lines_match_pip(self) -> None:
+        """Expected records from pip 26.2.2 join_lines followed by ignore_comments."""
+        cases = (
+            (
+                "uv==1 \\\n  --hash=sha256:aa \\\n# comment \\\nother==1 \\\n  --hash=sha256:bb",
+                [(1, "uv==1   --hash=sha256:aa"), (4, "other==1   --hash=sha256:bb")],
+            ),
+            ("uv==1\\\n  # comment\nother==1", [(1, "uv==1"), (3, "other==1")]),
+            ("uv==1\\", [(1, "uv==1")]),
+            ("uv==1\\\n", [(1, "uv==1")]),
+            ("# comment \\\nother==1", [(2, "other==1")]),
+            ("uv==1 # note \\\nother==1", [(1, "uv==1")]),
+            ("uv==1\\\n\nother==1", [(1, "uv==1"), (3, "other==1")]),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(
+                    list(self.checker._requirements_file_lines(text, "pins")), expected
+                )
 
     def test_unhashed_requirement_after_continued_comment(self) -> None:
         text = f"uv==1 --hash=sha256:{'a' * 64}\n  # comment \\\nother==1\n"
@@ -2499,6 +2534,13 @@ class UvBootstrapTests(unittest.TestCase):
         self.assertIn(f"found uv=={self.old}, expected uv=={self.version}", str(raised.exception))
         self.assertFalse(self.output.exists())
 
+    def test_bootstrap_comment_ends_hashed_continuation(self) -> None:
+        self.output.write_text(
+            f"uv=={self.version} \\\n  {self.digest} \\\n# comment \\\nother==1 \\\n  {self.digest}\n",
+            encoding="utf-8",
+        )
+        self.checker._check_bootstrap_pin(self.output, self.version)
+
     def test_hashed_other_requirement_is_accepted(self) -> None:
         self.compiled += f"other==1 {self.digest}\n"
         self.assertEqual(self.bootstrap(), 0)
@@ -2607,13 +2649,38 @@ class UvBootstrapTests(unittest.TestCase):
             with self.assertRaisesRegex(self.checker.ContractError, "exceeds 2 physical lines"):
                 self.bootstrap()
 
-    def test_bootstrap_hash_limit(self) -> None:
-        self.compiled = f"uv=={self.version} {self.digest} {self.digest}\n"
-        with mock.patch.object(self.checker, "MAX_HASHES_PER_REQUIREMENT", 2):
-            self.assertEqual(self.bootstrap(), 0)
-            self.compiled = self.compiled.rstrip() + f" {self.digest}\n"
-            with self.assertRaisesRegex(self.checker.ContractError, "exceeds 2 hash options"):
-                self.bootstrap()
+    def test_check_and_bootstrap_hash_limit(self) -> None:
+        limit = self.checker.MAX_HASHES_PER_REQUIREMENT
+        self.compiled = f"uv=={self.version}" + f" {self.digest}" * limit + "\n"
+        self.installed.return_value = self.version
+        self.assertEqual(self.checker.write(self.root, sys.executable), 0)
+        lock = self.root / "tooling-lock.txt"
+        self.checker._check_bootstrap_pin(lock, self.version)
+        text = lock.read_text(encoding="utf-8").rstrip() + f" {self.digest}\n"
+        lock.write_text(text, encoding="utf-8")
+        location = f"{len(text.splitlines())}: exceeds {limit} hash options"
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            self.assertEqual(self.checker.check(self.root), 1)
+        self.assertEqual(stderr.getvalue().strip(), f"ERROR: {lock.name}:{location}")
+        with self.assertRaises(self.checker.ContractError) as raised:
+            self.checker._check_bootstrap_pin(lock, self.version)
+        self.assertEqual(str(raised.exception), f"{lock}:{location}")
+
+    def test_write_preserves_lock_on_size_refusal(self) -> None:
+        self.installed.return_value = self.version
+        self.assertEqual(self.checker.write(self.root, sys.executable), 0)
+        lock = self.root / "tooling-lock.txt"
+        original = lock.read_bytes()
+        limit = self.checker.MAX_LOCK_BYTES
+        # The removable generator comment exceeds the input limit. The valid
+        # requirement fits on input, but its stamp takes the output over the limit.
+        for generated in ("#" + "x" * limit, self.compiled.rstrip().ljust(limit)):
+            with self.subTest(generated_size=len(generated)):
+                self.compiled = generated
+                with self.assertRaisesRegex(self.checker.ContractError, f"exceeds {limit} bytes"):
+                    self.checker.write(self.root, sys.executable)
+                self.assertEqual(lock.read_bytes(), original)
 
     def test_multiline_uv_hash_is_accepted(self) -> None:
         """Boundary: recognize uv's backslash-continued artifact hashes."""

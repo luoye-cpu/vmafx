@@ -22,9 +22,10 @@ version of `uv` (`uv_version` in `requirements/locks/manifest.json`).
 `uv_version`. Renovate groups the `requirements/locks/tooling-tests.in` pin and
 `uv_version` through the
 `uv (lock generator, all managers)` group in `renovate.json`, guarded by
-`test_uv_group_requires_both_updates` in `scripts/ci/tests/test_renovate_file_patterns.py`.
+`test_checked_in_config_owns_uv_pins` in `scripts/ci/tests/test_renovate_file_patterns.py`.
 Renovate’s `minimumGroupSize` only postpones creation of a new branch, and the
-`check` hook rejects a pull request that changes just one pin.
+`check` hook rejects a pull request that changes just one pin, as covered by
+`test_check_rejects_manifest_only_bump` and `test_check_rejects_tooling_input_only_bump`.
 
 The checker recognizes `uv` by its case-insensitive, PEP 503-normalized package
 name. It checks `==` and `===` pins with optional extras, whitespace, and
