@@ -146,9 +146,9 @@ class PythonLockOpenerTest(unittest.TestCase):
         self.assertEqual(rc, 0, out)
 
     def test_positive_each_listed_path_alone_passes(self) -> None:
-        """Each of the 31 independently granted paths passes alone."""
-        granted = (*lock_checker.manifest_outputs(ROOT), ".pre-commit-config.yaml")
-        for path in granted:  # Bound: 31 grants; the stale grant catches removals.
+        """Each of the 30 lock outputs passes alone; the config has its own proof test."""
+        granted = tuple(lock_checker.manifest_outputs(ROOT))
+        for path in granted:  # Bound: 30 lock grants; the stale grant catches removals.
             with self.subTest(path=path):
                 tmp, repo = self.fresh()
                 self.addCleanup(tmp.cleanup)
@@ -687,6 +687,62 @@ class PythonLockLandedTest(unittest.TestCase):
         """A Renovate squash without the co-author line is judged as before."""
         message = f"chore(deps): update python (#3501)\n\n{self.msg.splitlines()[2]}"
         self.assertIsNone(self.judge((INPUT,), message=message))
+
+
+class PrecommitHookPinProofTest(unittest.TestCase):
+    """The config grant proves a pin-only diff against the same-commit lock."""
+
+    IDENT = ("Seed Author", "seed@example.com")
+
+    def setUp(self) -> None:
+        """A temporary repository and the loaded gate module."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name) / "repo"
+        base.mkdir(parents=True)
+        self.repo = fx.Repo(base)
+        self.mod = fx.load_gate("check_dco_precommit_pin_proof")
+        self.addCleanup(sys.modules.pop, "check_dco_precommit_pin_proof", None)
+        self.config_path = lock_checker.PRE_COMMIT_CONFIG.as_posix()
+        self.lock_path = lock_checker.TOOLING_HOOK_LOCK.as_posix()
+        self.config = (ROOT / self.config_path).read_text(encoding="utf-8")
+        self.lock = (ROOT / self.lock_path).read_text(encoding="utf-8")
+
+    def commit(self, config: str, lock: str, message: str) -> str:
+        """Write and sign off one config/lock commit."""
+        for path, text in ((self.config_path, config), (self.lock_path, lock)):
+            target = self.repo.path / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        self.repo.git(["add", "--", self.config_path, self.lock_path], self.IDENT)
+        self.repo.git(
+            ["commit", "-q", "-s", "-F", "-"], self.IDENT, stdin=message
+        )
+        return self.repo.git(["rev-parse", "HEAD"], self.IDENT).strip()
+
+    def seed_then_refresh(self, child_config: str, child_lock: str) -> str:
+        """A parent with old pins, then the candidate refresh commit."""
+        parent_config = self.config.replace("bandit==1.9.4", "bandit==1.9.3")
+        parent_lock = self.lock.replace("bandit==1.9.4", "bandit==1.9.3")
+        self.commit(parent_config, parent_lock, "chore: seed lock fixture\n")
+        return self.commit(child_config, child_lock, "chore: refresh hooks\n")
+
+    def test_positive_pin_only_refresh_is_proved(self) -> None:
+        """Only lock-tied versions changed, so the config grant applies."""
+        sha = self.seed_then_refresh(self.config, self.lock)
+        self.assertTrue(self.mod.precommit_hook_pins_only(sha, self.repo.path))
+
+    def test_negative_comment_drift_is_refused(self) -> None:
+        """A change outside a pin token is not a lock refresh."""
+        sha = self.seed_then_refresh(self.config + "\n# drift\n", self.lock)
+        self.assertFalse(self.mod.precommit_hook_pins_only(sha, self.repo.path))
+
+    def test_negative_pin_not_matching_the_lock_is_refused(self) -> None:
+        """A version that disagrees with the same-commit lock is refused."""
+        sha = self.seed_then_refresh(
+            self.config.replace("bandit==1.9.4", "bandit==9.9.9"), self.lock
+        )
+        self.assertFalse(self.mod.precommit_hook_pins_only(sha, self.repo.path))
 
 
 if __name__ == "__main__":

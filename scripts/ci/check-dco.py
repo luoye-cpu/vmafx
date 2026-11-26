@@ -686,6 +686,32 @@ def manifest_uv_version_only(sha: str) -> bool:
     )
 
 
+def precommit_hook_pins_only(sha: str, root: Path) -> bool:
+    """Prove the parent-to-squash config diff changes only tooling-lock pin versions."""
+    config = check_python_dependency_locks.PRE_COMMIT_CONFIG.as_posix()
+    lock = check_python_dependency_locks.TOOLING_HOOK_LOCK.as_posix()
+
+    def blob(rev: str, path: str) -> str:
+        return run_git(
+            ["-C", str(root), "--no-lazy-fetch", "cat-file", "--", "blob", f"{rev}:{path}"]
+        )
+
+    before = blob(f"{sha}^", config)
+    after = blob(sha, config)
+    if before == after:
+        return False
+    lock_text = blob(sha, lock)
+    lock_pins = check_python_dependency_locks.read_lock_pins(lock_text)
+    if check_python_dependency_locks._mask_hook_versions(
+        before, lock_pins
+    ) != check_python_dependency_locks._mask_hook_versions(after, lock_pins):
+        return False
+    updated, changes = check_python_dependency_locks.sync_tooling_hook_pins(
+        after, lock_text
+    )
+    return not changes and updated == after
+
+
 def python_lock_landed_exemption(
     sha: str, paths: list[str], root: Path, fetch: ci_tier.Fetcher | None
 ) -> bool:
@@ -699,6 +725,11 @@ def python_lock_landed_exemption(
             if not manifest_uv_version_only(sha):
                 return False
             ungranted.remove(manifest)
+        precommit = check_python_dependency_locks.PRE_COMMIT_CONFIG.as_posix()
+        if precommit in ungranted:
+            if not precommit_hook_pins_only(sha, root):
+                return False
+            ungranted.remove(precommit)
         if ungranted and not ungranted.issubset(
             check_python_dependency_locks.manifest_inputs(root)
         ):

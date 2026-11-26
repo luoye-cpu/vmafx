@@ -38,7 +38,7 @@ a nonempty file list shorter than one API page (100 entries), with valid
 filenames and statuses `added`, `removed`, `modified`, `renamed`, `copied`,
 `changed`, or `unchanged`. Renames require a
 previous filename, and the gate checks any supplied previous filename. Every
-reported path must have a live grant among the 30 paths. Missing configuration,
+reported path must have a live grant among the 31 paths. Missing configuration,
 missing, ambiguous, malformed or incomplete forge evidence, and `TierError`,
 `OSError`, `ValueError`, `RecursionError`, `KeyError`, `TypeError`, or
 `OverflowError` from the forge read keep the co-author line and print a `dco:`

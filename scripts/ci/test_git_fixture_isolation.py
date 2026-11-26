@@ -47,6 +47,10 @@ except ImportError:
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from scripts.ci.check_python_dependency_locks import (
+    ContractError as LockContractError,
+)
+from scripts.ci.check_python_dependency_locks import hook_dependency_entries
 from scripts.lib.safe_subprocess import CommandResult
 from scripts.lib.safe_subprocess import run as run_command
 
@@ -1106,20 +1110,32 @@ def hook_exact_pin_keys(
 def lock_tied_hook_pins(
     config: str, lock: str, mismatches: list[str] | None = None
 ) -> set[str] | None:
-    """Collect package keys of exact python-hook pins matching the lock versions."""
-    hooks = pre_commit_hooks(config)
-    pins, _ = lock_graph(lock)
-    if hooks is None or not pins or len(hooks) > MAX_TOTAL_HOOKS:
+    """Collect lock-tied exact python-hook pins with the checker's own reader."""
+    pins = lock_graph(lock)[0] if pre_commit_hooks(config) is not None else {}
+    if not pins:
+        return None
+    try:
+        dependencies = hook_dependency_entries(config)
+    except LockContractError:
+        return None
+    if len(dependencies) > MAX_HOOK_DEPS * MAX_TOTAL_HOOKS:
         return None
     tied: set[str] = set()
-    ok = True
-    for hook in hooks[:MAX_TOTAL_HOOKS]:
-        keys = hook_exact_pin_keys(hook, pins, mismatches)
-        if keys is None:
-            ok = False
-        else:
-            tied |= keys
-    return tied if ok else None
+    for dependency in dependencies:
+        key = package_key(dependency.name)
+        lock_version = pins.get(key)
+        if lock_version is None:
+            continue
+        if dependency.operator != "==" or not dependency.version:
+            return None
+        if dependency.version != lock_version:
+            if mismatches is not None:
+                mismatches.append(
+                    f"{dependency.name}=={dependency.version} != {lock_version}"
+                )
+            return None
+        tied.add(key)
+    return tied
 
 
 def renovate_package_rules(renovate: str) -> list[dict[str, object]] | None:

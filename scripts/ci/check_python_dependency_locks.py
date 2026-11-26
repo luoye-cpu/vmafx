@@ -26,7 +26,7 @@ import tempfile
 import tomllib
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -63,37 +63,9 @@ PYTHON_NAME_RE = re.compile(r"(?:^|[/\\])(?:python(?:3|[0-9.]*)?|py)(?:\.exe)?$"
 LOCK_HEADER = "# VMAFx hash lock; regenerate with: make python-locks-write"
 TOOLING_HOOK_LOCK = Path("requirements/locks/tooling-tests.txt")
 PRE_COMMIT_CONFIG = Path(".pre-commit-config.yaml")
-# Every package whose exact pin in a Python hook's additional_dependencies
-# mirrors requirements/locks/tooling-tests.txt. The writer, this constant and
-# the Renovate skip rule in renovate.json must name the same set; the tooling
-# tests fail otherwise.
-TOOLING_HOOK_PACKAGES = frozenset(
-    {
-        "bandit",
-        "cfgv",
-        "colorama",
-        "distlib",
-        "filelock",
-        "flawfinder",
-        "identify",
-        "iniconfig",
-        "nodeenv",
-        "packaging",
-        "platformdirs",
-        "pluggy",
-        "pre-commit",
-        "pygments",
-        "pytest",
-        "pytest-timeout",
-        "python-discovery",
-        "pyyaml",
-        "virtualenv",
-    }
-)
-HOOK_PIN_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)((?:\[[A-Za-z0-9_,.-]+\])?)==([^ \t,;\"'\]\\]+)"
-)
-HOOK_RANGE_RE = re.compile(r"(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)\s*(===|==|>=|<=|~=|!=|<|>)")
+# Every lock-tied package is derived from requirements/locks/tooling-tests.txt
+# at read time. The Renovate skip rule in renovate.json must name the same set;
+# the tooling tests fail otherwise.
 OPTIONS_WITH_VALUES = {
     "-b",
     "--build",
@@ -520,79 +492,193 @@ def read_lock_pins(text: str) -> dict[str, str]:
     return pins
 
 
-def _dependency_value_spans(lines: list[str]) -> list[tuple[int, int, int]]:
-    """Return (line, start, end) spans that hold an additional_dependencies value."""
-    spans: list[tuple[int, int, int]] = []
-    for index, line in enumerate(lines):
-        body = line.rstrip("\r\n")
-        match = re.match(r"(?P<indent>[ \t]*)additional_dependencies\s*:\s*(?P<rest>.*)$", body)
-        if match is None:
-            continue
-        rest = match.group("rest")
-        if rest and not rest.startswith("#"):
-            spans.append((index, match.start("rest"), len(body)))
-            continue
-        key_indent = len(match.group("indent"))
-        following = index + 1
-        while following < len(lines):
-            body = lines[following].rstrip("\r\n")
-            stripped = body.lstrip(" ")
-            indent = len(body) - len(stripped)
-            if not body.strip():
-                following += 1
-                continue
-            if indent <= key_indent:
-                break
-            if stripped.startswith("-"):
-                spans.append((following, indent, len(body)))
-            following += 1
-    return spans
+class HookDependency(NamedTuple):
+    """One parsed ``additional_dependencies`` entry and its source spans."""
+
+    name: str
+    extras: str
+    operator: str
+    version: str
+    version_start: int
+    version_end: int
 
 
-def _sync_hook_segment(
-    segment: str, lock_pins: dict[str, str], where: str, changes: list[str]
+_DEPENDENCY_KEY = re.compile(
+    r"(?m)^(?P<indent>[ \t]*)additional_dependencies[ \t]*:[ \t]*"
+)
+_DEPENDENCY_NAME = re.compile(r"([A-Za-z0-9_.-]+)((?:\[[^\]]*\])?)(.*)")
+_DEPENDENCY_OPERATOR = re.compile(r"(===|==|>=|<=|~=|!=|<|>)")
+
+
+def _strip_dependency_item(text: str, start: int, end: int) -> tuple[int, int]:
+    """Trim spaces, one pair of YAML quotes and an unquoted trailing comment."""
+    while start < end and text[start] in " \t\r\n":
+        start += 1
+    while end > start and text[end - 1] in " \t\r\n":
+        end -= 1
+    if start < end and text[start] in "\"'" and text[end - 1] == text[start]:
+        start += 1
+        end -= 1
+        while start < end and text[start] in " \t":
+            start += 1
+        while end > start and text[end - 1] in " \t":
+            end -= 1
+    quote = ""
+    for index in range(start, end):
+        char = text[index]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            end = index
+            while end > start and text[end - 1] in " \t":
+                end -= 1
+            break
+    return start, end
+
+
+def _parse_hook_dependency(text: str, start: int, end: int) -> HookDependency | None:
+    start, end = _strip_dependency_item(text, start, end)
+    if start >= end:
+        return None
+    if not text[start].isalnum():
+        return None
+    match = _DEPENDENCY_NAME.fullmatch(text[start:end])
+    if match is None:
+        raise ContractError(f"{PRE_COMMIT_CONFIG}: cannot parse dependency {text[start:end]!r}")
+    name, extras = match.group(1), match.group(2)
+    rest_start = start + match.start(3)
+    while rest_start < end and text[rest_start] in " \t":
+        rest_start += 1
+    operator = ""
+    version = ""
+    version_start = version_end = end
+    operator_match = _DEPENDENCY_OPERATOR.match(text, rest_start, end)
+    if operator_match is not None:
+        operator = operator_match.group(1)
+        version_start = operator_match.end()
+        while version_start < end and text[version_start] in " \t":
+            version_start += 1
+        version_end = version_start
+        while version_end < end and text[version_end] not in " \t,;":
+            version_end += 1
+        version = text[version_start:version_end]
+    return HookDependency(name, extras, operator, version, version_start, version_end)
+
+
+def _flow_dependency_items(text: str, opening: int) -> Iterator[tuple[int, int]]:
+    """Yield comma-separated items of one bracketed flow list, across lines."""
+    depth = 0
+    quote = ""
+    item_start = opening + 1
+    index = opening
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            continue
+        elif char in "[{(":
+            depth += 1
+        elif char in "]})":
+            depth -= 1
+            if depth == 0:
+                yield item_start, index
+                return
+        elif char == "," and depth == 1:
+            yield item_start, index
+            item_start = index + 1
+        index += 1
+
+
+def _block_dependency_items(text: str, after_key: int, key_indent: int) -> Iterator[tuple[int, int]]:
+    """Yield block-list items that belong to the key at key_indent."""
+    newline = text.find("\n", after_key)
+    if newline < 0:
+        return
+    line_start = newline + 1
+    while line_start < len(text):
+        line_end = text.find("\n", line_start)
+        if line_end < 0:
+            line_end = len(text)
+        line = text[line_start:line_end]
+        stripped = line.lstrip(" ")
+        indent = len(line) - len(stripped)
+        if line.strip() and indent <= key_indent:
+            return
+        if stripped.startswith("-"):
+            yield line_start + indent + 1, line_end
+        line_start = line_end + 1
+
+
+def hook_dependency_entries(config_text: str) -> list[HookDependency]:
+    """Read every additional_dependencies value, flow or block, comments ignored."""
+    entries: list[HookDependency] = []
+    for key in _DEPENDENCY_KEY.finditer(config_text):
+        value_start = key.end()
+        while value_start < len(config_text) and config_text[value_start] in " \t":
+            value_start += 1
+        if value_start < len(config_text) and config_text[value_start] == "[":
+            spans = _flow_dependency_items(config_text, value_start)
+        else:
+            spans = _block_dependency_items(config_text, key.end(), len(key.group("indent")))
+        for start, end in spans:
+            dependency = _parse_hook_dependency(config_text, start, end)
+            if dependency is not None:
+                entries.append(dependency)
+    return entries
+
+
+def _rewrite_hook_pins(
+    config_text: str, lock_pins: dict[str, str], changes: list[str]
 ) -> str:
-    """Rewrite only lock-tied exact pins in one hook dependency span."""
-    for match in HOOK_RANGE_RE.finditer(segment):
-        name, operator = match.group(1), match.group(2)
-        if operator != "==" and _package_key(name) in TOOLING_HOOK_PACKAGES:
-            raise ContractError(
-                f"{where}: {name}{operator} is not an exact '==' lock pin; "
-                "refusing to guess the intended version"
-            )
-
-    def replace(match: re.Match[str]) -> str:
-        name, extras, version = match.group(1), match.group(2), match.group(3)
-        key = _package_key(name)
-        if key not in TOOLING_HOOK_PACKAGES:
-            return match.group(0)
+    """Rewrite exact lock-tied pins and refuse every non-exact one."""
+    replacements: list[tuple[int, int, str]] = []
+    for dependency in hook_dependency_entries(config_text):
+        key = _package_key(dependency.name)
         lock_version = lock_pins.get(key)
         if lock_version is None:
-            raise ContractError(f"{where}: {name} is not present in {TOOLING_HOOK_LOCK}")
-        if version == lock_version:
-            return match.group(0)
-        changes.append(f"{where}: {name}{extras}=={version} -> {lock_version}")
-        return f"{name}{extras}=={lock_version}"
-
-    return HOOK_PIN_RE.sub(replace, segment)
-
-
-def _mask_hook_versions(config_text: str) -> str:
-    """Replace every lock-tied pin version with a placeholder for structure comparison."""
-    lines = config_text.splitlines(keepends=True)
-    spans = _dependency_value_spans(lines)
-    for index, start, end in spans:
-        line = lines[index]
-        segment = HOOK_PIN_RE.sub(
-            lambda match: (
-                f"{match.group(1)}{match.group(2)}==<version>"
-                if _package_key(match.group(1)) in TOOLING_HOOK_PACKAGES
-                else match.group(0)
-            ),
-            line[start:end],
+            continue
+        if dependency.operator != "==" or not dependency.version:
+            raise ContractError(
+                f"{PRE_COMMIT_CONFIG}: {dependency.name}{dependency.extras}"
+                f"{dependency.operator} is not an exact '==' lock pin; "
+                "refusing to guess the intended version"
+            )
+        if dependency.version == lock_version:
+            continue
+        changes.append(
+            f"{PRE_COMMIT_CONFIG}: {dependency.name}{dependency.extras}"
+            f"=={dependency.version} -> {lock_version}"
         )
-        lines[index] = line[:start] + segment + line[end:]
-    return "".join(lines)
+        replacements.append(
+            (dependency.version_start, dependency.version_end, lock_version)
+        )
+    updated = config_text
+    for start, end, replacement in reversed(replacements):
+        updated = updated[:start] + replacement + updated[end:]
+    return updated
+
+
+def _mask_hook_versions(config_text: str, lock_pins: dict[str, str]) -> str:
+    """Replace every lock-tied exact version with a placeholder."""
+    replacements = [
+        (dependency.version_start, dependency.version_end, "<version>")
+        for dependency in hook_dependency_entries(config_text)
+        if dependency.operator == "=="
+        and _package_key(dependency.name) in lock_pins
+    ]
+    masked = config_text
+    for start, end, replacement in reversed(replacements):
+        masked = masked[:start] + replacement + masked[end:]
+    return masked
 
 
 def sync_tooling_hook_pins(config_text: str, lock_text: str) -> tuple[str, list[str]]:
@@ -602,49 +688,37 @@ def sync_tooling_hook_pins(config_text: str, lock_text: str) -> tuple[str, list[
     A non-exact pin of a lock-tied package is refused instead of guessed.
     """
     lock_pins = read_lock_pins(lock_text)
-    lines = config_text.splitlines(keepends=True)
-    spans = _dependency_value_spans(lines)
     changes: list[str] = []
-    for index, start, end in spans:
-        line = lines[index]
-        segment = _sync_hook_segment(line[start:end], lock_pins, str(PRE_COMMIT_CONFIG), changes)
-        lines[index] = line[:start] + segment + line[end:]
-    updated = "".join(lines)
-    if _mask_hook_versions(config_text) != _mask_hook_versions(updated):
+    updated = _rewrite_hook_pins(config_text, lock_pins, changes)
+    if _mask_hook_versions(config_text, lock_pins) != _mask_hook_versions(updated, lock_pins):
         raise ContractError(
             f"{PRE_COMMIT_CONFIG}: the lock refresh would change more than a pin version"
         )
-    fixed, second_changes = _sync_hook_pins_second_pass(updated, lock_pins)
+    second_changes: list[str] = []
+    fixed = _rewrite_hook_pins(updated, lock_pins, second_changes)
     if second_changes or fixed != updated:
         raise ContractError(f"{PRE_COMMIT_CONFIG}: hook pin rewrite is not a fixed point")
     return updated, changes
-
-
-def _sync_hook_pins_second_pass(
-    config_text: str, lock_pins: dict[str, str]
-) -> tuple[str, list[str]]:
-    """Re-run the span rewrite without the guard, to prove the result is stable."""
-    lines = config_text.splitlines(keepends=True)
-    spans = _dependency_value_spans(lines)
-    changes: list[str] = []
-    for index, start, end in spans:
-        line = lines[index]
-        segment = _sync_hook_segment(line[start:end], lock_pins, str(PRE_COMMIT_CONFIG), changes)
-        lines[index] = line[:start] + segment + line[end:]
-    return "".join(lines), changes
 
 
 def tooling_hook_pin_findings(root: Path) -> list[str]:
     """Report stale or unsafe tooling-lock pins in the Python hook config."""
     config = root / PRE_COMMIT_CONFIG
     lock = root / TOOLING_HOOK_LOCK
-    if not config.is_file() or not lock.is_file():
+    if config.is_file() != lock.is_file():
+        return [
+            f"{PRE_COMMIT_CONFIG}: {PRE_COMMIT_CONFIG} and {TOOLING_HOOK_LOCK} "
+            "must both exist"
+        ]
+    if not config.is_file():
         return []
     try:
         config_text = config.read_text(encoding="utf-8")
         lock_text = lock.read_text(encoding="utf-8")
         _, stale = sync_tooling_hook_pins(config_text, lock_text)
-    except (OSError, UnicodeDecodeError, ContractError) as error:
+    except ContractError as error:
+        return [str(error)]
+    except (OSError, UnicodeDecodeError) as error:
         return [f"{PRE_COMMIT_CONFIG}: {error}"]
     if not stale:
         return []
@@ -2297,17 +2371,29 @@ def write(root: Path, uv_binary: str) -> int:
                 raise ContractError(f"uv failed for {raw_entry['output']}: {detail}")
             stamp_lock(root, manifest, raw_entry, generated)
             print(f"wrote {raw_entry['output']}")
-    config = root / PRE_COMMIT_CONFIG
-    if config.is_file() and (root / TOOLING_HOOK_LOCK).is_file():
-        config_text = config.read_text(encoding="utf-8")
-        lock_text = (root / TOOLING_HOOK_LOCK).read_text(encoding="utf-8")
-        updated, changes = sync_tooling_hook_pins(config_text, lock_text)
-        if changes:
-            temporary = config.with_suffix(config.suffix + ".tmp")
-            temporary.write_text(updated, encoding="utf-8")
-            temporary.replace(config)
-            print(f"updated {PRE_COMMIT_CONFIG}: {len(changes)} lock-tied hook pin(s)")
+    sync_config_hook_pins(root)
     return check(root)
+
+
+def sync_config_hook_pins(root: Path) -> None:
+    """Rewrite the checked-in hook pins after the lock refresh."""
+    config = root / PRE_COMMIT_CONFIG
+    lock = root / TOOLING_HOOK_LOCK
+    if config.is_file() != lock.is_file():
+        raise ContractError(
+            f"{PRE_COMMIT_CONFIG}: {PRE_COMMIT_CONFIG} and {TOOLING_HOOK_LOCK} must both exist"
+        )
+    if not config.is_file():
+        return
+    updated, changes = sync_tooling_hook_pins(
+        config.read_text(encoding="utf-8"), lock.read_text(encoding="utf-8")
+    )
+    if not changes:
+        return
+    temp_config = config.with_suffix(config.suffix + ".tmp")
+    temp_config.write_text(updated, encoding="utf-8")
+    temp_config.replace(config)
+    print(f"updated {PRE_COMMIT_CONFIG}: {len(changes)} lock-tied hook pin(s)")
 
 
 def find_default_uv(root: Path) -> str:
