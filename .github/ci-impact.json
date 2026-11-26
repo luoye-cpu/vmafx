@@ -362,7 +362,12 @@
         "scripts/ci/fixtures/trivy-negative.Dockerfile",
         "scripts/ci/install-cuda-toolkit.sh",
         "scripts/ci/trivy-linux-libc-dev.rego",
-        "scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json"
+        "scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json",
+        ".github/workflows/docker-image.yml",
+        "scripts/ci/docker-hub-mirror.sh",
+        "scripts/ci/ffmpeg-shared-series.sh",
+        "ffmpeg-patches/*",
+        "ffmpeg-patches/**"
       ]
     },
     "docker_image_inputs": {
@@ -378,7 +383,13 @@
         "scripts/ci/fixtures/trivy-negative.Dockerfile",
         "scripts/ci/install-cuda-toolkit.sh",
         "scripts/ci/trivy-linux-libc-dev.rego",
-        "scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json"
+        "scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json",
+        ".github/workflows/docker-image.yml",
+        "scripts/ci/docker-hub-mirror.sh",
+        "scripts/ci/ffmpeg-shared-series.sh",
+        "ffmpeg-patches/*",
+        "ffmpeg-patches/**",
+        "python/pyproject.toml"
       ]
     },
     "dev_container": {

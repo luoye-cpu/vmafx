@@ -128,7 +128,7 @@ class SecurityWorkflowContractTest(unittest.TestCase):
             self.skipTest("bash unavailable; Linux CI executes the workflow control")
         workflow = (REPO_ROOT / ".github/workflows/docker-image.yml").read_text(encoding="utf-8")
         step = workflow.split("- name: Prove trivy rejects the planted image", 1)[1].split(
-            "- name: Trivy image scan", 1
+            "- name: Build Docker Image", 1
         )[0]
         body = "\n".join(line[10:] for line in step.split("run: |\n", 1)[1].splitlines())
         findings_status = 3

@@ -294,10 +294,22 @@ class RoutingContract(unittest.TestCase):
             "scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json",
             "Dockerfile",
             "scripts/ci/fixtures/trivy-negative.Dockerfile",
+            ".github/workflows/docker-image.yml",
+            "python/pyproject.toml",
+            "scripts/ci/docker-hub-mirror.sh",
+            "scripts/ci/ffmpeg-shared-series.sh",
         ):
             with self.subTest(path=path):
                 self.assertIn(path, broad)
                 self.assertIn(path, narrow)
+                plan = _plan_for([path])
+                self.assertTrue(plan.selectors["docker_image"])
+                self.assertTrue(plan.selectors["docker_image_inputs"])
+        for path in (
+            "ffmpeg-patches/series.txt",
+            "ffmpeg-patches/src/vf_vmafx_options.h",
+        ):
+            with self.subTest(path=path):
                 plan = _plan_for([path])
                 self.assertTrue(plan.selectors["docker_image"])
                 self.assertTrue(plan.selectors["docker_image_inputs"])

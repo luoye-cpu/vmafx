@@ -131,25 +131,25 @@ python3 -m unittest scripts/ci/tests/test_python_audit.py
 
 ## The image gate
 
-`docker-image.yml` builds the image from the root `Dockerfile`, installs the
-pinned Trivy release and verifies `TRIVY_SHA256`, then runs:
+`docker-image.yml` installs the pinned Trivy release and verifies
+`TRIVY_SHA256`. Before building the real image, it runs:
 
 ```bash
-trivy image --exit-code 1 --ignorefile .trivyignore.yaml \
-  --ignore-policy scripts/ci/trivy-linux-libc-dev.rego \
-  --scanners vuln --severity HIGH,CRITICAL vmaf
+trivy convert --format json --ignore-policy scripts/ci/trivy-linux-libc-dev.rego \
+  -o "${RUNNER_TEMP}/trivy-linux-libc-dev-policy-report.json" \
+  scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json
 ```
 
-The job first builds `scripts/ci/fixtures/trivy-negative.Dockerfile`
-(`ubuntu:22.04` at a two-year-old digest, still covered by the vulnerability
-database) and requires Trivy to return exactly 3 (the explicit findings
-status) using the same kernel-header policy. A 0 means the gate missed known
-advisories; any other status, including the scanner error status 1, is a
-scanner failure, and an over-broad policy also turns the control green and
-fails it. Only then does it scan the real image with
-`scripts/ci/trivy-linux-libc-dev.rego`, which drops findings on the header-only
-package `linux-libc-dev`: containers use the host kernel, and the package ships
-no kernel code. A retained image advisory is a dated entry in
+and checks that the converted report dropped the `linux-libc-dev` finding but
+retained the `libssl3t64` control finding. It then builds the planted image and
+requires Trivy to return exactly 3 (the explicit findings status) using the
+same policy, so a broken or over-broad policy fails before the full image
+build. A 0 means the gate missed known advisories; any other status, including
+the scanner error status 1, is a scanner failure, and an over-broad policy also
+turns the control green and fails it. Only then does it build and scan the real
+image with `scripts/ci/trivy-linux-libc-dev.rego`, which drops findings on the
+header-only package `linux-libc-dev`: containers use the host kernel, and the
+package ships no kernel code. A retained image advisory is a dated entry in
 `.trivyignore.yaml`; Trivy stops suppressing expired entries. Changes to
 either file select the image build and scan. Trivy does not reject unused
 entries.

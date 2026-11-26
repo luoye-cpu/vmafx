@@ -104,8 +104,6 @@ jobs:
       # registry-mirrors) now pulls them through mirror.gcr.io, same digests.
       - name: Pull Docker Hub images through mirror.gcr.io
         run: bash scripts/ci/docker-hub-mirror.sh
-      - name: Build Docker Image
-        run: docker build -t vmaf .
       - name: Install the pinned trivy
         shell: bash
         run: |
@@ -160,6 +158,8 @@ jobs:
             echo "::error::trivy returned $rc for a known-vulnerable image; expected 3 (findings)"
             exit 1
           fi
+      - name: Build Docker Image
+        run: docker build -t vmaf .
       - name: Trivy image scan
         run: |
           trivy image --exit-code 1 --ignorefile .trivyignore.yaml \

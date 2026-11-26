@@ -72,6 +72,21 @@ class Exceptions(unittest.TestCase):
             check_python_audit.load_ignore(path)
         self.assertIn("expired", str(caught.exception))
 
+    def test_entry_expiring_today_is_still_in_effect(self) -> None:
+        path = self.write([self.entry(date.today())])
+        self.assertEqual(len(check_python_audit.load_ignore(path)), 1)
+
+    def test_missing_or_wrong_schema_version_is_refused(self) -> None:
+        directory = Path(tempfile.mkdtemp(prefix="pip-audit-"))
+        self.addCleanup(shutil.rmtree, directory)
+        for payload in ({"exceptions": []}, {"schema_version": 2, "exceptions": []}):
+            with self.subTest(payload=payload):
+                path = directory / "ignore.json"
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaises(check_python_audit.AuditError) as caught:
+                    check_python_audit.load_ignore(path)
+                self.assertIn("schema_version", str(caught.exception))
+
     def test_valid_entry_is_returned(self) -> None:
         path = self.write([self.entry(date.today() + timedelta(days=30))])
         self.assertEqual(len(check_python_audit.load_ignore(path)), 1)
@@ -239,6 +254,13 @@ class SelfTest(unittest.TestCase):
                 check_python_audit.run_audit(ROOT, ROOT / "python/requirements-lock.txt")
         self.assertIn("no dependencies", str(caught.exception))
 
+    def test_pip_audit_exit_code_two_is_an_error(self) -> None:
+        completed = mock.Mock(returncode=2, stdout="", stderr="resolver failed")
+        with mock.patch.object(check_python_audit, "run_command", return_value=completed):
+            with self.assertRaises(check_python_audit.AuditError) as caught:
+                check_python_audit.run_audit(ROOT, ROOT / "python/requirements-lock.txt")
+        self.assertIn("exited 2", str(caught.exception))
+
     def test_planted_audit_runs_before_real_lock_audits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -275,6 +297,56 @@ class SelfTest(unittest.TestCase):
                 )
             self.assertEqual(result, 0)
             self.assertEqual(calls, [fixture, lock])
+
+    def test_unused_exception_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fixture = root / "planted.txt"
+            fixture.write_text("requests==2.19.0\n", encoding="utf-8")
+            lock = root / "project.lock"
+            lock.write_text("example==1.0\n", encoding="utf-8")
+            manifest = root / "requirements/locks/manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps({"locks": [{"output": "project.lock"}]}), encoding="utf-8"
+            )
+            ignore = root / "ignore.json"
+            ignore.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "exceptions": [
+                            {
+                                "file": "python/requirements-lock.txt",
+                                "package": "requests",
+                                "id": "CVE-2018-18074",
+                                "reason": "test",
+                                "expires": (date.today() + timedelta(days=30)).isoformat(),
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def report(_root: Path, requirement: Path) -> dict[str, object]:
+                if requirement == fixture:
+                    return {
+                        "dependencies": [
+                            {
+                                "name": "requests",
+                                "version": "2.19.0",
+                                "vulns": [{"id": "CVE-2018-18074"}],
+                            }
+                        ]
+                    }
+                return {"dependencies": [{"name": "example", "version": "1.0", "vulns": []}]}
+
+            with mock.patch.object(check_python_audit, "run_audit", side_effect=report):
+                result = check_python_audit.main(
+                    ["--root", str(root), "--ignore", str(ignore), "--fixture", str(fixture)]
+                )
+            self.assertEqual(result, 1)
 
     def test_a_self_test_without_the_advisory_stops_before_the_locks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
