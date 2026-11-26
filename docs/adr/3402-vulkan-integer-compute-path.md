@@ -115,7 +115,7 @@ generated `[[compat]]` entries (`engine_with = "vulkan"`); the
 ## Alternatives considered
 
 | Option | Pros | Cons | Why not chosen |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Keep the status quo (no Vulkan) | Zero maintenance | Intel iGPU adm coverage stays on CPU; the single-image portability story stays closed | The draft's cost is one shader + a loader table; the gap it fills is the one ADR-0726 explicitly accepted |
 | Grow SYCL to cover shaderFloat64-less devices with an integer adm twin | Reuses the SYCL runtime | The DPC++/AdaptiveCpp runtimes are heavier than a Vulkan loader on those nodes; an int64 SYCL kernel is the same algorithm anyway, and the CPU-exact path then exists in two frameworks instead of one shared predicate file | The Vulkan path shares `adm_angle_flag_i64()` like the SYCL/Metal twins already do; the delta is the runtime, and the Vulkan runtime is the smaller one for this device class |
 | Re-adopt the removed backend wholesale | Everything lands at once | The three ADR-0726 bugs return; volk/VMA/import CI weight returns before any of it is load-bearing | The draft re-lands the floor first; every further feature is a reviewable increment |

@@ -563,9 +563,9 @@ void scenario_tiny_ai(const VmafCompatApi *api, Trace *t)
     trace(t, "close %d", api->close(vmaf));
 }
 
-/* ---- HIP / Metal in a build without them ----------------------------------------------- */
+/* ---- HIP / Metal / Vulkan in a build without them --------------------------------------- */
 
-#if !VMAFX_ENGINE_EXPORTS_HIP || !VMAFX_ENGINE_EXPORTS_METAL
+#if !VMAFX_ENGINE_EXPORTS_HIP || !VMAFX_ENGINE_EXPORTS_METAL || !VMAFX_ENGINE_EXPORTS_VULKAN
 /* A state pointer that is not NULL, to see the absent backend clear it; the
  * functions never dereference it. */
 static unsigned char not_a_state;
@@ -612,6 +612,23 @@ static void metal_absent(const VmafCompatApi *api, Trace *t)
 }
 #endif
 
+#if !VMAFX_ENGINE_EXPORTS_VULKAN
+static void vulkan_absent(const VmafCompatApi *api, Trace *t)
+{
+    VmafVulkanState *state = (VmafVulkanState *)&not_a_state;
+    const VmafVulkanConfiguration cfg = {-1, 0};
+    trace(t, "vulkan available %d", api->vulkan_available());
+    const int err = api->vulkan_state_init(&state, cfg);
+    trace(t, "vulkan init %d cleared %d", err, state == NULL);
+    trace(t, "vulkan init NULL %d", api->vulkan_state_init(NULL, cfg));
+    trace(t, "vulkan import %d", api->vulkan_import_state(NULL, NULL));
+    state = (VmafVulkanState *)&not_a_state;
+    api->vulkan_state_free(&state);
+    trace(t, "vulkan free cleared %d", state == NULL);
+    api->vulkan_state_free(NULL);
+}
+#endif
+
 void scenario_absent_backends(const VmafCompatApi *api, Trace *t)
 {
 #if !VMAFX_ENGINE_EXPORTS_HIP
@@ -619,6 +636,9 @@ void scenario_absent_backends(const VmafCompatApi *api, Trace *t)
 #endif
 #if !VMAFX_ENGINE_EXPORTS_METAL
     metal_absent(api, t);
+#endif
+#if !VMAFX_ENGINE_EXPORTS_VULKAN
+    vulkan_absent(api, t);
 #endif
     (void)api;
     (void)t;
