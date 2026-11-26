@@ -16,9 +16,12 @@
 # ${APP_SLUG}[bot]), ignoring foreign or fork branches of the same name.
 #
 # A branch whose parent is already the master tip is left alone: re-pushing it
-# would only restart its checks, but auto-merge is armed idempotently. With
-# RENDER_DUE=false (master's render is current, for instance after a render
-# landed by hand) an open render pull request of this workflow is closed instead.
+# would only restart its checks, but auto-merge is armed idempotently. An open
+# render pull request already in the merge queue is also left alone without
+# re-pushing, because the forge refuses updates to queued branches and the
+# queued pull request already lands the render. With RENDER_DUE=false (master's
+# render is current, for instance after a render landed by hand) an open render
+# pull request of this workflow is closed instead.
 # Inputs (environment): GH_TOKEN (App installation token), APP_SLUG,
 # GITHUB_REPOSITORY, RENDER_BRANCH, RENDER_DUE, RUNNER_TEMP, OWED_SINCE.
 set -euo pipefail
@@ -32,6 +35,25 @@ find_open_pr() {
   gh pr list --repo "$GITHUB_REPOSITORY" --head "$RENDER_BRANCH" \
     --state open --json number,author,isCrossRepository \
     --jq "[.[] | select((.author.login == \"app/${APP_SLUG}\" or .author.login == \"${APP_SLUG}[bot]\") and .isCrossRepository == false)][0].number // empty"
+}
+
+in_merge_queue() {
+  local pr="$1"
+  local owner="${GITHUB_REPOSITORY%%/*}"
+  local name="${GITHUB_REPOSITORY#*/}"
+  local ans=""
+  if ! ans="$(gh api graphql \
+    -f "query=query(\$o:String!,\$n:String!,\$p:Int!){repository(owner:\$o,name:\$n){pullRequest(number:\$p){isInMergeQueue}}}" \
+    -f "o=$owner" -f "n=$name" -F "p=$pr" \
+    --jq .data.repository.pullRequest.isInMergeQueue)"; then
+    echo "open-render-pr.sh: merge-queue GraphQL query failed for pull request #$pr; falling back to false" >&2
+    ans="false"
+  fi
+  if [[ "$ans" == "true" ]]; then
+    echo "true"
+  else
+    echo "false"
+  fi
 }
 
 arm_auto_merge() {
@@ -48,6 +70,14 @@ if [[ "$RENDER_DUE" != true ]]; then
     echo "closed render pull request #$open_pr: master's render is current"
   fi
   exit 0
+fi
+
+if [[ -n "$open_pr" ]]; then
+  queued="$(in_merge_queue "$open_pr")"
+  if [[ "$queued" == "true" ]]; then
+    echo "render pull request #$open_pr is in the merge queue; it lands the render, not re-pushing"
+    exit 0
+  fi
 fi
 
 bot="${APP_SLUG}[bot]"

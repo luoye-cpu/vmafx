@@ -631,13 +631,17 @@ them next to any other file. The outputs are written by one command,
   forge reports it CLEAN, like every other pull request. Nobody has to open it:
   the `docs-render-pr` workflow runs on every push to `master` and hourly as a
   fallback (since GitHub drops scheduled runs), calling
-  `scripts/ci/check_render_on_master.py --open-after-hours 6`, and once a
-  render has been owed on master for 6 hours `scripts/ci/open-render-pr.sh`
-  renders the master tip on branch `chore/docs-render-auto`, opens the pull
-  request as the release bot and arms auto-merge; when master moves it renders
-  again, and when master's render is current it closes its own pull request
+  `scripts/ci/check_render_on_master.py --open-after-hours 6`. If the last
+  render was inexact on its own tree, or a render has been owed for 6 hours,
+  `scripts/ci/open-render-pr.sh` renders the master tip on branch
+  `chore/docs-render-auto`, opens the pull request as the release bot and arms
+  auto-merge. When master moves it renders
+  again. While its pull request waits in the merge queue it leaves the branch
+  alone, since the queued pull request lands the render; when master's render
+  is current it closes its own pull request
   ([ADR-3373](../adr/3373-scheduled-render-pull-request.md),
-  [ADR-3552](../adr/3552-docs-render-on-master-push.md)). To run it at
+  [ADR-3552](../adr/3552-docs-render-on-master-push.md),
+  [ADR-3627](../adr/3627-render-check-in-the-merge-group.md)). To run it at
   once: `gh workflow run docs-render-pr.yml`. To see what it would decide:
   `python3 scripts/ci/check_render_on_master.py --open-after-hours 6`;
 - **at the release cut:** see
@@ -652,10 +656,20 @@ a current render passes; otherwise the last commit that touched a rendered
 file must pass `make docs-render-check` on its own tree (a hand edit or a
 stale render is red at any age), and the render owed since the first landing
 after it warns for up to 24 hours and turns master red after
-that. An ordinary pull request does not run it: `make docs-fragments-check`
-checks the fragments themselves (changelog sections, ADR index rows, rebase-note
-headings) and the outputs that stay in the pull request (exact-twin table,
-AGENTS indexes, charts, vendored assets).
+that.
+
+The same `Docs` job runs `python3 scripts/ci/check_render_on_master.py
+--group-base <base-sha>` on the merge-group head with the event's base SHA.
+It checks the last first-parent commit in `<base-sha>..HEAD` that touches a
+rendered path. That commit's own tree must pass `make docs-render-check`.
+Groups without a render commit pass at any age. A failure identifies the
+render commit to regenerate after the preceding changes land
+([ADR-3627](../adr/3627-render-check-in-the-merge-group.md)).
+
+On an ordinary pull request, `make docs-fragments-check` checks the
+fragments (changelog sections, ADR index rows, rebase-note headings) and the
+outputs that stay in the pull request (exact-twin table, AGENTS indexes,
+charts, vendored assets).
 
 The render needs full history: the order of the index rows and of the rebase
 notes is the order the fragments landed on the branch, read by
@@ -834,7 +848,7 @@ provenance does not verify is never published.
 Every workflow that creates a GitHub release or publishes release assets
 attaches build-provenance bundles as `*.intoto.jsonl` files (ADR-3316). This
 satisfies the OpenSSF Scorecard Signed-Releases check requirement (scorecard
-v5.6.0), which scores a release 10 when a release asset name ends in
+v5.7.0), which scores a release 10 when a release asset name ends in
 `.intoto.jsonl` (compared to 8 for cryptographic signature bundles alone).
 
 The `.intoto.jsonl` asset contains the normalized single-line in-toto SLSA
@@ -960,6 +974,12 @@ fragments so existing release-train history is preserved.
   Markdown bullet under `changelog.d/<section>/<topic>.md`. The fragment is
   the source of truth; the rendered `CHANGELOG.md` is a build artefact that a
   pull request does not carry ([ADR-2197](../adr/2197-render-generated-docs-at-landing.md)).
+  Two pull requests carry it: the render-only pull request
+  ([ADR-3295](../adr/3295-render-only-pull-request.md)), which adds no
+  fragment and owes no other deliverable (`scripts/ci/deliverables-check.sh`
+  section 2a'), and the generated release pull request at the cut
+  ([Cutting a release from fragments](#cutting-a-release-from-fragments)),
+  whose workflow does not run that gate.
 - **Filename convention:** lowercase kebab-case, optionally prefixed with the
   task ID (`T7-39-foo.md`) or ADR number (`adr-0312-deferral-retired.md`)
   for implicit lexical ordering within the section.
