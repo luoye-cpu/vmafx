@@ -319,16 +319,13 @@ class RealReplay(unittest.TestCase):
         self.git(self.upstream, "commit", "-qam", "release")
         self.git(self.upstream, "tag", "n9.1")
 
-    def test_artifact_scan_replays_without_changing_pins_or_patch_files(self) -> None:
+    def test_artifact_scan_refuses_incomplete_pins_without_changing_worktree(self) -> None:
         before = self.contents()
         with patch.dict(os.environ, {"FFMPEG_FIX_SERIES_VERIFY": "cosign"}):
             with self.assertRaisesRegex(ValueError, "requires all shared-series pins"):
                 STACK.maintain(self.repo, self.output, False, True, artifact_only=True)
         self.assertEqual(self.contents(), before)
         self.assertFalse((self.output / "proposed-refresh.patch").exists())
-
-    def test_artifact_scan_without_new_stable_release_is_explicit_noop(self) -> None:
-        self.test_artifact_scan_replays_without_changing_pins_or_patch_files()
 
     def test_conflicting_release_preserves_every_input(self) -> None:
         self.tag_conflicting_release()
@@ -376,6 +373,7 @@ class RealReplay(unittest.TestCase):
         self.assertEqual(receipt["status"], "failed")
         self.assertEqual(receipt["error"], str(raised.exception))
         self.assertNotIn("cleanup_error", receipt)
+        self.assertFalse((self.output / "proposed-refresh.patch").exists())
         self.assertEqual(self.contents(), before)
 
     def test_receipt_write_error_preserves_replay_error(self) -> None:
@@ -1004,16 +1002,13 @@ class SharedSeriesReplay(RealReplay):
             receipt = STACK.maintain(self.repo, self.output, True, False)
         self.assertEqual(receipt["shared_patch_count"], 1)
 
-    def test_artifact_scan_replays_without_changing_pins_or_patch_files(self) -> None:
+    def test_artifact_scan_refuses_incomplete_pins_without_changing_worktree(self) -> None:
         before = self.contents()
         with patch.dict(os.environ, {"FFMPEG_FIX_SERIES_VERIFY": "cosign"}):
             with self.assertRaisesRegex(ValueError, "canonical github.com series repository"):
                 STACK.maintain(self.repo, self.output, False, True, artifact_only=True)
         self.assertEqual(self.contents(), before)
         self.assertEqual(json.loads((self.output / "receipt.json").read_text())["status"], "failed")
-
-    def test_artifact_scan_without_new_stable_release_is_explicit_noop(self) -> None:
-        self.test_artifact_scan_replays_without_changing_pins_or_patch_files()
 
     def test_series_is_applied_first_and_ours_are_rendered_alone(self) -> None:
         result = STACK.maintain(self.repo, self.output, True, False)

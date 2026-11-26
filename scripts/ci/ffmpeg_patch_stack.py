@@ -883,6 +883,14 @@ def proposed_patch(repo: Path, updates: dict[Path, bytes]) -> bytes:
     return "".join(chunks).encode("utf-8")
 
 
+class PendingWrites(TypedDict):
+    """Files a successful replay wants written after its checkout is gone."""
+
+    updates: dict[Path, bytes]
+    refresh: bool
+    artifact_only: bool
+
+
 def settle_updates(
     repo: Path,
     updates: dict[Path, bytes],
@@ -954,15 +962,16 @@ def write_receipt(output: Path, receipt: Receipt) -> None:
 def record_failure(output: Path, receipt: Receipt, error: BaseException) -> None:
     """Record the primary error even if writing its receipt also fails."""
     receipt.update({"status": "failed", "error": str(error)})
+    (output / "proposed-refresh.patch").unlink(missing_ok=True)
     try:
         write_receipt(output, receipt)
     except OSError as receipt_error:
         error.add_note(f"Could not write failure receipt: {receipt_error}")
 
 
-def scan_noop(output: Path, receipt: Receipt, code: str, reason: str) -> None:
+def scan_noop(receipt: Receipt, code: str, reason: str) -> PendingWrites:
     receipt.update({"status": "no-op", "changed": [], "reason_code": code, "reason": reason})
-    (output / "proposed-refresh.patch").write_bytes(b"")
+    return {"updates": {}, "refresh": False, "artifact_only": True}
 
 
 def scan_candidate(
@@ -1003,22 +1012,19 @@ def scan_release(
     names: list[str],
     receipt: Receipt,
     keep_tree: Path | None,
-) -> None:
+) -> PendingWrites:
     target_tag, current_tag = receipt["tag"], receipt["configured_tag"]
     if target_tag == current_tag:
-        scan_noop(output, receipt, "no-new-release", "no newer stable FFmpeg release candidate")
-        return
+        return scan_noop(receipt, "no-new-release", "no newer stable FFmpeg release candidate")
     target, receipt["target_source"] = cache.fetch(target_tag, None)
     receipt["upstream_commit"] = target
     candidate_config = scan_candidate(replay, repo, target_tag, target, receipt)
     if candidate_config is None:
-        scan_noop(
-            output,
+        return scan_noop(
             receipt,
             "no-compatible-series",
             f"FFmpeg {target_tag} ({target}) has no verified compatible shared-series release",
         )
-        return
     _, shared_count = apply_stack(repo, replay, target, names, receipt, candidate_config)
     receipt["patched_tree"] = replay.git("rev-parse", "HEAD^{tree}").strip()
     commits = replay.git("rev-list", "--reverse", f"{target}..HEAD").splitlines()
@@ -1029,7 +1035,7 @@ def scan_release(
     if keep_tree is not None:
         keep_patched_tree(replay.checkout, keep_tree)
         receipt["kept_tree"] = str(keep_tree)
-    settle_updates(repo, updates, False, receipt, True, output)
+    return {"updates": updates, "refresh": False, "artifact_only": True}
 
 
 def replay_release(
@@ -1042,13 +1048,12 @@ def replay_release(
     refresh: bool,
     keep_tree: Path | None,
     artifact_only: bool,
-) -> None:
+) -> PendingWrites:
     base, receipt["source"] = cache.fetch(receipt["configured_tag"], receipt["pinned_commit"])
     shared, shared_count = apply_stack(repo, replay, base, names, receipt)
     receipt["upstream_commit"] = base
     if artifact_only:
-        scan_release(repo, output, replay, cache, names, receipt, keep_tree)
-        return
+        return scan_release(repo, output, replay, cache, names, receipt, keep_tree)
     target = base
     if receipt["tag"] != receipt["configured_tag"]:
         target, receipt["target_source"] = cache.fetch(receipt["tag"], None)
@@ -1073,7 +1078,7 @@ def replay_release(
         read_repo_text_bytes(config).decode("utf-8"), receipt["tag"], target
     ).encode("utf-8")
     updates.update(readme_claim(repo, receipt))
-    settle_updates(repo, updates, refresh, receipt)
+    return {"updates": updates, "refresh": refresh, "artifact_only": False}
 
 
 def maintain(
@@ -1104,9 +1109,15 @@ def maintain(
                 cache = SourceCache(replay, cache_dir or cache_root(), remote)
                 receipt["cache"] = str(cache.repo)
                 receipt["tag"] = target_tag
-                replay_release(
+                pending = replay_release(
                     repo, output, replay, cache, names, receipt, refresh, keep_tree, artifact_only
                 )
+            # Apply only after the checkout (and its cleanup) has succeeded; a
+            # failed cleanup therefore leaves the maintained files untouched.
+            settle_updates(
+                repo, pending["updates"], pending["refresh"], receipt,
+                pending["artifact_only"], output,
+            )
     except BaseException as error:
         record_failure(output, receipt, error)
         raise

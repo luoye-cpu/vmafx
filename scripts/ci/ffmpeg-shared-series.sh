@@ -30,6 +30,9 @@
 #       order. `am` (default) commits each patch with `git am --3way` and
 #       requires TREE's HEAD to be FFMPEG_COMMIT; `apply` uses `git apply`
 #       for a tree that is not a Git checkout (a release archive).
+#   ffmpeg-shared-series.sh inspect DEST
+#       Download, verify and unpack the series into the new directory DEST,
+#       then record its base tag/commit and the certificate-check inputs.
 #
 # Verification, always fail closed:
 #   1. the tarball's sha256 equals FFMPEG_FIX_SERIES_SHA256;
@@ -469,7 +472,7 @@ apply_series() { # apply_series METHOD TREE
 # Dispatches CLI commands (fetch, apply; _run_with_deadline is test-only).
 main() { # main COMMAND [ARG...]
   local command="${1:-}" method=am
-  [ -n "$command" ] || die 2 "usage: $0 fetch DEST | apply [--method am|apply] TREE"
+  [ -n "$command" ] || die 2 "usage: $0 fetch DEST | inspect DEST | apply [--method am|apply] TREE"
   shift
   case "$command" in
     inspect)

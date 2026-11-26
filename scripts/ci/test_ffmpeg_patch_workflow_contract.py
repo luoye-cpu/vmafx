@@ -242,6 +242,7 @@ class FFmpegWorkflowContract(unittest.TestCase):
         tooling = suite_members(ROOT, "tooling")
         for name in (
             "test_ffmpeg_patch_stack",
+            "test_ffmpeg_patch_scan",
             "test_ffmpeg_patch_smoke_safety",
             "test_ffmpeg_patch_workflow_contract",
         ):

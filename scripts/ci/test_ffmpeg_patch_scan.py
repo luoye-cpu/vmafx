@@ -8,7 +8,12 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.ci import ffmpeg_patch_candidates as candidates
@@ -178,6 +183,82 @@ set -euo pipefail
             (self.fixture.output / "patches/0001-integration.patch").read_bytes(),
         )
 
+    def test_an_inspected_tag_that_differs_fails_closed(self) -> None:
+        checkout = self.root / "checkout"
+        (checkout / ".git" / "candidate").mkdir(parents=True)
+
+        def shared_command(_directory: object, args: list[str], _timeout: float) -> None:
+            destination = Path(args[-1])
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / "verified.env").write_text(
+                "FFMPEG_FIX_SERIES_TAG=v9.9.9\n"
+                f"FFMPEG_FIX_SERIES_SHA256={'a' * 64}\n"
+                "FFMPEG_TAG=n9.1\n"
+                f"FFMPEG_COMMIT={'b' * 40}\n"
+            )
+
+        replay = SimpleNamespace(checkout=checkout, shared_command=shared_command)
+        with (
+            patch.object(candidates, "release_tags", return_value=["v0.2.0"]),
+            self.assertRaisesRegex(ValueError, "inspected shared-series tag differs"),
+        ):
+            stack.scan_candidate(replay, self.fixture.repo, "n9.1", "b" * 40, {})
+
+    def test_invalid_sha256_pins_are_refused(self) -> None:
+        config = self.fixture.repo / "build-config.env"
+        original = config.read_text()
+        current = self.pins["FFMPEG_FIX_SERIES_SHA256"]
+        for value in ("A" * 64, "0" * 63, "g" * 64):
+            with self.subTest(value=value):
+                config.write_text(
+                    "\n".join(
+                        f'FFMPEG_FIX_SERIES_SHA256="{value}"'
+                        if line.startswith("FFMPEG_FIX_SERIES_SHA256=")
+                        else line
+                        for line in original.splitlines()
+                    )
+                    + "\n"
+                )
+                with self.assertRaisesRegex(ValueError, "invalid shared-series SHA256 pin"):
+                    candidates.pin_values(self.fixture.repo)
+        config.write_text(original)
+        self.assertEqual(candidates.pin_values(self.fixture.repo)["FFMPEG_FIX_SERIES_SHA256"], current)
+
+    def release_tags_with(self, releases: list[dict[str, object]] | int) -> list[str]:
+        script = self.bin / "gh"
+        script.write_text('#!/usr/bin/env bash\nset -euo pipefail\ncat "$FIXTURE_RELEASES"\n')
+        script.chmod(0o755)
+        if os.name == "nt":
+            (self.bin / "gh.bat").write_text('@type "%FIXTURE_RELEASES%"\r\n')
+        payload = (
+            [{"tag_name": f"v0.1.{index}", "draft": False, "prerelease": False} for index in range(releases)]
+            if isinstance(releases, int)
+            else releases
+        )
+        path = self.root / "releases.json"
+        path.write_text(json.dumps(payload))
+        with patch.dict(os.environ, {"FIXTURE_RELEASES": str(path)}):
+            return candidates.release_tags(self.pins["FFMPEG_FIX_SERIES_REPO"])
+
+    def test_release_discovery_stops_at_the_page_boundary(self) -> None:
+        self.assertIn("v0.1.0", self.release_tags_with(64))
+        with self.assertRaisesRegex(ValueError, "exceeded its bounded page"):
+            self.release_tags_with(65)
+
+    def test_draft_prerelease_and_invalid_metadata_are_refused(self) -> None:
+        tags = self.release_tags_with(
+            [
+                {"tag_name": "v0.3.0", "draft": True, "prerelease": False},
+                {"tag_name": "v0.2.0", "draft": False, "prerelease": True},
+                {"tag_name": "v0.1.0", "draft": False, "prerelease": False},
+            ]
+        )
+        self.assertEqual(tags, ["v0.1.0"])
+        with self.assertRaisesRegex(ValueError, "invalid shared-series release metadata"):
+            self.release_tags_with(
+                [{"tag_name": "v0.1.0", "draft": "no", "prerelease": False}]
+            )
+
     def test_verified_wrong_tag_and_commit_are_explicit_noop(self) -> None:
         target = self.new_base()
         self.create_release("v0.2.0", "n9.2", target, "wrong-tag")
@@ -187,6 +268,21 @@ set -euo pipefail
         self.assertEqual(result["reason_code"], "no-compatible-series")
         self.assertEqual(len(result["verified_candidates"]), 2)
         self.assertEqual((self.fixture.output / "proposed-refresh.patch").read_bytes(), b"")
+
+    def test_checkout_cleanup_failure_leaves_no_proposal(self) -> None:
+        """A failed scan cleanup must not leave a stale or empty proposal."""
+        self.fixture.output.mkdir(exist_ok=True)
+        (self.fixture.output / "proposed-refresh.patch").write_bytes(b"stale proposal")
+        before = self.fixture.contents()
+        with (
+            patch.object(stack.tempfile, "TemporaryDirectory", fixtures.FailingCheckoutCleanup),
+            self.assertRaises(OSError),
+        ):
+            self.scan([])
+        self.assertFalse((self.fixture.output / "proposed-refresh.patch").exists())
+        self.assertEqual(self.fixture.contents(), before)
+        receipt = json.loads((self.fixture.output / "receipt.json").read_text())
+        self.assertEqual(receipt["status"], "failed")
 
     def test_no_new_base_is_verified_noop(self) -> None:
         result = self.scan([])
@@ -222,6 +318,28 @@ set -euo pipefail
         self.assertEqual(receipt["status"], "failed")
         self.assertFalse((self.fixture.output / "proposed-refresh.patch").exists())
         self.assertEqual(self.fixture.contents(), before)
+
+
+class ScanArguments(unittest.TestCase):
+    """The three --scan-latest refusals fail before any network or worktree access."""
+
+    def test_missing_latest_refresh_output_or_latest_is_refused(self) -> None:
+        cases = (
+            (["--scan-latest", "--output-dir", "out"], "--scan-latest requires --latest"),
+            (["--scan-latest", "--latest"], "--scan-latest requires --output-dir"),
+            (["--latest"], "--latest requires --refresh or --scan-latest"),
+        )
+        for options, message in cases:
+            with self.subTest(options=options):
+                stderr = StringIO()
+                with (
+                    patch.object(sys, "argv", ["ffmpeg_patch_stack.py", *options]),
+                    redirect_stderr(stderr),
+                    self.assertRaises(SystemExit) as raised,
+                ):
+                    stack.parse_args()
+                self.assertEqual(raised.exception.code, 2)
+                self.assertIn(message, stderr.getvalue())
 
 
 class ProposalBoundaries(unittest.TestCase):
