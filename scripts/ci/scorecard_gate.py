@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 """Validate same-run Scorecard reports without confusing local and remote scopes.
 
-ADR-1247; schema/risk weights are pinned to Scorecard 5.6.0. The upstream
+ADR-1247; schema/risk weights are pinned to Scorecard 5.7.0. The upstream
 publisher scans remote HEAD, while PR mode scans files and reports unknown SHA.
 """
 
@@ -30,9 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.lib.safe_subprocess import run as run_command
 
-VERSION = "v5.6.0"
-TOOL_COMMIT = "61e84743356275f6ffca23b1b2f2cb945e19eb96"
-ACTION_COMMIT = "fa7117db83c52d787ae5a89f350999701505d78e"
+VERSION = "v5.7.0"
+TOOL_COMMIT = "d7552fb3cdc05e9f6426177d3328887304fce554"
+ACTION_COMMIT = "23f22cd43608bae7a1f1fa2603d7314dee9538a5"
 MINIMUM = Fraction(17, 2)
 MAX_SCORE = 10
 MAX_LINK_HOPS = 40  # Bound resolution on the Linux hosted runner, including growing cycles.
