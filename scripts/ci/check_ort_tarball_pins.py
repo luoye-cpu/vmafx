@@ -270,7 +270,7 @@ def _assignment_pairs(rest: str) -> list[tuple[str, str]]:
 
 def _docker_assignment_values(keyword: str, rest: str) -> list[tuple[str, str]]:
     """Parse assignments; retain unknown values for affected names on unsupported syntax."""
-    rest = re.split(r"\s+#", rest, maxsplit=1)[0]
+    rest = _shell_without_comment(rest)
     pairs = _assignment_pairs(rest)
     if not pairs:
         names = re.findall(r"(?:^|\s)([A-Za-z_][A-Za-z0-9_]*)(?==|\s|$)", rest)
@@ -749,7 +749,8 @@ def _resolve_helper_version(
     version = ver_match.group(1) if ver_match else None
     if version not in ("$ORT_VERSION", "${ORT_VERSION}"):
         return version, ""
-    prefix = call_text.partition("ort_nuget_install.py")[0]
+    helper = CONTAINER_HELPER_TOKEN_RE.search(call_text)
+    prefix = call_text[: helper.start()] if helper else ""
     inline = dict(INLINE_BINDING_RE.findall(prefix))
     if "ORT_VERSION" in inline:
         return inline["ORT_VERSION"], ""

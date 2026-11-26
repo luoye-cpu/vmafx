@@ -180,6 +180,35 @@ class TestOrtGuard(unittest.TestCase):
                     "unpinned ORT_VERSION '1.99.0' for package 'cpu'", "\n".join(findings)
                 )
 
+    def test_docker_env_quoted_hash_does_not_hide_version(self) -> None:
+        container = Path(self.temp.name) / "Containerfile"
+        container.write_text(
+            "FROM base\n"
+            "ARG ORT_VERSION=1.30.0\n"
+            'ENV NOTE="build #1" ORT_VERSION=1.99.0\n'
+            "RUN python3 scripts/ci/ort_nuget_install.py --package cpu "
+            '--version "${ORT_VERSION}" --prefix /usr/local\n',
+            encoding="utf-8",
+        )
+        rc, findings = guard.check_tarball_pins(files=[container])
+        self.assertEqual(rc, 1, findings)
+        self.assertIn("unpinned ORT_VERSION '1.99.0' for package 'cpu'", "\n".join(findings))
+
+    def test_workflow_module_spelling_uses_prefix_before_helper(self) -> None:
+        workflow = Path(self.temp.name) / "module.yml"
+        workflow.write_text(
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            "      - name: install\n"
+            "        run: ORT_VERSION=1.99.0 python3 -m scripts.ci.ort_nuget_install "
+            '--version "$ORT_VERSION" --prefix /opt/ort && ORT_VERSION=1.30.0 true\n',
+            encoding="utf-8",
+        )
+        packages: dict[str, dict[str, Any]] = {"cpu": {"versions": {"1.30.0": {}}}}
+        findings = guard.scan_file(workflow, packages)[0]
+        self.assertIn("unpinned ORT_VERSION '1.99.0' for package 'cpu'", "\n".join(findings))
+
     def test_helper_token_must_be_one_canonical_logical_instruction(self) -> None:
         container = Path(self.temp.name) / "Containerfile"
         cases = (
@@ -1269,9 +1298,7 @@ class TestOrtGuardDiscovery(unittest.TestCase):
         shutil.copyfile(ROOT / "scripts/ci/ort-nuget-pins.json", pins)
 
     def git(self, *args: str) -> None:
-        env = {
-            key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")
-        }
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
         env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1")
         run_command(
             ("git", *args),
