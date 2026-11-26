@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/VMAFx/vmafx/pkg/scorecli"
 )
@@ -367,6 +368,44 @@ func TestRun_injectedRunner(t *testing.T) {
 			}
 			if res.VMAFBinaryVersion != "3.0.0" {
 				t.Errorf("VMAFBinaryVersion = %q, want 3.0.0", res.VMAFBinaryVersion)
+			}
+		})
+	}
+}
+
+func TestScoreTimeout_DefaultWhenUnset(t *testing.T) {
+	t.Setenv("VMAFX_TUNE_SCORE_TIMEOUT", "")
+	if got := scorecli.ScoreTimeout(); got != scorecli.DefaultScoreTimeout {
+		t.Errorf("scorecli.ScoreTimeout() = %v, want %v", got, scorecli.DefaultScoreTimeout)
+	}
+}
+
+func TestScoreTimeout_HonoursEnvOverride(t *testing.T) {
+	t.Setenv("VMAFX_TUNE_SCORE_TIMEOUT", "13s")
+	if got := scorecli.ScoreTimeout(); got != 13*time.Second {
+		t.Errorf("scorecli.ScoreTimeout() = %v, want 13s", got)
+	}
+}
+
+func TestScoreTimeout_InvalidEnvFallsBackToDefault(t *testing.T) {
+	t.Setenv("VMAFX_TUNE_SCORE_TIMEOUT", "garbage")
+	if got := scorecli.ScoreTimeout(); got != scorecli.DefaultScoreTimeout {
+		t.Errorf("scorecli.ScoreTimeout() with invalid env = %v, want default %v", got, scorecli.DefaultScoreTimeout)
+	}
+}
+
+func TestScoreTimeout_NonPositiveDisablesTheTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want time.Duration
+	}{
+		{"0s", 0},
+		{"-5s", -5 * time.Second},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			t.Setenv("VMAFX_TUNE_SCORE_TIMEOUT", tc.raw)
+			if got := scorecli.ScoreTimeout(); got != tc.want {
+				t.Errorf("scorecli.ScoreTimeout() with %q = %v, want %v", tc.raw, got, tc.want)
 			}
 		})
 	}

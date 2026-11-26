@@ -252,7 +252,11 @@ type Runner func(ctx context.Context, argv []string) (stderr string, exitStatus 
 const DefaultScoreTimeout = 30 * time.Minute
 
 // ScoreTimeout returns the per-call vmaf-subprocess timeout, honouring
-// VMAFX_TUNE_SCORE_TIMEOUT for operator overrides.
+// VMAFX_TUNE_SCORE_TIMEOUT for operator overrides. The value is parsed with
+// time.ParseDuration; an empty or unparseable value falls back to
+// DefaultScoreTimeout. A zero or negative duration is returned as is and means
+// no timeout, so callers must check the result for a positive value before
+// passing it to context.WithTimeout.
 func ScoreTimeout() time.Duration {
 	if raw := os.Getenv("VMAFX_TUNE_SCORE_TIMEOUT"); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil {

@@ -11,33 +11,7 @@ package bisect
 import (
 	"testing"
 	"time"
-
-	"github.com/VMAFx/vmafx/pkg/scorecli"
 )
-
-func TestScoreTimeout_DefaultWhenUnset(t *testing.T) {
-	t.Setenv("VMAFX_TUNE_SCORE_TIMEOUT", "")
-	got := scorecli.ScoreTimeout()
-	if got != scorecli.DefaultScoreTimeout {
-		t.Errorf("scorecli.ScoreTimeout() = %v, want %v", got, scorecli.DefaultScoreTimeout)
-	}
-}
-
-func TestScoreTimeout_HonoursEnvOverride(t *testing.T) {
-	t.Setenv("VMAFX_TUNE_SCORE_TIMEOUT", "13s")
-	got := scorecli.ScoreTimeout()
-	if got != 13*time.Second {
-		t.Errorf("scorecli.ScoreTimeout() = %v, want 13s", got)
-	}
-}
-
-func TestScoreTimeout_InvalidEnvFallsBackToDefault(t *testing.T) {
-	t.Setenv("VMAFX_TUNE_SCORE_TIMEOUT", "garbage")
-	got := scorecli.ScoreTimeout()
-	if got != scorecli.DefaultScoreTimeout {
-		t.Errorf("scorecli.ScoreTimeout() with invalid env = %v, want default %v", got, scorecli.DefaultScoreTimeout)
-	}
-}
 
 // TestVMAFScoreFunc_DoesNotHangOnMissingBinary exercises the score func
 // against an obviously-missing binary path and asserts the call returns
