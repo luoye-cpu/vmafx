@@ -13,7 +13,6 @@ request without the marker is judged exactly as before.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys

@@ -11,10 +11,15 @@ import re
 import shlex
 import shutil
 import subprocess  # nosec B404
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml  # type: ignore[import-untyped]  # no PyYAML stubs in the hook environment
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
+from scripts.lib import git_env
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github" / "workflows" / "rule-enforcement.yml"
@@ -35,7 +40,7 @@ STUB_GATE_NAMES = (
 )
 BODY_STEP_SCRIPT_RE = re.compile(r"\bbash\s+scripts/ci/([A-Za-z0-9_.-]+\.sh)\b")
 GATES_ARRAY_RE = re.compile(r"(?m)^GATES=\(([^)]*)\)")
-CLEAN_ENV = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+CLEAN_ENV = git_env.drop()
 
 
 def _isolated_env() -> dict[str, str]:

@@ -14,6 +14,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import check_agent_copyright_rule as rule
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))

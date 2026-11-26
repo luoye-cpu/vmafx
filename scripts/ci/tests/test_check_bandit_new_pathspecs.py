@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from scripts.ci.tests.scanner_test_support import isolate_pre_commit_environment
+from scripts.lib import git_env
 from scripts.lib import new_scanner_findings as shared
 from scripts.lib.safe_subprocess import run as run_command
 
@@ -49,7 +50,7 @@ class CheckRevisionModesPathspecs(unittest.TestCase):
     def _git(self, *args: str, input_text: str | None = None) -> str:
         """Run an isolated git command inside ``self.root`` and return stdout."""
         env = {
-            **{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+            **git_env.drop(),
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_AUTHOR_NAME": "t",

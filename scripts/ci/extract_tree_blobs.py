@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import stat
 import sys
 from collections.abc import Sequence
@@ -17,6 +16,7 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+from scripts.lib import git_env  # noqa: E402
 from scripts.lib.new_scanner_findings import (  # noqa: E402
     ToolError,
     TreeListingError,
@@ -72,7 +72,7 @@ def _emit_error(message: str) -> None:
 
 def _clean_git_env() -> dict[str, str]:
     """Drop inherited GIT_* overrides so cwd alone selects the repository."""
-    return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    return git_env.drop()
 
 
 def _is_bad_component(part: str) -> bool:

@@ -110,6 +110,7 @@ def _run_script(script: Path, cwd: Path, *args: str, **extra: str) -> TextComman
 FIXTURE_REPO_FILES = (
     "scripts/__init__.py",
     "scripts/lib/__init__.py",
+    "scripts/lib/git_env.py",
     "scripts/lib/safe_subprocess.py",
     "scripts/lib/new_scanner_findings.py",
     "scripts/ci/extract_tree_blobs.py",

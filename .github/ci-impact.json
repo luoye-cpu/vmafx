@@ -514,6 +514,7 @@
         "scripts/__init__.py",
         "scripts/ci/prune-corrupt-fixtures.sh",
         "scripts/lib/__init__.py",
+        "scripts/lib/git_env.py",
         "scripts/lib/http_stand_in.py",
         "scripts/lib/safe_subprocess.py",
         "scripts/lib/vmaftest.py"

@@ -14,7 +14,6 @@ the render of the fragments, and ``_order.txt`` stay refused.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
