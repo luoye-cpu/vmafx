@@ -362,8 +362,8 @@ def _consistency_check(reg: dict[str, Any], registry_dir: Path) -> list[str]:
         if got == want:
             _check_graph_metadata(m, mid, onnx_path, errors)
 
-        bundle_rel = m.get("sigstore_bundle")
-        if bundle_rel:
+        if "sigstore_bundle" in m:
+            bundle_rel = m["sigstore_bundle"]
             if not isinstance(bundle_rel, str):
                 errors.append(f"{mid}: sigstore_bundle must be a string")
                 continue

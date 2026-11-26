@@ -957,12 +957,15 @@ when the real bundle file exists. Verification therefore needs:
    `sigstore_bundle` field;
 2. the real bundle file named by that entry;
 3. the `cosign` binary on the host's `PATH`;
-4. a POSIX host. On Windows verification returns `-ENOSYS` and the run fails.
+4. a POSIX host. On Windows verification returns `-ENOSYS` and the run fails;
+5. a bundle signed by a `vidiko/vmafx` GitHub Actions workflow. The loader pins
+   that certificate identity and the GitHub OIDC issuer; see
+   [security.md](../ai/security.md#layer-4-signature-verification-opt-in).
 
-Production inference pipelines requiring per-model signer verification must
-provision bundles for the exact model bytes before enabling this flag. For
-unsigned checkpoints, including all current in-tree entries, omit the flag to
-use the ordinary loader checks.
+Until per-model signing and release integration lands in
+[#1246](https://github.com/vidiko/vmafx/issues/1246), no model can pass
+`--tiny-model-verify`. A deployment that signs bundles with its own identity
+must run `cosign verify-blob` outside vmaf and leave this flag off.
 
 Every failure exits non-zero before any inference runs: `cosign` missing from
 `PATH`, a missing `sigstore_bundle` field, a missing or invalid bundle file,

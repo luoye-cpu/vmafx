@@ -300,9 +300,10 @@ Not in Wave 1, listed so they are not forgotten:
   cross-device variance as a required status check (at most 1e-4 FP32 and 1e-2
   FP16, per [`inference.md`](inference.md#expected-cross-device-variance)).
 - **Sigstore verifier** (shipped, ADR-0211). `--tiny-model-verify` is wired
-  to `cosign verify-blob` and is off by default. Production deployments that
-  require it must provision real per-model bundles first; missing metadata or
-  files refuse the load.
+  to `cosign verify-blob` and is off by default. Until per-model bundles ship
+  in [#1246](https://github.com/vidiko/vmafx/issues/1246), no model can pass
+  the flag; a deployment with its own signer runs `cosign verify-blob` outside
+  vmaf and leaves it off. Missing metadata or files refuse the load.
 - **Per-model signing and release integration** (pending,
   [#1246](https://github.com/vidiko/vmafx/issues/1246),
   [#3606](https://github.com/vidiko/vmafx/issues/3606)). All 26 current registry

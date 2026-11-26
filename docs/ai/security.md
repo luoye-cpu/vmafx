@@ -160,9 +160,11 @@ future signed model:
   file, unavailable `cosign` or failed verification fails closed. On Windows
   the verifier returns `-ENOSYS` and the load fails.
 
-Production deployments requiring per-model signatures must provision real
-bundles for their exact model bytes before enabling this flag. SHA-256 pins
-and the other loader checks do not establish a model signer's identity.
+Until per-model signing and release integration lands in
+[#1246](https://github.com/vidiko/vmafx/issues/1246), no model can pass
+`--tiny-model-verify`. A deployment that signs bundles with its own identity
+must run `cosign verify-blob` outside vmaf and leave this flag off. SHA-256
+pins and the other loader checks do not establish a model signer's identity.
 
 ### Release archive coverage
 

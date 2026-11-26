@@ -143,8 +143,10 @@ The loader runs these steps:
 4. Refuse to load on a non-zero exit, a missing `cosign`, a missing
    `sigstore_bundle` field, a missing bundle file or a missing registry entry.
 
-The flag is off by default. Production deployments that require per-model
-verification must first provision real bundles for their exact ONNX bytes.
+The flag is off by default. Until per-model signing and release integration
+lands in [#1246](https://github.com/vidiko/vmafx/issues/1246), no model can
+pass `--tiny-model-verify`. A deployment that signs bundles with its own
+identity must run `cosign verify-blob` outside vmaf and leave this flag off.
 On POSIX hosts, `cosign` must be on `$PATH`; install a prebuilt binary from
 the [Sigstore release page](https://github.com/sigstore/cosign/releases).
 Windows returns `-ENOSYS` and refuses the load. The C entry point is
@@ -167,8 +169,11 @@ At load time libvmaf canonicalises the jail and the requested ONNX path. The
 model must resolve below the jail. Sibling-prefix escapes, symlink escapes,
 missing jail directories, and jail values that point at files fail closed with
 `-EACCES`. The jail and operator allowlist apply to unsigned models too.
-Deployments that also require signer verification must provision real per-model
-bundles before adding `--tiny-model-verify` (see [security.md](security.md)).
+Deployments that also require signer verification must wait for
+[#1246](https://github.com/vidiko/vmafx/issues/1246): until per-model bundles
+ship, no model can pass `--tiny-model-verify`, and a deployment with its own
+signer runs `cosign verify-blob` outside vmaf and leaves the flag off (see
+[security.md](security.md)).
 
 ## What the registry is not
 

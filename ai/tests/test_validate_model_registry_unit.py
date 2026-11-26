@@ -409,6 +409,28 @@ def test_consistency_check_accepts_nested_bundle_path(tmp_path: Path) -> None:
     assert VMR._consistency_check({"models": [row]}, tmp_path) == []
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        False,
+        0,
+        None,
+        [],
+        {},
+        "x\\b.sigstore.json",
+        "C:\\x.sigstore.json",
+        "x\x00.sigstore.json",
+        "./x.sigstore.json",
+        "nested//x.sigstore.json",
+    ],
+)
+def test_consistency_check_rejects_bad_bundle_values(tmp_path: Path, value: Any) -> None:
+    row = _stage_graph(tmp_path, "smoke_v0.onnx", "x", None)
+    row["sigstore_bundle"] = value
+    assert VMR._consistency_check({"models": [row]}, tmp_path)
+
+
 def test_consistency_check_accepts_unsigned_entry(tmp_path: Path) -> None:
     row = _stage_graph(tmp_path, "smoke_v0.onnx", "x", None)
     assert VMR._consistency_check({"models": [row]}, tmp_path) == []
