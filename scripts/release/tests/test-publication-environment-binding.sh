@@ -341,6 +341,56 @@ def validate_attachment(block: str) -> None:
             raise AssertionError(f"supply-chain.yml does not attach {artifact_path}")
 
 
+def _collect_cosign_commands(relative_path: str, text: str) -> list[list[str]]:
+    """Collect one line group per ``cosign verify`` command in an active workflow."""
+    lines = text.splitlines()
+    commands: list[list[str]] = []
+    index = 0
+    while index < len(lines):
+        if re.match(r"^\s+cosign verify \\$", lines[index]):
+            command = [lines[index]]
+            while command[-1].rstrip().endswith("\\"):
+                index += 1
+                if index >= len(lines):
+                    raise AssertionError(f"{relative_path}: truncated cosign verifier")
+                command.append(lines[index])
+            commands.append(command)
+        index += 1
+    return commands
+
+
+def _validate_cosign_verifier(
+    relative_path: str,
+    verifier_index: int,
+    command: list[str],
+    expected_target: str,
+    expected_identity: str,
+    expected_issuer: str,
+) -> None:
+    """Require each verifier to bind identity, issuer and digest in that order."""
+    raw = [line.strip() for line in command]
+    normalized: list[str] = []
+    index = 0
+    while index < len(raw):
+        if raw[index] == "--certificate-identity \\" and index + 1 < len(raw):
+            normalized.append(f"--certificate-identity {raw[index + 1]}")
+            index += 2
+            continue
+        normalized.append(raw[index])
+        index += 1
+    expected_command = [
+        "cosign verify \\",
+        f"--certificate-identity {expected_identity} \\",
+        expected_issuer,
+        expected_target,
+    ]
+    if normalized != expected_command:
+        raise AssertionError(
+            f"{relative_path}: verifier {verifier_index} command drifted; "
+            f"expected {expected_command}, got {normalized}"
+        )
+
+
 def validate_docker_identities(relative_path: str, text: str) -> None:
     if "--certificate-identity-regexp" in text or "@.*" in text:
         raise AssertionError(f"{relative_path}: broad certificate identity remains")
@@ -357,19 +407,7 @@ def validate_docker_identities(relative_path: str, text: str) -> None:
     # carries owner/repo/workflow@ref, so the identity follows a fork running
     # the same workflow instead of naming the upstream repository.
     expected_identity = '"https://github.com/${GITHUB_WORKFLOW_REF}"'
-    lines = text.splitlines()
-    commands: list[list[str]] = []
-    index = 0
-    while index < len(lines):
-        if re.match(r"^\s+cosign verify \\$", lines[index]):
-            command = [lines[index]]
-            while command[-1].rstrip().endswith("\\"):
-                index += 1
-                if index >= len(lines):
-                    raise AssertionError(f"{relative_path}: truncated cosign verifier")
-                command.append(lines[index])
-            commands.append(command)
-        index += 1
+    commands = _collect_cosign_commands(relative_path, text)
 
     expected_targets = VERIFY_TARGETS[Path(relative_path).name]
     if len(commands) != len(expected_targets):
@@ -397,27 +435,14 @@ def validate_docker_identities(relative_path: str, text: str) -> None:
     for verifier_index, (command, expected_target) in enumerate(
         zip(commands, expected_targets, strict=True), start=1
     ):
-        raw = [line.strip() for line in command]
-        normalized: list[str] = []
-        index = 0
-        while index < len(raw):
-            if raw[index] == "--certificate-identity \\" and index + 1 < len(raw):
-                normalized.append(f"--certificate-identity {raw[index + 1]}")
-                index += 2
-                continue
-            normalized.append(raw[index])
-            index += 1
-        expected_command = [
-            "cosign verify \\",
-            f"--certificate-identity {expected_identity} \\",
-            expected_issuer,
+        _validate_cosign_verifier(
+            relative_path,
+            verifier_index,
+            command,
             expected_target,
-        ]
-        if normalized != expected_command:
-            raise AssertionError(
-                f"{relative_path}: verifier {verifier_index} command drifted; "
-                f"expected {expected_command}, got {normalized}"
-            )
+            expected_identity,
+            expected_issuer,
+        )
 
 
 def validate(texts: dict[str, str]) -> None:
@@ -614,11 +639,17 @@ tag_bound_identity[production_path] = tag_bound_identity[production_path].replac
 expect_rejected("a verifier bound to the tag ref", tag_bound_identity)
 
 # A verifier that names a fixed repository fails on every fork that runs it.
+# Plant the fixed slug next to the existing dynamic flag: replacing the flag
+# would also trip the "does not use the executing repository" guard and hide
+# whether the slug detector itself works.
 fixed_repository = deepcopy(texts)
 tester_path = DOCKER_WORKFLOW_PATHS[-1]
 fixed_repository[tester_path] = fixed_repository[tester_path].replace(
-    '-R "${GITHUB_REPOSITORY}"', "-R vidiko/vmafx", 1
+    '-R "${GITHUB_REPOSITORY}"',
+    '-R "${GITHUB_REPOSITORY}" \\\n            -R vidiko/vmafx',
+    1,
 )
+assert '-R "${GITHUB_REPOSITORY}"' in fixed_repository[tester_path]
 assert fixed_repository[tester_path] != texts[tester_path]
 expect_rejected("a verifier hardcoding a fixed repository", fixed_repository)
 
@@ -638,7 +669,9 @@ if len(command_starts) != 3:
     raise AssertionError("identity-clause fixture anchors are absent")
 second_start = command_starts[1]
 second_end = second_start + 1
-while production_lines[second_end - 1].rstrip().endswith("\\"):
+while second_end < len(production_lines) and production_lines[
+    second_end - 1
+].rstrip().endswith("\\"):
     second_end += 1
 second_block = "".join(production_lines[second_start:second_end])
 identity_clause = re.search(
