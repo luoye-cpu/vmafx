@@ -100,7 +100,7 @@ LEVEL_ZERO_FETCHER_CALL_RE = re.compile(
 
 
 PYTHON_RE = re.compile(r'python-version:\s*[\'"]?([0-9]+\.[0-9]+\.[0-9]+)[\'"]?')
-RESOURCE_ARG_RE = re.compile(r"(?m)^ARG\s+VMAF_RESOURCE_COMMIT=([^\s#]+)")
+RESOURCE_ARG_RE = re.compile(r"(?im)^[ \t]*ARG[ \t]+VMAF_RESOURCE_COMMIT=(\S*)")
 RESOURCE_CONFIG_RE = re.compile(r'(?m)^VMAF_RESOURCE_COMMIT="?([^"\s#]+)')
 RESOURCE_RECORD_RE = re.compile(
     r'"source":\s*"https://github\.com/Netflix/vmaf_resource/tree/([0-9a-f]{40})/'

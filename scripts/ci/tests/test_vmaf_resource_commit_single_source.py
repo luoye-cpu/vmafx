@@ -91,6 +91,28 @@ class VmafResourceCommitSingleSource(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("exactly once", problems[0])
 
+    def test_dockerfile_mirror_spellings_are_enforced(self) -> None:
+        cases = {
+            "indented duplicate": (
+                f"ARG VMAF_RESOURCE_COMMIT={WANT}\n" f"  ARG VMAF_RESOURCE_COMMIT={WANT}\n",
+                "exactly once",
+            ),
+            "lowercase duplicate": (
+                f"ARG VMAF_RESOURCE_COMMIT={WANT}\n" f"arg VMAF_RESOURCE_COMMIT={WANT}\n",
+                "exactly once",
+            ),
+            "stale value": (
+                f"ARG VMAF_RESOURCE_COMMIT={WANT}#stale\n",
+                f"{WANT}#stale",
+            ),
+        }
+        for name, (body, expected) in cases.items():
+            with self.subTest(name=name):
+                self.write("docker/Dockerfile.tester", body)
+                problems = CHECK(self.repo, WANT)
+                self.assertEqual(len(problems), 1)
+                self.assertIn(expected, problems[0])
+
     def test_duplicate_config_declaration_fails(self) -> None:
         self.write(
             "build-config.env",
