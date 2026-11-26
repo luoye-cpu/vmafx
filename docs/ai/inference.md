@@ -516,7 +516,7 @@ tiny-AI execution providers.
 
 The two bounds above are strict fp32 bounds, and the gate pins the CUDA EP to
 strict fp32 to meet them. Measured across the 26-model tiny registry on two
-local GPUs ([#2947](https://github.com/VMAFx/vmafx/issues/2947), comment
+local GPUs ([#2947](https://github.com/vidiko/vmafx/issues/2947), comment
 6696661349):
 
 - onnxruntime-gpu 1.31.1 leaves TF32 enabled by default in the CUDA EP. TF32
