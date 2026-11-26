@@ -1,7 +1,7 @@
 <!-- markdownlint-disable MD013 MD025 MD060 -->
 # ADR-3556: Trigger required checks and aggregator on merge-queue merge_group events
 
-- **Status**: Accepted
+- **Status**: Accepted (Superseded-in-part 2026-11-22 by [ADR-3610](3610-queue-fork-admission-reviewed-head.md) for queue admission of fork pull requests)
 - **Date**: 2026-11-16
 - **Deciders**: Project maintainer
 - **Tags**: ci, fork-local

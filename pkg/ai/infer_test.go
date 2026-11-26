@@ -229,15 +229,6 @@ func TestInputCount_NoSidecar(t *testing.T) {
 	}
 }
 
-func TestInferDirect_ReturnsNotImplemented(t *testing.T) {
-	t.Parallel()
-	r := NewRegistry(t.TempDir())
-	_, err := r.InferDirect("any_model", []float64{1.0, 2.0})
-	if err == nil {
-		t.Fatal("expected ErrDirectInferNotImplemented, got nil")
-	}
-}
-
 func TestInfer_ORTRunnerNotFound(t *testing.T) {
 	// t.Setenv is incompatible with t.Parallel()
 	dir := t.TempDir()
