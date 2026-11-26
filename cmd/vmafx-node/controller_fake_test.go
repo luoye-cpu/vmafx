@@ -27,6 +27,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
+	"github.com/jonboulle/clockwork"
+
 	controllerv1 "github.com/VMAFx/vmafx/gen/go/controller"
 )
 
@@ -216,7 +218,7 @@ func startTestClientWith(t *testing.T, cfg controllerConfig, exec jobExecutor, m
 		t.Fatalf("nodeCapability: %v", err)
 	}
 	log := slog.New(slog.DiscardHandler)
-	c := newControllerClient(cfg, controllerv1.NewVmafxControllerClient(conn), exec, capability, log)
+	c := newControllerClient(cfg, controllerv1.NewVmafxControllerClient(conn), exec, capability, log, clockwork.NewRealClock())
 	c.metrics = m
 	c.start()
 	t.Cleanup(func() {

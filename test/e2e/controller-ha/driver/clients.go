@@ -77,6 +77,13 @@ func (c *clients) close() {
 // call runs one controller RPC with a timeout, retrying while the controller
 // is unreachable (a replica that just died, a new one starting).
 func call[T any](ctx context.Context, fn func(context.Context) (T, error)) (T, error) {
+	return callWithClock(ctx, fn, clockwork.NewRealClock())
+}
+
+// callWithClock is call with the retry clock injected for tests.
+func callWithClock[T any](
+	ctx context.Context, fn func(context.Context) (T, error), clk clockwork.Clock,
+) (T, error) {
 	var out T
 	err := retry.Do(ctx, func(ctx context.Context) error {
 		cctx, cancel := context.WithTimeout(ctx, callTimeout)
@@ -93,7 +100,7 @@ func call[T any](ctx context.Context, fn func(context.Context) (T, error)) (T, e
 			code := status.Code(err)
 			return code == codes.Unavailable || code == codes.DeadlineExceeded
 		},
-	}, clockwork.NewRealClock())
+	}, clk)
 	return out, err
 }
 

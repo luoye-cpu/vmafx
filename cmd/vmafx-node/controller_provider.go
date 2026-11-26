@@ -23,6 +23,7 @@ import (
 	"go.uber.org/fx"
 	googlegrpc "google.golang.org/grpc"
 
+	"github.com/golusoris/golusoris/core/clock"
 	"github.com/golusoris/golusoris/core/config"
 	grpcmod "github.com/golusoris/golusoris/grpc"
 
@@ -52,6 +53,7 @@ type controllerClientParams struct {
 	Executor    *Executor
 	Metrics     *nodeMetrics
 	Log         *slog.Logger
+	Clock       clock.Clock
 }
 
 // provideControllerClient builds the controller client when
@@ -80,7 +82,7 @@ func provideControllerClient(p controllerClientParams) (*controllerClient, error
 	if err != nil {
 		return nil, err
 	}
-	client := newControllerClient(cc, controllerv1.NewVmafxControllerClient(conn), p.Executor, capability, p.Log)
+	client := newControllerClient(cc, controllerv1.NewVmafxControllerClient(conn), p.Executor, capability, p.Log, p.Clock)
 	client.metrics = p.Metrics
 	p.Metrics.setSlots(cc.Slots)
 	p.LC.Append(fx.Hook{

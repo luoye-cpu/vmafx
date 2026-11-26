@@ -44,7 +44,6 @@ import (
 
 	"github.com/golusoris/golusoris/core/clock"
 	"github.com/golusoris/golusoris/core/retry"
-	"github.com/jonboulle/clockwork"
 
 	controllerv1 "github.com/VMAFx/vmafx/gen/go/controller"
 )
@@ -97,12 +96,12 @@ type controllerClient struct {
 
 // newControllerClient builds a client; nothing runs until start.
 func newControllerClient(cfg controllerConfig, rpc controllerv1.VmafxControllerClient,
-	exec jobExecutor, capability *controllerv1.NodeCapability, log *slog.Logger,
+	exec jobExecutor, capability *controllerv1.NodeCapability, log *slog.Logger, clk clock.Clock,
 ) *controllerClient {
 	c := &controllerClient{
 		cfg: cfg, rpc: rpc, exec: exec, capability: capability, log: log,
 		sessions: newSessionHolder(), jobs: make(map[string]context.CancelCauseFunc),
-		clk: clockwork.NewRealClock(),
+		clk: clk,
 	}
 	c.pullCtx, c.cancelPull = context.WithCancel(context.Background())
 	c.execCtx, c.cancelExec = context.WithCancel(context.Background())

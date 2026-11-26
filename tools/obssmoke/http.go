@@ -93,6 +93,13 @@ var errPollPending = errors.New("condition not met")
 
 // poll calls check until it reports done, at most pollAttempts times.
 func poll(ctx context.Context, check func(context.Context) (bool, error)) error {
+	return pollWithClock(ctx, check, clockwork.NewRealClock())
+}
+
+// pollWithClock is poll with the retry clock injected for tests.
+func pollWithClock(
+	ctx context.Context, check func(context.Context) (bool, error), clk clockwork.Clock,
+) error {
 	err := retry.Do(ctx, func(ctx context.Context) error {
 		done, err := check(ctx)
 		if done {
@@ -107,7 +114,7 @@ func poll(ctx context.Context, check func(context.Context) (bool, error)) error 
 		Max:         pollInterval,
 		Multiplier:  1,
 		MaxAttempts: pollAttempts,
-	}, clockwork.NewRealClock())
+	}, clk)
 	if err != nil {
 		return fmt.Errorf("poll: %w", err)
 	}

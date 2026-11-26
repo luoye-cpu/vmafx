@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -23,6 +24,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+
+	"github.com/jonboulle/clockwork"
 
 	grpcmod "github.com/golusoris/golusoris/grpc"
 
@@ -131,6 +134,131 @@ func TestControllerClient_ReregistersAfterPullRefused(t *testing.T) {
 	}
 	if got := f.callCount("RegisterNode"); got < 2 {
 		t.Fatalf("RegisterNode calls = %d, want a second registration", got)
+	}
+}
+
+// reportClient returns a started-session client on a fake clock without
+// launching the pull/heartbeat loops, so report() can be driven directly.
+func reportClient(t *testing.T, f *fakeController, clk clockwork.Clock) *controllerClient {
+	t.Helper()
+	conn, err := googlegrpc.NewClient(serveFake(t, f), googlegrpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial fake controller: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	capability, err := nodeCapability("cpu", 1)
+	if err != nil {
+		t.Fatalf("nodeCapability: %v", err)
+	}
+	resp, err := f.RegisterNode(context.Background(), &controllerv1.RegisterNodeRequest{Name: "test-node"})
+	if err != nil {
+		t.Fatalf("RegisterNode: %v", err)
+	}
+	c := newControllerClient(testControllerConfig(""), controllerv1.NewVmafxControllerClient(conn),
+		fakeExecutor{fn: func(context.Context, *controllerv1.Job) ExecuteResult { return ExecuteResult{} }},
+		capability, slog.New(slog.DiscardHandler), clk)
+	c.sessions.set(resp.GetNodeId(), resp.GetSessionToken())
+	return c
+}
+
+// TestControllerClient_ReportExhaustsAtMaxAttempts: eight retryable failures
+// stop at maxReportAttempts.
+func TestControllerClient_ReportExhaustsAtMaxAttempts(t *testing.T) {
+	t.Parallel()
+	f := newFakeController()
+	f.onReport = func(int) error { return status.Error(codes.Internal, "storage down") }
+	clk := clockwork.NewFakeClock()
+	c := reportClient(t, f, clk)
+	done := make(chan struct{})
+	go func() {
+		c.report("job-exhaust", ExecuteResult{Score: 1})
+		close(done)
+	}()
+	for want := 1; want < maxReportAttempts; want++ {
+		waitReportCalls(t, f, want)
+		if err := clk.BlockUntilContext(context.Background(), 1); err != nil {
+			t.Fatalf("waiting for report timer %d: %v", want, err)
+		}
+		clk.Advance(reportRetryMax)
+	}
+	waitReportCalls(t, f, maxReportAttempts)
+	<-done
+	if got := f.callCount("ReportResult"); got != maxReportAttempts {
+		t.Fatalf("ReportResult calls = %d, want %d", got, maxReportAttempts)
+	}
+}
+
+// TestControllerClient_ReportDeliversOnLastAttempt: seven failures then success
+// are all used, and the result is delivered on attempt eight.
+func TestControllerClient_ReportDeliversOnLastAttempt(t *testing.T) {
+	t.Parallel()
+	f := newFakeController()
+	f.onReport = func(call int) error {
+		if call < maxReportAttempts {
+			return status.Error(codes.Internal, "storage down")
+		}
+		return nil
+	}
+	clk := clockwork.NewFakeClock()
+	c := reportClient(t, f, clk)
+	done := make(chan struct{})
+	go func() {
+		c.report("job-last", ExecuteResult{Score: 2})
+		close(done)
+	}()
+	for want := 1; want < maxReportAttempts; want++ {
+		waitReportCalls(t, f, want)
+		if err := clk.BlockUntilContext(context.Background(), 1); err != nil {
+			t.Fatalf("waiting for report timer %d: %v", want, err)
+		}
+		clk.Advance(reportRetryMax)
+	}
+	waitReportCalls(t, f, maxReportAttempts)
+	<-done
+	if got := f.callCount("ReportResult"); got != maxReportAttempts {
+		t.Fatalf("ReportResult calls = %d, want %d", got, maxReportAttempts)
+	}
+	if r := awaitReport(t, f, time.Second); r.GetJobId() != "job-last" {
+		t.Fatalf("delivered job %q, want job-last", r.GetJobId())
+	}
+}
+
+// TestControllerClient_ReportStopDuringWait: stopping the node during the retry
+// wait makes no further call and does not wait out the timer.
+func TestControllerClient_ReportStopDuringWait(t *testing.T) {
+	t.Parallel()
+	f := newFakeController()
+	f.onReport = func(int) error { return status.Error(codes.Internal, "storage down") }
+	clk := clockwork.NewFakeClock()
+	c := reportClient(t, f, clk)
+	done := make(chan struct{})
+	go func() {
+		c.report("job-stop", ExecuteResult{Score: 3})
+		close(done)
+	}()
+	waitReportCalls(t, f, 1)
+	if err := clk.BlockUntilContext(context.Background(), 1); err != nil {
+		t.Fatalf("waiting for report timer: %v", err)
+	}
+	c.cancelKeep()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("report did not stop during the retry wait")
+	}
+	if got := f.callCount("ReportResult"); got != 1 {
+		t.Fatalf("ReportResult calls = %d, want 1", got)
+	}
+}
+
+func waitReportCalls(t *testing.T, f *fakeController, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for f.callCount("ReportResult") < want && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := f.callCount("ReportResult"); got != want {
+		t.Fatalf("ReportResult calls = %d, want %d", got, want)
 	}
 }
 
