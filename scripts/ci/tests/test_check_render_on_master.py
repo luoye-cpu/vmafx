@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from scripts.ci import ci_expressions as gx  # noqa: E402
+from scripts.lib.scratch_program import remove_tree  # noqa: E402
 
 CHECK = Path(
     os.environ.get("CHECK_RENDER_SCRIPT") or ROOT / "scripts" / "ci" / "check_render_on_master.py"
@@ -156,7 +157,7 @@ class RenderOnMasterTest(unittest.TestCase):
         self.assert_status(self.check(), 1, "is not the render of its fragments")
 
     def test_no_render_commit_fails(self) -> None:
-        shutil.rmtree(self.repo / ".git")
+        remove_tree(self.repo / ".git")
         (self.repo / "CHANGELOG.md").unlink()
         self.git("init", "-q", "-b", "master")
         self.commit({"Makefile": MAKEFILE, "changelog.d/fixed/a.md": "- fixed a\n"}, age_h=1)
