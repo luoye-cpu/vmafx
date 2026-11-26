@@ -471,3 +471,6 @@ expired or idle items fail. Add an entry, never an ignore. Tests:
   (ADR-0752); intentional perf changes must regenerate baseline
   in same PR. Schema_version drift in baseline file requires
   updating `_index_runs()` in `check-regression.py` in lockstep.
+  [ADR-3611](../docs/adr/3611-measurement-non-success-states.md):
+  cell not compared = named state (missing/failed/skipped/incomparable),
+  exit 3; `--advisory` masks exit 1 only.
