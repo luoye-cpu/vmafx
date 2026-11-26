@@ -344,8 +344,8 @@ def validate_attachment(block: str) -> None:
 def validate_docker_identities(relative_path: str, text: str) -> None:
     if "--certificate-identity-regexp" in text or "@.*" in text:
         raise AssertionError(f"{relative_path}: broad certificate identity remains")
-    if "-R VMAFx/vmafx" in text:
-        raise AssertionError(f"{relative_path}: attestation verifier hardcodes the upstream slug")
+    if re.search(r"""(?:-R|--repo)(?:=|\s+)["']?[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+""", text):
+        raise AssertionError(f"{relative_path}: attestation verifier hardcodes a repository slug")
     if (
         Path(relative_path).name == "docker-publish-tester.yml"
         and '-R "${GITHUB_REPOSITORY}"' not in text
@@ -607,11 +607,20 @@ expect_rejected("the vmafx PyPI job outside pypi-publish", wrong_pypi_environmen
 tag_bound_identity = deepcopy(texts)
 tag_bound_identity[production_path] = tag_bound_identity[production_path].replace(
     expected_identity,
-    '"https://github.com/VMAFx/vmafx/.github/workflows/'
+    '"https://github.com/vidiko/vmafx/.github/workflows/'
     'docker-publish-production.yml@refs/tags/${PUBLISH_TAG}"',
     1,
 )
 expect_rejected("a verifier bound to the tag ref", tag_bound_identity)
+
+# A verifier that names a fixed repository fails on every fork that runs it.
+fixed_repository = deepcopy(texts)
+tester_path = DOCKER_WORKFLOW_PATHS[-1]
+fixed_repository[tester_path] = fixed_repository[tester_path].replace(
+    '-R "${GITHUB_REPOSITORY}"', "-R vidiko/vmafx", 1
+)
+assert fixed_repository[tester_path] != texts[tester_path]
+expect_rejected("a verifier hardcoding a fixed repository", fixed_repository)
 
 # The identity is the same string in every verifier, so swapping two of them
 # would be a no-op. Plant the defect the per-command comparison exists for:
