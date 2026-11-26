@@ -21,8 +21,17 @@ import yaml  # type: ignore[import-untyped]
 
 ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = ROOT / ".github" / "workflows" / "standards-gate.yml"
+BUILD_CONFIG = ROOT / "build-config.env"
 JOB_ID = "verify-all"
 SHA_PIN = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+
+
+def config_value(key: str) -> str:
+    """Read a shell assignment from build-config.env."""
+    for line in BUILD_CONFIG.read_text(encoding="utf-8").splitlines():
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip().strip('"')
+    raise AssertionError(f"{key} is not in build-config.env")
 
 
 def load() -> dict[str, Any]:
@@ -66,7 +75,7 @@ class VerifyAllPullRequestJob(unittest.TestCase):
             s for s in steps if s.get("name") == "Run make verify-all and publish its log"
         )
         self.assertEqual(go["with"]["go-version-file"], "go.mod")
-        self.assertEqual(node["with"]["node-version"], "26.13.1")
+        self.assertEqual(node["with"]["node-version"], config_value("NODE_VERSION"))
         self.assertEqual(
             node["with"]["cache-dependency-path"], "tools/markdownlint/package-lock.json"
         )
@@ -95,10 +104,17 @@ class VerifyAllPullRequestJob(unittest.TestCase):
         skip = step("No governance gate owed — verify-all skipped")
         self.assertEqual(skip["if"], "steps.filter.outputs.run_audit != 'true'")
         self.assertIn("only private session state changed", skip["run"])
+        self.assertIn("GITHUB_STEP_SUMMARY", skip["run"])
+        self.assertIn("make verify-all did not run", skip["run"])
 
     def test_it_runs_the_local_gate_and_keeps_its_log(self) -> None:
         verify = step("Run make verify-all and publish its log")
         run = verify["run"]
+        self.assertEqual(verify["env"]["HEAD_SHA"], "${{ github.event.pull_request.head.sha }}")
+        self.assertIn('if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then', run)
+        self.assertIn("printf 'head=%s\\n' \"$HEAD_SHA\"", run)
+        self.assertIn('echo "- head: \\`$HEAD_SHA\\`"', run)
+        self.assertNotIn("$GITHUB_SHA", run)
         self.assertIn("set -o pipefail", run)
         self.assertIn('make verify-all 2>&1 | tee "$log"', run)
         self.assertIn('statuses=("${PIPESTATUS[@]}")', run)
@@ -116,8 +132,9 @@ class VerifyAllPullRequestJob(unittest.TestCase):
         self.assertEqual(len(uploads), 2)
         for upload in uploads:
             self.assertIn("always()", upload["if"])
+            self.assertIn("steps.verify.outcome != 'skipped'", upload["if"])
             self.assertEqual(upload["with"]["name"], "verify-all")
-            self.assertEqual(upload["with"]["if-no-files-found"], "ignore")
+            self.assertEqual(upload["with"]["if-no-files-found"], "error")
             paths = upload["with"]["path"]
             self.assertIn("verify-all/verify-all.log", paths)
             self.assertIn("verify-all/verify-all-receipt.txt", paths)

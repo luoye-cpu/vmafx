@@ -269,15 +269,27 @@ jobs:
       - name: No governance gate owed — verify-all skipped
         if: steps.filter.outputs.run_audit != 'true'
         run: |
-          echo "::notice::make verify-all skipped: ci filter reports run_audit=false, which means only private session state changed; Standards, Docs, and the normal PR gates still report."
+          message="make verify-all did not run: ci filter reports run_audit=false, which means only private session state changed; Standards, Docs, and the normal PR gates still report."
+          echo "::notice::$message"
+          {
+            echo "### make verify-all"
+            echo ""
+            echo "$message"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run make verify-all and publish its log
         id: verify
         if: steps.filter.outputs.run_audit == 'true'
         shell: bash
         timeout-minutes: 25
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -o pipefail
+          if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "::error::checked-out commit $(git rev-parse HEAD) does not match the pull request head $HEAD_SHA"
+            exit 2
+          fi
           out="$RUNNER_TEMP/verify-all"
           mkdir -p "$out"
           log="$out/verify-all.log"
@@ -297,7 +309,7 @@ jobs:
           lines=$(wc -l < "$log")
           {
             printf 'command=%s\n' "make verify-all"
-            printf 'head=%s\n' "$GITHUB_SHA"
+            printf 'head=%s\n' "$HEAD_SHA"
             printf 'exit_code=%s\n' "$status"
             printf 'log_sha256=%s\n' "$sha"
             printf 'log_lines=%s\n' "$lines"
@@ -306,7 +318,7 @@ jobs:
           {
             echo "### make verify-all"
             echo ""
-            echo "- head: \`$GITHUB_SHA\`"
+            echo "- head: \`$HEAD_SHA\`"
             echo "- exit: \`$status\`"
             echo "- log: \`verify-all.log\` (sha256 \`$sha\`, $lines lines)"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -314,23 +326,23 @@ jobs:
           exit "$status"
 
       - name: Upload verify-all log
-        if: ${{ (always()) && env.GITEA_ACTIONS != 'true' }}
+        if: ${{ (always()) && steps.verify.outcome != 'skipped' && env.GITEA_ACTIONS != 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: verify-all
           path: |
             ${{ runner.temp }}/verify-all/verify-all.log
             ${{ runner.temp }}/verify-all/verify-all-receipt.txt
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14
 
       - name: Upload verify-all log (Gitea)
-        if: ${{ (always()) && env.GITEA_ACTIONS == 'true' }}
+        if: ${{ (always()) && steps.verify.outcome != 'skipped' && env.GITEA_ACTIONS == 'true' }}
         uses: actions/upload-artifact@c6a366c94c3e0affe28c06c8df20a878f24da3cf  # v3.2.2
         with:
           name: verify-all
           path: |
             ${{ runner.temp }}/verify-all/verify-all.log
             ${{ runner.temp }}/verify-all/verify-all-receipt.txt
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14
