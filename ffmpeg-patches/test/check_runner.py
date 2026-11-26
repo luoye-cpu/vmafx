@@ -13,6 +13,11 @@ from typing import Sequence
 TIMEOUT_SECONDS = 600
 
 
+def ordinary_rejection(result: subprocess.CompletedProcess[str]) -> bool:
+    """A deliberate non-zero exit, not a timeout, launch failure or signal death."""
+    return result.returncode > 0 and result.returncode not in (124, 127)
+
+
 def run(args: argparse.Namespace, cmd: Sequence[str]) -> subprocess.CompletedProcess[str]:
     """Run the binary under test, turning launch and timeout failures into rows.
 

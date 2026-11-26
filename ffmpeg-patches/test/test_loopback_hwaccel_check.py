@@ -83,6 +83,8 @@ if value("-hwaccel_output_format").startswith("no-such"):
     )
 
 if value("-hwaccel_device").startswith("/no/such"):
+    if not os.environ.get("STUB_GPU"):
+        raise SystemExit(1)
     if os.environ.get("STUB_BAD_DEVICE_SIGNAL"):
         sys.stderr.write("Device creation failed: -2.\\n")
         os.kill(os.getpid(), 11)
@@ -101,7 +103,9 @@ if "hwdownload" in value("-filter_complex"):
         raise SystemExit(int(os.environ["STUB_HWDOWNLOAD_RC"]))
     fail(text)
 
-frames = os.environ.get("STUB_LOOPBACK_FRAMES", "6")
+frames = os.environ.get(
+    "STUB_GPU_FRAMES" if value("-hwaccel") else "STUB_LOOPBACK_FRAMES", "6"
+)
 sys.stderr.write("frame=    6 fps=0.0 q=-1.0 size=N/A time=00:00:00.24 bitrate=N/A\\n")
 sys.stderr.write(f"Output stream #1:0 (video): {frames} frames encoded; {frames} packets muxed\\n")
 raise SystemExit(0)
@@ -156,6 +160,7 @@ class LoopbackHwaccelCheckTest(unittest.TestCase):
         self.assertIn("SKIP gpu branch", result.stdout)
         self.assertIn("software loopback round trip decodes 6 frames", result.stdout)
         self.assertNotIn("evidence=none", result.stdout)
+        self.assertNotIn("loopback refuses a bogus -hwaccel_device", result.stdout)
 
     def test_version_failure_reports_no_evidence(self) -> None:
         result = self.run_checker(env={"STUB_VERSION_FAIL": "1"})
@@ -247,6 +252,14 @@ class LoopbackHwaccelCheckTest(unittest.TestCase):
         self.assertIn("ok   gpu round trip (-hwaccel cuda)", result.stdout)
         self.assertIn("ok   loopback refuses a bogus -hwaccel_device", result.stdout)
         self.assertIn("gpu=cuda ok", result.stdout)
+
+    def test_gpu_round_trip_frame_mismatch_is_a_fail(self) -> None:
+        result = self.run_checker(
+            None, "--require-gpu", env={"STUB_GPU": "1", "STUB_GPU_FRAMES": "5"}
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL gpu round trip (-hwaccel cuda)", result.stdout)
+        self.assertIn("frames=5, want=6", result.stdout)
 
     def test_bogus_device_needs_the_device_diagnostic(self) -> None:
         env = {"STUB_GPU": "1", "STUB_BAD_DEVICE_TEXT": "Error opening output file"}

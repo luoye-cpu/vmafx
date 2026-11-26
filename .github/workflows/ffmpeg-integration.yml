@@ -223,7 +223,9 @@ jobs:
           # the proof the check RAN — an absent GPU must read as a visible
           # skip, never as a silent pass. Cat the summary even when the
           # checker failed: set -e must not hide the failing rows.
-          cat "$summary" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ -f "$summary" ]; then
+            cat "$summary" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           exit "$check_rc"
 
   # Build-only: FFmpeg with SYCL patch (no GPU hardware on runners)

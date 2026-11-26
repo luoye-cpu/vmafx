@@ -52,6 +52,7 @@ svt_build="${RUNNER_TEMP:?RUNNER_TEMP is not set}/svt-av1-build"
 svt_src="$svt_build/SVT-AV1"
 trap 'rm -rf "$svt_build"' EXIT
 
+. "$repo_root/scripts/lib/drop-git-env.sh"
 timeout 300 git clone --depth=1 --branch "v${SVTAV1_VERSION}" \
   https://gitlab.com/AOMediaCodec/SVT-AV1.git "$svt_src"
 svt_head="$(git -C "$svt_src" rev-parse HEAD)"

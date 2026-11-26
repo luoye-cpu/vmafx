@@ -53,10 +53,18 @@ if "-encoders" in args:
 codec = value("-c:v")
 if codec == "libx264":
     if "aq-mode=0" in args:
-        fail("aq-mode=0 is incompatible with the qpfile offsets")
+        if os.environ.get("STUB_NOAQ_SIGNAL"):
+            sys.stderr.write("aq-mode=0 is incompatible with the qpfile offsets\\n")
+            os.kill(os.getpid(), 11)
+        if not os.environ.get("STUB_NOAQ_OK"):
+            fail("aq-mode=0 is incompatible with the qpfile offsets")
     qp = value("-qpfile")
     if qp and len(qpfile_offsets(qp)) > 36:
-        fail("the qpfile grid does not match the macroblocks")
+        if os.environ.get("STUB_GRID_SIGNAL"):
+            sys.stderr.write("the qpfile grid does not match the macroblocks\\n")
+            os.kill(os.getpid(), 11)
+        if not os.environ.get("STUB_GRID_OK"):
+            fail("the qpfile grid does not match the macroblocks")
     out = pathlib.Path(args[-1])
     if qp:
         text = pathlib.Path(qp).read_text(encoding="utf-8")
@@ -141,3 +149,18 @@ class QpfileStrictModeTest(unittest.TestCase):
         result = self.run_checker(env={"STUB_ENCODERS": "libx264,libaom-av1"})
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("FAIL required encoder missing: libsvtav1", result.stdout)
+
+    def test_accepted_bad_grid_is_a_fail(self) -> None:
+        result = self.run_checker(env={"STUB_GRID_OK": "1"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL x264 refuses a grid that does not fit the video", result.stdout)
+
+    def test_accepted_aq_mode_zero_is_a_fail(self) -> None:
+        result = self.run_checker(env={"STUB_NOAQ_OK": "1"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL x264 refuses aq-mode=0", result.stdout)
+
+    def test_diagnostic_then_signal_death_is_a_fail(self) -> None:
+        result = self.run_checker(env={"STUB_GRID_SIGNAL": "1"})
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("FAIL x264 refuses a grid that does not fit the video", result.stdout)

@@ -669,15 +669,17 @@
     },
     {
       "customType": "regex",
-      "description": "SVT-AV1 encoder version in dev/Containerfile. Built from source via git clone of gitlab.com/AOMediaCodec/SVT-AV1 at a tagged release. See ADR-0605.",
+      "description": "SVT-AV1 encoder version in build-config.env and the container files. Built from source via git clone of gitlab.com/AOMediaCodec/SVT-AV1 at a tagged release; the commit is the peeled tag. See ADR-0605.",
       "managerFilePatterns": [
+        "/^build-config\\.env$/",
         "/^dev/Containerfile$/",
         "/^docker/Dockerfile\\.node$/",
         "/^Dockerfile$/",
         "/^Dockerfile\\.ffmpeg$/"
       ],
       "matchStrings": [
-        "ARG SVTAV1_VERSION=(?<currentValue>[0-9.]+)"
+        "ARG SVTAV1_VERSION=(?<currentValue>[0-9.]+)",
+        "SVTAV1_VERSION=\"(?<currentValue>[0-9.]+)\"\\nSVTAV1_COMMIT=\"(?<currentDigest>[a-f0-9]{40})\""
       ],
       "datasourceTemplate": "gitlab-tags",
       "depNameTemplate": "AOMediaCodec/SVT-AV1",

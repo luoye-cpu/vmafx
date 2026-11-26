@@ -46,7 +46,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from check_runner import run
+from check_runner import ordinary_rejection, run
 
 ROOT = Path(__file__).resolve().parents[2]
 WIDTH, HEIGHT, FRAMES = 576, 324, 6
@@ -181,11 +181,6 @@ def prepare_clip(
     return enc
 
 
-def _ordinary_rejection(result: subprocess.CompletedProcess[str]) -> bool:
-    """A deliberate non-zero exit, not a timeout, launch failure or signal death."""
-    return result.returncode > 0 and result.returncode not in (124, 127)
-
-
 def check_refused_option(
     args: argparse.Namespace,
     enc: Path,
@@ -197,7 +192,7 @@ def check_refused_option(
     result = run(args, loopback_cmd(args.ffmpeg, enc, hw, "[dec:0]copy[f]"))
     rows.append(
         (
-            "ok" if _ordinary_rejection(result) and needle in result.stderr else "FAIL",
+            "ok" if ordinary_rejection(result) and needle in result.stderr else "FAIL",
             label,
             result.stderr[-300:],
         )
@@ -208,7 +203,7 @@ def check_hwdownload(args: argparse.Namespace, enc: Path, rows: list[tuple[str, 
     hwdown = run(args, loopback_cmd(args.ffmpeg, enc, [], "[dec:0]hwdownload[f]"))
     rows.append(
         (
-            "ok" if _ordinary_rejection(hwdown) and NEEDLE_HWDOWNLOAD in hwdown.stderr else "FAIL",
+            "ok" if ordinary_rejection(hwdown) and NEEDLE_HWDOWNLOAD in hwdown.stderr else "FAIL",
             "software loopback frames are refused by hwdownload",
             hwdown.stderr[-300:],
         )
@@ -358,10 +353,10 @@ def check_bad_device(args: argparse.Namespace, enc: Path, rows: list[tuple[str, 
 def check_gpu_branch(
     args: argparse.Namespace, enc: Path, rows: list[tuple[str, str, str]], sw_frames: int
 ) -> str:
-    check_bad_device(args, enc, rows)
     state = probe_gpu_device(args, rows)
     if state != "ok":
         return state
+    check_bad_device(args, enc, rows)
     check_gpu_round_trip(args, enc, rows, sw_frames)
     return "ok"
 

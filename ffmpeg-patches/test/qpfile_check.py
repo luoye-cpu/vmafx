@@ -38,7 +38,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from check_runner import run
+from check_runner import ordinary_rejection, run
 
 ROOT = Path(__file__).resolve().parents[2]
 SKIP = 77
@@ -112,7 +112,7 @@ def x264_checks(args: argparse.Namespace, tmp: Path, source: Path) -> list[tuple
     results.append(
         (
             "x264 refuses a grid that does not fit the video",
-            bad.returncode != 0 and "macroblocks" in bad.stderr,
+            ordinary_rejection(bad) and "macroblocks" in bad.stderr,
             bad.stderr[-300:],
         )
     )
@@ -127,7 +127,7 @@ def x264_checks(args: argparse.Namespace, tmp: Path, source: Path) -> list[tuple
     results.append(
         (
             "x264 refuses aq-mode=0",
-            noaq.returncode != 0 and "aq-mode" in noaq.stderr,
+            ordinary_rejection(noaq) and "aq-mode" in noaq.stderr,
             noaq.stderr[-300:],
         )
     )
@@ -188,7 +188,7 @@ def libaom_checks(
         if ok_pred:
             passed = run_.returncode == 0 and "qpfile=" in run_.stderr and size > 0
         else:
-            passed = run_.returncode != 0 and needle in run_.stderr
+            passed = ordinary_rejection(run_) and needle in run_.stderr
         results.append((label, passed, run_.stderr[-300:]))
     return results
 
