@@ -2127,7 +2127,11 @@ def stamp_lock(
     root: Path, manifest: dict[str, Any], entry: dict[str, Any], generated: Path
 ) -> None:
     output = entry["output"]
-    lines = _read_lock(generated).splitlines()
+    try:
+        raw_text = _read_lock(generated)
+    except UnicodeError as error:
+        raise ContractError(f"{output}: generated lock is not UTF-8: {error}") from error
+    lines = raw_text.splitlines()
     while lines and lines[0].startswith("#"):
         lines.pop(0)
     body = "\n".join(lines).lstrip("\n")
@@ -2143,6 +2147,9 @@ def stamp_lock(
     stamped = (header + body + "\n").encode("utf-8")
     if len(stamped) > MAX_LOCK_BYTES:
         raise ContractError(f"{output}: lock exceeds {MAX_LOCK_BYTES} bytes")
+    stamped_text = stamped.decode("utf-8")
+    if problems := _validate_lock_requirements(stamped_text, output):
+        raise ContractError("; ".join(problems[:3]))
     destination = root / output
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".tmp")

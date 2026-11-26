@@ -551,6 +551,7 @@ TOOLING_INPUT = "requirements/locks/tooling-tests.in"
 LOCK_MANIFEST = "requirements/locks/manifest.json"
 UV_GROUP = "uv (lock generator, all managers)"
 UV_SELECTOR_FINDING = "uv manager selector must be the exact anchored manifest path"
+MAX_IGNORE_PATHS = 1024
 
 
 def uv_lock_generator_manager(config: dict[str, Any]) -> dict[str, Any] | None:
@@ -581,12 +582,36 @@ def _uv_manifest_finding(manager: dict[str, Any], manifest_text: str, version: s
     return None
 
 
+def _manager_enabled_by_list(config: dict[str, Any], manager: str) -> bool:
+    """Mirror Renovate getEnabledManagersList (Renovate main 208cd854196d,
+    lib/modules/manager/index.ts:146-156): an absent or empty enabledManagers
+    enables all managers; a non-empty list enables only the listed ones."""
+    enabled_managers = config.get("enabledManagers")
+    return not enabled_managers or manager in enabled_managers
+
+
+def _is_ignored_by_renovate(path: str, ignore_paths: list[str]) -> bool:
+    """Mirror Renovate ignorePaths matching (Renovate main 208cd854196d,
+    lib/workers/repository/extract/file-match.ts:32-35): substring or glob."""
+    if len(ignore_paths) > MAX_IGNORE_PATHS:
+        return True
+    # fnmatchcase stands in for minimatch(..., {dot: true}); its * also matches /,
+    # which errs toward reporting a file ignored (fail closed).
+    return any(
+        pattern in path or fnmatch.fnmatchcase(path, pattern)
+        for pattern in ignore_paths[:MAX_IGNORE_PATHS]
+    )
+
+
 def _uv_group_finding(
     config: dict[str, Any], update_type: str, manifest_version: str, pip_version: str
-) -> str | None:
+) -> list[str]:
+    """Check manager enablement (Renovate main 208cd854196d,
+    lib/modules/manager/index.ts:146-156) and shared uv group precedence."""
     rules = config["packageRules"]
     shared = {index for index, rule in enumerate(rules) if rule.get("groupName") == UV_GROUP}
     matches = {}
+    disabled: list[str] = []
     for manager, path, version in (
         ("pip_requirements", TOOLING_INPUT, pip_version),
         ("custom.regex", LOCK_MANIFEST, manifest_version),
@@ -607,19 +632,23 @@ def _uv_group_finding(
         enabled = config.get(manager, {}).get("enabled", True)
         for index in indices:
             enabled = rules[index].get("enabled", enabled)
-        if not enabled or manager not in config.get("enabledManagers", (manager,)):
-            return f"{path}: {manager} uv ({update_type}) disabled"
+        if not enabled or not _manager_enabled_by_list(config, manager):
+            disabled.append(f"{path}: {manager} uv ({update_type}) disabled")
         shared.intersection_update(indices)
         matches[manager] = indices
+    if disabled:
+        return disabled
     if not shared:
-        return f"uv ({update_type}): missing shared {UV_GROUP!r} rule"
+        return [f"uv ({update_type}): missing shared {UV_GROUP!r} rule"]
     group_index = min(shared)
     for manager, indices in matches.items():
         for index in indices:
             group = rules[index].get("groupName", UV_GROUP)
             if index > group_index and group != UV_GROUP:
-                return f"uv ({update_type}): later {manager} rule overrides the uv group with {group!r}"
-    return None
+                return [
+                    f"uv ({update_type}): later {manager} rule overrides the uv group with {group!r}"
+                ]
+    return []
 
 
 def uv_lock_generator_findings(config: dict[str, Any], read: Callable[[str], str]) -> list[str]:
@@ -640,12 +669,10 @@ def uv_lock_generator_findings(config: dict[str, Any], read: Callable[[str], str
     if not any(re.search(pattern[1:-1], TOOLING_INPUT) for pattern in patterns):
         errors.append(f"{TOOLING_INPUT}: outside pip_requirements file patterns")
     for path in (TOOLING_INPUT, LOCK_MANIFEST):
-        if any(fnmatch.fnmatchcase(path, pattern) for pattern in config["ignorePaths"]):
+        if _is_ignored_by_renovate(path, config["ignorePaths"]):
             errors.append(f"{path}: ignored by Renovate")
     for update_type in ("patch", "minor", "major"):
-        group_finding = _uv_group_finding(config, update_type, version, pins[0])
-        if group_finding is not None:
-            errors.append(group_finding)
+        errors.extend(_uv_group_finding(config, update_type, version, pins[0]))
     return errors
 
 
@@ -712,6 +739,10 @@ class UvLockGeneratorGroup(unittest.TestCase):
     def test_uv_managers_must_be_enabled(self) -> None:
         pip_disabled = f"{TOOLING_INPUT}: pip_requirements uv (patch) disabled"
         manifest_disabled = f"{LOCK_MANIFEST}: custom.regex uv (patch) disabled"
+        self.assertEqual(self.findings(lambda cfg: cfg.update(enabledManagers=[])), [])
+        npm_findings = self.findings(lambda cfg: cfg.update(enabledManagers=["npm"]))
+        self.assertIn(pip_disabled, npm_findings)
+        self.assertIn(manifest_disabled, npm_findings)
         self.assertIn(
             pip_disabled, self.findings(lambda cfg: cfg.update(enabledManagers=["custom.regex"]))
         )
@@ -743,10 +774,16 @@ class UvLockGeneratorGroup(unittest.TestCase):
         )
 
     def test_ignored_uv_manifest_fails(self) -> None:
-        def ignore(config: dict[str, Any]) -> None:
+        def ignore_exact(config: dict[str, Any]) -> None:
             config["ignorePaths"].append(LOCK_MANIFEST)
 
-        self.assertIn(f"{LOCK_MANIFEST}: ignored by Renovate", self.findings(ignore))
+        def ignore_substring(config: dict[str, Any]) -> None:
+            config["ignorePaths"] = ["requirements/locks"]
+
+        self.assertIn(f"{LOCK_MANIFEST}: ignored by Renovate", self.findings(ignore_exact))
+        substring_findings = self.findings(ignore_substring)
+        self.assertIn(f"{LOCK_MANIFEST}: ignored by Renovate", substring_findings)
+        self.assertIn(f"{TOOLING_INPUT}: ignored by Renovate", substring_findings)
 
     def test_manifest_allows_space_before_colon(self) -> None:
         self.assertEqual(self.findings(files={LOCK_MANIFEST: '{"uv_version" : "0.13.6"}'}), [])

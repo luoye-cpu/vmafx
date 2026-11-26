@@ -19,13 +19,17 @@ lock file with its source files and compilation arguments using a reviewed,
 pinned
 version of `uv` (`uv_version` in `requirements/locks/manifest.json`).
 `check`, `bootstrap-uv`, and `write` reject a manifest input whose `uv` pin differs from
-`uv_version`. Renovate groups the `requirements/locks/tooling-tests.in` pin and
-`uv_version` through the
+`uv_version` (`test_check_rejects_manifest_only_bump` and
+`test_check_rejects_tooling_input_only_bump` for `check`,
+`test_mismatched_input_refused_before_uv_runs` for `bootstrap-uv`, and
+`test_write_rejects_mismatch_before_running_uv` for `write` in
+`scripts/ci/tests/test_python_dependency_locks.py`). Renovate keeps both files visible
+and groups the `requirements/locks/tooling-tests.in` pin with `uv_version` through the
 `uv (lock generator, all managers)` group in `renovate.json`, guarded by
 `test_checked_in_config_owns_uv_pins` in `scripts/ci/tests/test_renovate_file_patterns.py`.
-Renovate’s `minimumGroupSize` only postpones creation of a new branch, and the
-`check` hook rejects a pull request that changes just one pin, as covered by
-`test_check_rejects_manifest_only_bump` and `test_check_rejects_tooling_input_only_bump`.
+Renovate’s `minimumGroupSize` threshold (`test_uv_group_requires_both_updates`) only
+postpones creation of a new branch, so the `check` hook still rejects a pull request that
+changes just one pin.
 
 The checker recognizes `uv` by its case-insensitive, PEP 503-normalized package
 name. It checks `==` and `===` pins with optional extras, whitespace, and

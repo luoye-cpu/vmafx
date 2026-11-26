@@ -2682,6 +2682,67 @@ class UvBootstrapTests(unittest.TestCase):
                     self.checker.write(self.root, sys.executable)
                 self.assertEqual(lock.read_bytes(), original)
 
+    def test_write_preserves_lock_on_hash_limit_refusal(self) -> None:
+        self.installed.return_value = self.version
+        limit = self.checker.MAX_HASHES_PER_REQUIREMENT
+        self.compiled = f"uv=={self.version}" + f" {self.digest}" * limit + "\n"
+        self.assertEqual(self.checker.write(self.root, sys.executable), 0)
+        lock = self.root / "tooling-lock.txt"
+        temporary = lock.with_suffix(lock.suffix + ".tmp")
+        original = lock.read_bytes()
+        self.assertIn(f" {self.digest}" * limit, lock.read_text(encoding="utf-8"))
+        self.compiled = f"uv=={self.version}" + f" {self.digest}" * (limit + 1) + "\n"
+        with self.assertRaisesRegex(
+            self.checker.ContractError, rf"^tooling-lock\.txt:\d+: exceeds {limit} hash options$"
+        ):
+            self.checker.write(self.root, sys.executable)
+        self.assertEqual(lock.read_bytes(), original)
+        self.assertFalse(temporary.exists())
+
+    def test_write_preserves_lock_on_requirement_validation_refusal(self) -> None:
+        self.installed.return_value = self.version
+        lock = self.root / "tooling-lock.txt"
+        temporary = lock.with_suffix(lock.suffix + ".tmp")
+        with mock.patch.object(self.checker, "MAX_REQUIREMENTS_LINES", 5):
+            self.assertEqual(self.checker.write(self.root, sys.executable), 0)
+            original = lock.read_bytes()
+            self.compiled = f"uv=={self.version} \\\n  {self.digest}\n"
+            with self.assertRaisesRegex(
+                self.checker.ContractError, r"^tooling-lock\.txt: exceeds 5 physical lines$"
+            ):
+                self.checker.write(self.root, sys.executable)
+            self.assertEqual(lock.read_bytes(), original)
+            self.assertFalse(temporary.exists())
+        self.compiled = f"uv=={self.version}\n"
+        with self.assertRaisesRegex(
+            self.checker.ContractError,
+            r"^tooling-lock\.txt:5: dependency has no sha256 artifact hash$",
+        ):
+            self.checker.write(self.root, sys.executable)
+        self.assertEqual(lock.read_bytes(), original)
+        self.assertFalse(temporary.exists())
+
+    def test_write_preserves_lock_on_non_utf8_generated_lock(self) -> None:
+        self.installed.return_value = self.version
+        self.assertEqual(self.checker.write(self.root, sys.executable), 0)
+        lock = self.root / "tooling-lock.txt"
+        temporary = lock.with_suffix(lock.suffix + ".tmp")
+        original = lock.read_bytes()
+
+        def write_non_utf8(
+            binary: str, args: list[str], *, cwd: Path
+        ) -> subprocess.CompletedProcess[str]:
+            Path(args[args.index("-o") + 1]).write_bytes(b"uv==0.12.18\xff\n")
+            return subprocess.CompletedProcess([binary, *args], 0, "", "")
+
+        self.run_uv.side_effect = write_non_utf8
+        with self.assertRaisesRegex(
+            self.checker.ContractError, r"^tooling-lock\.txt: generated lock is not UTF-8: "
+        ):
+            self.checker.write(self.root, sys.executable)
+        self.assertEqual(lock.read_bytes(), original)
+        self.assertFalse(temporary.exists())
+
     def test_multiline_uv_hash_is_accepted(self) -> None:
         """Boundary: recognize uv's backslash-continued artifact hashes."""
         self.compiled = f"uv=={self.version} \\\n    {self.digest}\n"
