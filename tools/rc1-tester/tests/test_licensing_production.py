@@ -451,15 +451,15 @@ def test_the_images_that_link_zimg_from_source_keep_their_own_record() -> None:
 
 
 def test_the_recorded_zimg_source_package_is_the_one_the_record_names() -> None:
-    """Issue #3396: one file holds the expected source RPM and the manifest cites it."""
+    """Issue #3396: the manifest text is derived from the one source-RPM record."""
     recorded = zimg.recorded_source_rpm(_IMAGE / "zimg-source-rpm.txt")
-    assert recorded == "zimg-3.0.6-1.el8.src.rpm"
+    expected = recorded.removesuffix(".src.rpm").replace("zimg-", "zimg ", 1)
     component = next(
         c
         for c in lic.load_manifest()["artifacts"]["release-native"]["components"]
         if c["id"] == "zimg"
     )
-    assert "zimg 3.0.6-1.el8" in component["source"]
+    assert expected in component["source"]
 
 
 def rpm_runner(returncode: int, stdout: str, stderr: str = "") -> zimg.Runner:
@@ -546,11 +546,15 @@ def test_an_rpm_query_exceeding_its_bounds_is_refused(
 
 
 def test_the_build_stages_zimg_only_from_the_recorded_package() -> None:
-    """`stage_zimg` runs the same check before it copies the library."""
+    """`stage_zimg` resolves the SONAME link, checks that target, and copies it."""
     script = (REPO / "scripts" / "release" / "build-native-release-artifacts.sh").read_text()
+    assert 'resolved_path="$(readlink -f -- "$resolved_path")"' in script
     assert 'python3 "$ZIMG_SOURCE_PACKAGE" --library "$resolved_path"' in script
+    assert script.index('resolved_path="$(readlink -f -- "$resolved_path")"') < script.index(
+        'python3 "$ZIMG_SOURCE_PACKAGE" --library "$resolved_path"'
+    )
     assert script.index('--library "$resolved_path"') < script.index(
-        'cp -L -- "$resolved_path" "artifacts/$zimg_soname"'
+        'cp -- "$resolved_path" "artifacts/$zimg_soname"'
     )
 
 

@@ -141,11 +141,17 @@ stage_zimg() {
     echo "ERROR: libvmafx needs $zimg_soname but the loader cannot resolve it" >&2
     return 1
   fi
+  # rpm does not follow a symlink in the file name, so query and copy the same
+  # resolved file rather than a link that ldconfig may repoint.
+  if ! resolved_path="$(readlink -f -- "$resolved_path")" || [[ -z "$resolved_path" ]]; then
+    echo "ERROR: cannot resolve $zimg_soname to the file the loader uses" >&2
+    return 1
+  fi
   if ! python3 "$ZIMG_SOURCE_PACKAGE" --library "$resolved_path"; then
     echo "ERROR: refusing to stage $resolved_path: its package is not the recorded zimg source package" >&2
     return 1
   fi
-  cp -L -- "$resolved_path" "artifacts/$zimg_soname"
+  cp -- "$resolved_path" "artifacts/$zimg_soname"
 }
 
 stage_libvmaf_chain() {

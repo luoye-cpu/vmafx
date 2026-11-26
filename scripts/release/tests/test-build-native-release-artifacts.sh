@@ -112,6 +112,11 @@ printf '%s\n' "$4" >>"$STUB_RPM_LOG"
 case "${STUB_RPM_MODE:-ok}" in
   ok) cat tools/rc1-tester/image/zimg-source-rpm.txt ;;
   mismatch) printf '%s\n' 'zimg-fixture-other.src.rpm' ;;
+  link-target)
+    # The SONAME link is owned by the recorded package, but the loader now
+    # points it at a different target; stage_zimg must query the target.
+    printf '%s\n' 'zimg-fixture-other.src.rpm'
+    ;;
   query-fail)
     printf '%s\n' 'rpm stub: package ownership unavailable' >&2
     exit 1
@@ -377,13 +382,13 @@ check 'container build with zimg exits 0' expect_status 0 "$zimg" "$marker" 3.2.
 unset STUB_MESON_MODE
 check 'stages libzimg.so.2 as a regular non-empty file' regular_nonempty "$zimg/artifacts/libzimg.so.2"
 check "staged libvmafx has RUNPATH exactly $origin" runpath_is "$zimg/artifacts/libvmafx.so.1" "$origin"
-check 'rpm queries the libzimg resolved by the loader' grep -qxF \
-  "$zimg/build/fakezimg/libzimg.so.2" "$zimg/rpm.log"
+check 'rpm queries the resolved libzimg target, not the SONAME link' grep -qxF \
+  "$zimg/build/fakezimg/libzimg.so.2.0.0" "$zimg/rpm.log"
 check 'staged libzimg is the queried library byte for byte' cmp -s \
-  "$zimg/build/fakezimg/libzimg.so.2" "$zimg/artifacts/libzimg.so.2"
+  "$zimg/build/fakezimg/libzimg.so.2.0.0" "$zimg/artifacts/libzimg.so.2"
 
 # --- negative: source-package mismatch and a failed ownership query ---
-for rpm_mode in mismatch query-fail; do
+for rpm_mode in mismatch query-fail link-target; do
   refused_zimg="$scratch/zimg-$rpm_mode"
   new_repo "$refused_zimg"
   export STUB_MESON_MODE=zimg STUB_RPM_MODE="$rpm_mode"
@@ -391,6 +396,12 @@ for rpm_mode in mismatch query-fail; do
   unset STUB_MESON_MODE STUB_RPM_MODE
   if [[ "$rpm_mode" == mismatch ]]; then
     check 'source mismatch names the measured and recorded packages' grep -qF \
+      "comes from zimg-fixture-other.src.rpm, but the licence record names $(<"$refused_zimg/tools/rc1-tester/image/zimg-source-rpm.txt")" \
+      "$refused_zimg/run.log"
+  elif [[ "$rpm_mode" == link-target ]]; then
+    check 'rpm queries the symlink target, not the SONAME link' grep -qxF \
+      "$refused_zimg/build/fakezimg/libzimg.so.2.0.0" "$refused_zimg/rpm.log"
+    check 'a target from another package is refused' grep -qF \
       "comes from zimg-fixture-other.src.rpm, but the licence record names $(<"$refused_zimg/tools/rc1-tester/image/zimg-source-rpm.txt")" \
       "$refused_zimg/run.log"
   else
