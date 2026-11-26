@@ -9,9 +9,9 @@
 // for Prometheus instrumentation.
 //
 // ADR-0703: vmafx-server Go gRPC + HTTP service.
-// ADR-0933: ScoreStream bidirectional RPC (schema and the Phase 2 streaming
-// implementation both live here: frame scores streamed per session, then one
-// aggregate).
+// ADR-0933: ScoreStream bidirectional RPC (the Phase 2 streaming
+// implementation lives here: frame scores streamed per session, then one
+// aggregate; the schema is in proto/vmafx/v1/vmafx.proto).
 
 //go:build cgo
 

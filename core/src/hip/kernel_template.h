@@ -19,8 +19,8 @@
  *  `vmaf_hip_kernel_readback_alloc/_free`,
  *  `vmaf_hip_kernel_submit_pre_launch`,
  *  `vmaf_hip_kernel_collect_wait` are declared here and defined in
- *  `core/src/hip/kernel_template.c`; since the T7-10b batch-4 runtime
- *  promotion (ADR-0377) the bodies make real HIP calls. Consumers
+ *  `core/src/hip/kernel_template.c`; since the T7-10b runtime
+ *  PR (ADR-0212) the bodies make real HIP calls. Consumers
  *  call them through the same call-graph the CUDA reference uses.
  *
  *  Why a paired .c instead of inline `static inline` helpers like the
@@ -37,8 +37,8 @@
  *       one TU and every consumer on stable signatures, so a body
  *       change does not recompile every consumer TU.
  *
- *  The T7-10b batch-4 runtime promotion (ADR-0377) replaced the
- *  -ENOSYS bodies with real HIP calls; the struct shape and
+ *  The T7-10b runtime PR (ADR-0212; ADR-0241 for the stubs it replaced)
+ *  replaced the -ENOSYS bodies with real HIP calls; the struct shape and
  *  helper signatures stayed verbatim — that's the load-bearing
  *  contract the first-consumer PR pinned.
  *
@@ -114,7 +114,8 @@ int vmaf_hip_kernel_lifecycle_init(VmafHipKernelLifecycle *lc, VmafHipContext *c
 /*
  * Allocate a (device, pinned-host) readback pair of `bytes` size.
  * The implementation uses `hipMalloc` + `hipHostMalloc`; a failed
- * allocation frees whatever it acquired and leaves `rb` zeroed.
+ * allocation frees whatever it acquired and leaves `device` and
+ * `host_pinned` NULL.
  * `bytes` must be greater than zero.
  *
  * Returns 0 on success or a negative errno.

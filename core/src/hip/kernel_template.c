@@ -2,8 +2,8 @@
  *  Copyright 2026 Lusoris
  *  SPDX-License-Identifier: EUPL-1.2
  *
- *  HIP kernel-template helper bodies for the landed T7-10b batch-4
- *  runtime promotion (ADR-0377).
+ *  HIP kernel-template helper bodies for the landed T7-10b runtime
+ *  PR (ADR-0212).
  *
  *  The audit-first `-ENOSYS` stubs (ADR-0241) are replaced by real
  *  ROCm HIP runtime calls. The helpers mirror

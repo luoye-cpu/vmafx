@@ -15,9 +15,9 @@ extern "C" {
 
 /*
  * Created by ADR-0361 / T8-1 (mirrors the HIP creation, ADR-0212);
- * common.c, picture_metal.c, dispatch_strategy.c, kernel_template.c and
- * feature/metal/<feature>_metal.c are the live Metal runtime (MetalCpp
- * wrapper, see ADR-0361).
+ * common.mm, picture_metal.mm, picture_import.mm, kernel_template.mm and
+ * dispatch_strategy.c are the live Metal runtime (Objective-C++ with ARC,
+ * ADR-0420), and feature/metal/<feature>_metal.mm are the feature hosts.
  */
 
 typedef struct VmafMetalContext VmafMetalContext;
