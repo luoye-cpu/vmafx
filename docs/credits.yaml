@@ -135,7 +135,7 @@ entries:
   note: luoye-cpu wrote the unit tests for the two-leg near-duplicate spot check and its fail-closed cases, in PR 3444.
 - id: contribution-luoye-cpu-shell-completions-man
   name: luoye-cpu's shell completion and man page emitters
-  url: https://github.com/VMAFx/vmafx/pull/3464
+  url: https://github.com/vidiko/vmafx/pull/3464
   kind: code
   relation: used-by-CI
   license: EUPL-1.2
