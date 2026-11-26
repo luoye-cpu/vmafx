@@ -7,7 +7,10 @@ from __future__ import annotations
 import difflib
 import importlib.util
 import io
+import os
+import re
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -24,6 +27,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.lib.safe_subprocess import run as run_command  # noqa: E402
 
 SCRIPT = ROOT / "scripts/ci/check_gitea_artifact_steps.py"
+WRITE_PREFLIGHT_READS = 3
 
 
 def load_checker_module():
@@ -648,12 +652,13 @@ class GiteaArtifactCheckTests(unittest.TestCase):
             with self.subTest(fixture=fixture.splitlines()[1]):
                 self.run_check(fixture, "--write")
                 first = self.path.read_text(encoding="utf-8")
-                result = subprocess.run(  # noqa: S603 -- fixed interpreter and script argv
+                result = run_command(
                     [sys.executable, str(SCRIPT), "--write", str(self.path)],
+                    allowed_executables=(sys.executable,),
                     capture_output=True,
                     text=True,
                     check=False,
-                    timeout=120,
+                    timeout_seconds=120,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(self.path.read_text(encoding="utf-8"), first)
@@ -766,6 +771,60 @@ jobs:
         self.assertEqual(self.path.read_text(encoding="utf-8"), original)
         self.assertEqual(list(self.path.parent.glob(f".{self.path.name}.*.tmp")), [])
 
+    def test_write_refuses_a_concurrent_edit(self) -> None:
+        module = load_checker_module()
+        original = textwrap.dedent(UNGUARDED)
+        self.path.write_text(original, encoding="utf-8")
+        real_read = Path.read_text
+        reads = 0
+
+        def read_text(path: Path, *args: object, **kwargs: object) -> str:
+            nonlocal reads
+            reads += 1
+            if reads >= WRITE_PREFLIGHT_READS:
+                return original + "# edited by another process\n"
+            return real_read(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "read_text", read_text):
+            self.assertFalse(module.write_file(self.path))
+        self.assertEqual(self.path.read_text(encoding="utf-8"), original)
+
+    def test_write_refuses_max_steps_without_touching_the_file(self) -> None:
+        module = load_checker_module()
+        self.path.write_text(textwrap.dedent(UNGUARDED), encoding="utf-8")
+        old = module.MAX_STEPS
+        module.MAX_STEPS = 1
+        try:
+            self.assertFalse(module.write_file(self.path))
+        finally:
+            module.MAX_STEPS = old
+        self.assertEqual(self.path.read_text(encoding="utf-8"), textwrap.dedent(UNGUARDED))
+
+    @unittest.skipIf(os.name == "nt", "Windows does not preserve POSIX execute bits")
+    def test_write_keeps_the_file_mode(self) -> None:
+        module = load_checker_module()
+        self.path.write_text(textwrap.dedent(UNGUARDED), encoding="utf-8")
+        mode = self.path.stat().st_mode
+        self.path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        before = stat.S_IMODE(self.path.stat().st_mode)
+        self.assertTrue(module.write_file(self.path))
+        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), before)
+
+    def test_malformed_yaml_reports_location_and_continues(self) -> None:
+        module = load_checker_module()
+        bad = self.path
+        bad.write_text(
+            "name: Bad\njobs:\n  build:\n    runs-on: [ubuntu-latest\n",
+            encoding="utf-8",
+        )
+        good = self.path.parent / "good.yml"
+        good.write_text(textwrap.dedent(GOOD), encoding="utf-8")
+        stdout = io.StringIO()
+        with mock.patch("sys.stdout", new=stdout):
+            self.assertEqual(module.main([str(bad), str(good)]), 1)
+        output = stdout.getvalue()
+        self.assertRegex(output, re.escape(str(bad)) + r":\d+:\d+: invalid YAML")
+
     def test_twin_comparison_keeps_yaml_1_2_yes_as_a_string(self) -> None:
         text = UNGUARDED.replace(
             "          path: build/log.txt",
@@ -802,6 +861,7 @@ jobs:
         parser.width = 1000
         parser.indent(mapping=2, sequence=4, offset=2)
         replayed = 0
+        skipped = set()
         for path in module.find_files(ROOT):
             original = path.read_text(encoding="utf-8")
             document = parser.load(original)
@@ -810,6 +870,7 @@ jobs:
             parser.dump(document, stream)
             if stream.getvalue() != original:
                 # The writer refuses these files; they need a manual edit.
+                skipped.add(path.name)
                 continue
             starts = find_twin_start_lines(module, document)
             if not starts:
@@ -832,6 +893,7 @@ jobs:
                     self.assertEqual(candidate.read_text(encoding="utf-8"), original, path)
                     replayed += 1
         self.assertGreater(replayed, 0)
+        self.assertEqual(skipped, {"supply-chain.yml"})
 
 
 if __name__ == "__main__":

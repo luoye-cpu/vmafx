@@ -94,7 +94,9 @@ area: tidy
   `parse_diagnostics()`, `scan_nolints()` all drop paths under build dir
   (`build_dir_prefix()` / `is_build_product()`) -> in-tree `build/` and
   out-of-tree `$RUNNER_TEMP` measure same set. Baselines = checked-in paths
-  only; `build*/` key in any baseline = stale measurement.
+  only; `build*/` key in any baseline = stale measurement. Before this rule
+  nightly in-tree `build/` saw `build/src/*.json.c: warnings 0 -> 2` x18 (run
+  36308945712) against out-of-tree cpu baseline.
 - **arm64 lane = cross lane (ADR-1283).** Build dir configured with
   `build-aux/aarch64-linux-gnu.ini` + `aarch64-linux-gnu-qemu-user.ini`
   (Ubuntu 26.04: `qemu-aarch64` only, no `qemu-aarch64-static`; meson's
@@ -127,8 +129,8 @@ area: tidy
 - Promoted clang-tidy checks (`-warnings-as-errors`) remain counted debt. Only
   recognized promotion exit/summary may bypass nonzero-tool-exit guard;
   parse/compile failures still invalidate that measurement. Reports retain
-  `measured_sources` and `compile_failures`, so partial output is never a
-  successful scan.
+  actual `measured_sources` and `compile_failures` so partial/error output
+  never presented as successful whole-tree scan.
 - ADR-1113's Pelorus mirror and ADR-1276's manifest-owned boundary are outside
   native-lint ownership.
   `pelorus-mirror-paths.txt` is single exact-path exemption set consumed by

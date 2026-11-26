@@ -2,7 +2,7 @@
 # Research-3052: Gitea artifact writer round-trip invariants
 
 Companion digest for [ADR-3628](../adr/3628-gitea-artifact-writer-fail-closed.md)
-and [issue #3052](https://github.com/VMAFx/vmafx/issues/3052). It records why
+and [issue #3052](https://github.com/vidiko/vmafx/issues/3052). It records why
 `scripts/ci/check_gitea_artifact_steps.py` uses ruamel.yaml round-trip mode
 and which failure modes the later hardening had to close.
 

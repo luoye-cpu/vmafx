@@ -51,7 +51,7 @@ from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
-from ruamel.yaml.error import StringMark
+from ruamel.yaml.error import StringMark, YAMLError
 from ruamel.yaml.scalarstring import LiteralScalarString
 from ruamel.yaml.tokens import CommentToken
 
@@ -196,9 +196,21 @@ def _load_yaml(text: str) -> Any:
     return _yaml().load(text)
 
 
+def _yaml_error(path: Path, err: YAMLError) -> str:
+    """A finding that names the file and the YAML problem location."""
+    mark = getattr(err, "problem_mark", None)
+    problem = getattr(err, "problem", None) or str(err)
+    if mark is not None:
+        return f"{path}:{mark.line + 1}:{mark.column + 1}: invalid YAML: {problem}"
+    return f"{path}: invalid YAML: {problem}"
+
+
 def check_file(path: Path) -> list[str]:
     """Findings for one workflow or composite action."""
-    doc = _load_yaml(path.read_text(encoding="utf-8"))
+    try:
+        doc = _load_yaml(path.read_text(encoding="utf-8"))
+    except YAMLError as err:
+        return [_yaml_error(path, err)]
     if not isinstance(doc, dict):
         return []
     if isinstance(doc.get("runs"), dict):
@@ -450,10 +462,10 @@ def _atomic_write(path: Path, text: str) -> None:
         tmp.unlink(missing_ok=True)
 
 
-def write_file(path: Path) -> bool:
-    """Add the guard and the Gitea twin to every v4+ step in ``path`` that lacks them."""
+def _prepare_write(path: Path) -> tuple[str, str, YAML, Any] | None:
+    """Preflight a writable document; ``None`` means refuse without editing."""
     if not check_file(path):
-        return False
+        return None
     text = path.read_text(encoding="utf-8")
     prefix, body = _document_prefix(text)
     yaml = _yaml(round_trip=True, explicit_start=body.startswith("---"))
@@ -465,7 +477,12 @@ def write_file(path: Path) -> bool:
             f"{path}: round-trip without edits is not byte-identical; refusing to rewrite",
             file=sys.stderr,
         )
-        return False
+        return None
+    return prefix, text, yaml, doc
+
+
+def _add_gitea_paths(path: Path, doc: Any) -> bool:
+    """Add missing guards and twins in place; ``False`` means no change or refusal."""
     changed = False
     v4_count = 0
     for steps in _step_lists(doc):
@@ -497,11 +514,11 @@ def write_file(path: Path) -> bool:
                     indent = getattr(getattr(step, "lc", None), "col", 8) - 2
                     _attach_trailing_post(steps[idx + 1], trailing, max(indent, 0))
             idx += 2 if inserted else 1
-    if not changed:
-        return False
-    stream = io.StringIO()
-    yaml.dump(doc, stream)
-    output = prefix + stream.getvalue()
+    return changed
+
+
+def _commit_write(path: Path, text: str, output: str) -> bool:
+    """Write only when the source still matches the bytes that were read."""
     if path.read_text(encoding="utf-8") != text:
         print(
             f"{path}: changed while being written; refusing to overwrite a concurrent edit",
@@ -510,6 +527,19 @@ def write_file(path: Path) -> bool:
         return False
     _atomic_write(path, output)
     return True
+
+
+def write_file(path: Path) -> bool:
+    """Add the guard and the Gitea twin to every v4+ step in ``path`` that lacks them."""
+    prepared = _prepare_write(path)
+    if prepared is None:
+        return False
+    prefix, text, yaml, doc = prepared
+    if not _add_gitea_paths(path, doc):
+        return False
+    stream = io.StringIO()
+    yaml.dump(doc, stream)
+    return _commit_write(path, text, prefix + stream.getvalue())
 
 
 def main(argv: list[str] | None = None) -> int:

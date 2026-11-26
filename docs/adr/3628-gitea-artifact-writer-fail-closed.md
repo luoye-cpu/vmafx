@@ -67,7 +67,7 @@ round-trip unchanged is refused, and the caller reports the refusal.
 
 ## References
 
-- [Issue #3052](https://github.com/VMAFx/vmafx/issues/3052), [PR #3669](https://github.com/VMAFx/vmafx/pull/3669).
+- [Issue #3052](https://github.com/vidiko/vmafx/issues/3052), [PR #3669](https://github.com/vidiko/vmafx/pull/3669).
 - [Research-3052](../research/3052-gitea-artifact-writer.md).
 - [ADR-0108](0108-deep-dive-deliverables-rule.md) (deep-dive deliverables).
 - `scripts/ci/tests/test_check_gitea_artifact_steps.py` covers the byte gate,
