@@ -289,6 +289,7 @@ class RoutingContract(unittest.TestCase):
         narrow = set(config["selectors"]["docker_image_inputs"]["patterns"])
         for path in (
             "python/requirements-lock.txt",
+            "requirements/locks/build.txt",
             "requirements/locks/package-build.txt",
             "scripts/ci/trivy-linux-libc-dev.rego",
             "scripts/ci/fixtures/trivy-linux-libc-dev-policy-report.json",

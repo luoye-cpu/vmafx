@@ -22,7 +22,6 @@ import datetime
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -38,6 +37,7 @@ from scripts.ci.required_aggregator_harness import (
     _embedded_script,
     _required_names,
 )
+from scripts.lib.safe_subprocess import run as run_command
 
 ROOT = Path(__file__).resolve().parents[3]
 CONFIG = ROOT / ".github" / "ci-tier.json"
@@ -319,12 +319,14 @@ def gpu_leg_decision(contract: Contract, leg_tier: str, tier_full: str) -> str:
         output = Path(directory) / "github_output"
         output.touch()
         env = {"LEG_TIER": leg_tier, "TIER_FULL": tier_full, "GITHUB_OUTPUT": str(output)}
-        subprocess.run(  # noqa: S603 -- resolved bash, the workflow's own step script
+        run_command(
             [bash, "-c", str(step["run"])],
+            allowed_executables=(bash,),
             env=env,
             check=True,
             capture_output=True,
-            timeout=SHELL_TIMEOUT_S,
+            text=True,
+            timeout_seconds=SHELL_TIMEOUT_S,
         )
         return output.read_text(encoding="utf-8").strip()
 
@@ -363,12 +365,14 @@ def dev_container_pick(contract: Contract, full: str, broad: str, narrow: str) -
         output = Path(directory) / "github_output"
         output.touch()
         env = {"FULL": full, "BROAD": broad, "NARROW": narrow, "GITHUB_OUTPUT": str(output)}
-        done = subprocess.run(  # noqa: S603 -- resolved bash, the workflow's own step script
+        done = run_command(
             [bash, "-c", str(_dev_container_pick(contract)["run"])],
+            allowed_executables=(bash,),
             env=env,
             check=False,
             capture_output=True,
-            timeout=SHELL_TIMEOUT_S,
+            text=True,
+            timeout_seconds=SHELL_TIMEOUT_S,
         )
         return done.returncode, output.read_text(encoding="utf-8")
 
@@ -421,12 +425,14 @@ def docker_image_pick(contract: Contract, full: str, broad: str, narrow: str) ->
         output = Path(directory) / "github_output"
         output.touch()
         env = {"FULL": full, "BROAD": broad, "NARROW": narrow, "GITHUB_OUTPUT": str(output)}
-        done = subprocess.run(  # noqa: S603 -- resolved bash, the workflow's own step script
+        done = run_command(
             [bash, "-c", str(_docker_image_pick(contract)["run"])],
+            allowed_executables=(bash,),
             env=env,
             check=False,
             capture_output=True,
-            timeout=SHELL_TIMEOUT_S,
+            text=True,
+            timeout_seconds=SHELL_TIMEOUT_S,
         )
         return done.returncode, output.read_text(encoding="utf-8")
 

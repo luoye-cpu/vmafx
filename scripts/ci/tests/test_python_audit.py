@@ -79,7 +79,11 @@ class Exceptions(unittest.TestCase):
     def test_missing_or_wrong_schema_version_is_refused(self) -> None:
         directory = Path(tempfile.mkdtemp(prefix="pip-audit-"))
         self.addCleanup(shutil.rmtree, directory)
-        for payload in ({"exceptions": []}, {"schema_version": 2, "exceptions": []}):
+        payloads: tuple[dict[str, object], ...] = (
+            {"exceptions": []},
+            {"schema_version": 2, "exceptions": []},
+        )
+        for payload in payloads:
             with self.subTest(payload=payload):
                 path = directory / "ignore.json"
                 path.write_text(json.dumps(payload), encoding="utf-8")
