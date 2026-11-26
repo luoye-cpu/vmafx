@@ -229,6 +229,18 @@ non-empty changed path list includes at least one live exception in
 Co-authored-by: vmafx-release-bot[bot] <340976456+vmafx-release-bot[bot]@users.noreply.github.com>
 ```
 
+A second landed-mode case strips that same single line when the commit author is
+the release bot itself (name `vmafx-release-bot[bot]`, lowercased email
+`340976456+vmafx-release-bot[bot]@users.noreply.github.com`), with no path
+condition, because the generated-docs render commit 800122efd8 (#3613), the first
+that landed through the merge queue, is authored by the release bot and its
+squash commit names it again as co-author
+([ADR-3624](../adr/3624-landed-release-bot-self-coauthor.md)). A second self
+line or a bot or coding-tool co-author (a `BANNED_COAUTHOR_TOKENS` match,
+`[bot]` included) is still refused; a human co-author line passes, as on any
+other commit. The line on a commit by another author is still refused unless
+the Renovate exemption above or the Python lock refresh class below applies.
+
 The Python lock refresh class ([ADR-3560](../adr/3560-python-lock-refresh.md))
 permits a signed release-bot commit with the exact refresh subject when every
 changed path has a live entry among the 30 exact paths in
@@ -314,6 +326,12 @@ The Python lock refresh class ([ADR-3560](../adr/3560-python-lock-refresh.md))
 also strips that exact line under the same author and single-line conditions
 when the squash paths and merged pull request satisfy the Python lock refresh
 conditions above.
+
+When the commit author is `vmafx-release-bot[bot]` itself (lowercased email
+`340976456+vmafx-release-bot[bot]@users.noreply.github.com`), `--landed` also
+strips one exact `RELEASE_BOT_COAUTHOR` line with no path condition
+([ADR-3624](../adr/3624-landed-release-bot-self-coauthor.md), detailed under
+[Exemptions](#exemptions) above).
 
 The check examines non-merge commits in the range `BASE_SHA..HEAD_SHA`. If
 the base SHA is all zeros (initial push) or not an ancestor-reachable commit,

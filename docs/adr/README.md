@@ -1569,4 +1569,9 @@ public authority; documentation never links into either local root.
 | [ADR-3568](3568-windows-sycl-tester-zip-oneapi-2026-2.md) | Share oneAPI 2026.2 across Windows SYCL CI and the tester zip | Accepted | ci, windows, sycl, build |
 | [ADR-3609](3609-keep-apt-cache-sweep.md) | Keep the apt archive cache script | Accepted | ci, supply-chain |
 | [ADR-3559](3559-upstream-push-gate.md) | Require offline upstream pre-push checks and recorded self-review, sharing the sweep Git runner and attribution policy | Accepted | upstream, process, tooling, testing |
-| [ADR-3556](3556-merge-queue-merge-group.md) | Trigger Required Checks Aggregator and feeding workflows on merge_group for the master merge queue, exempting Scorecard gates and keeping publish steps off merge_group | Accepted | ci, fork-local |
+| [ADR-3556](3556-merge-queue-merge-group.md) | Trigger Required Checks Aggregator and feeding workflows on merge_group for the master merge queue, exempting Scorecard gates and keeping publish steps off merge_group | Accepted (Superseded-in-part by [ADR-3610](3610-queue-fork-admission-reviewed-head.md)) | ci, fork-local |
+| [ADR-3557](3557-aggregator-same-head-queue.md) | Queue same-head pull-request runs on merge-gate workflows | Accepted | ci, fork-local |
+| [ADR-3610](3610-queue-fork-admission-reviewed-head.md) | Admit fork pull requests to the merge queue at the reviewed head through `merge_train_guard.py admit-fork` and `queue-audit` | Accepted | ci, fork-local |
+| [ADR-3611](3611-measurement-non-success-states.md) | Report measurement cells and wrapper runs that were not compared as non-success | Accepted | perf, bench, testing |
+| [ADR-3625](3625-heavy-job-link-profile.md) | Heavy CI job link profiles | Accepted | ci, build |
+| [ADR-3624](3624-landed-release-bot-self-coauthor.md) | Strip the release bot's own co-author line on landed commits | Accepted | ci |

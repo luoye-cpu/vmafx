@@ -209,4 +209,13 @@ To support pure sdists (e.g. `mkdocs-minify-plugin` dependencies) securely:
   `core/include/libvmaf/version.h.in` remain fully gated.
 - **Renovate configuration**: `renovate.json` proposes updates against the
   source inputs (`.in`, `pyproject.toml`, `docs/requirements.txt`) and ignores
-  compiled lock files.
+  compiled lock files. Exact `additional_dependencies` pins in Python
+  pre-commit hooks for packages in `requirements/locks/tooling-tests.txt`
+  mirror that lock, so a `pre-commit-python` rule in `renovate.json` disables
+  Renovate's pre-commit manager for them and leaves updates to lock refreshes.
+  `test_renovate_skips_lock_tied_hook_pins` in
+  `scripts/ci/test_git_fixture_isolation.py` enforces this rule. Until the
+  lock writer moves these pins (issue 3656), a pull request that moves a
+  lock-tied version must update the matching hook pins in
+  `.pre-commit-config.yaml` in the same pull request, or
+  `test_renovate_skips_lock_tied_hook_pins` fails.
