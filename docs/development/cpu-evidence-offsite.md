@@ -15,7 +15,7 @@ the runners lack) is still to come, and the AVX-512 dispatch has run only on
 one real Zen 5 machine, so a report from real silicon sharpens the RC7 CPU
 capability source of truth
 ([ADR-1490](../adr/1490-rc3-rc9-candidate-map-cpu-capability.md),
-[#1885](https://github.com/VMAFx/vmafx/issues/1885)) and blocks nothing.
+[#1885](https://github.com/vidiko/vmafx/issues/1885)) and blocks nothing.
 
 ## Linux, server-class x86: the tester container
 
@@ -24,10 +24,10 @@ scalar code and against baked references, with no network and no write access
 (tester guide [section B](../usage/tester-image.md#b-container-image)):
 
 ```sh
-docker pull ghcr.io/vmafx/vmafx:<VERSION>-tester
+docker pull ghcr.io/vidiko/vmafx:<VERSION>-tester
 docker run --rm --network none --read-only --cap-drop ALL \
   --security-opt no-new-privileges --tmpfs /tmp \
-  ghcr.io/vmafx/vmafx:<VERSION>-tester > report.json
+  ghcr.io/vidiko/vmafx:<VERSION>-tester > report.json
 ```
 
 ## Native Windows, x64 or Arm64: the tester zip
@@ -61,7 +61,7 @@ arm64 image there on its own):
 ```sh
 docker run --rm --network none --read-only --cap-drop ALL \
   --security-opt no-new-privileges --tmpfs /tmp \
-  ghcr.io/vmafx/vmafx:<VERSION>-tester > report-container.json
+  ghcr.io/vidiko/vmafx:<VERSION>-tester > report-container.json
 ```
 
 `<VERSION>` here is the image tag the maintainers publish (the `git describe`
@@ -76,7 +76,7 @@ Reports land under `docs/hardware-reports/`; the run prints the complete
 repository path to use (`file name for a pull request: ...`). Use the printed
 value as-is; do not add the directory or `.json` suffix again. Open a pull
 request with it, or use the
-[hardware report form](https://github.com/VMAFx/vmafx/issues/new?template=hardware_report.yml)
+[hardware report form](https://github.com/vidiko/vmafx/issues/new?template=hardware_report.yml)
 without one — both are spelled out in
 [Send the report and get credit](../usage/tester-image.md#send-the-report-and-get-credit),
 and the [hardware reports page](../hardware-reports/index.md) lists every
