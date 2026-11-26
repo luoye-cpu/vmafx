@@ -8,7 +8,7 @@ area: release
 <!-- markdownlint-disable MD013 MD060 -->
 # Release build provenance assets (ADR-3316)
 
-OpenSSF Scorecard Signed-Releases check (scorecard v5.6.0) evaluates signature
+OpenSSF Scorecard Signed-Releases check (scorecard v5.7.0) evaluates signature
 assets (.sigstore.json) to 8, in-toto build provenance (*.intoto.jsonl) to 10.
 Every release-publishing workflow writes normalized single-line in-toto SLSA
 attestation bundle and uploads it:

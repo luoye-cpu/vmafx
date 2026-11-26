@@ -120,6 +120,17 @@
       "automerge": false
     },
     {
+      "description": "The Scorecard gate trusts one tool identity (VERSION, TOOL_COMMIT, ACTION_COMMIT in scripts/ci/scorecard_gate.py), which a person moves in the same pull request after comparing docs/checks/internal/checks.yaml at both tool commits (docs/development/ossf-scorecard.md); so the action travels in its own reviewed pull request, not in the grouped auto-merged GitHub Actions one, where its v2.6.0 bump failed every Scorecard gate of pull request 3488.",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "ossf/scorecard-action"
+      ],
+      "groupName": "OpenSSF Scorecard action (gate identity)",
+      "automerge": false
+    },
+    {
       "description": "Group pre-commit hook rev bumps; auto-merge — mechanical, lint catches drift.",
       "matchManagers": [
         "pre-commit"
