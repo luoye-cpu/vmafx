@@ -258,35 +258,134 @@ class RenovateFilePatterns(unittest.TestCase):
         self.assertTrue(any("missing from postUpdateOptions" in e for e in errors))
 
 
-def _matches_regex_or_glob_list(value: str, patterns: list[str]) -> bool:
+MAX_PATTERN_LENGTH = 512
+MAX_PATTERN_LIST_LENGTH = 1024
+_GLOB_LITERAL_CHARS: frozenset[str] = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-@:/+="
+)
+_GLOB_ALLOWED_CHARS: frozenset[str] = _GLOB_LITERAL_CHARS | {"*", "?"}
+
+
+def _translate_single_star_glob(segment: str) -> str:
+    parts: list[str] = []
+    for char in segment[:MAX_PATTERN_LENGTH]:
+        if char == "*":
+            parts.append("[^/]*")
+        elif char == "?":
+            parts.append("[^/]")
+        else:
+            parts.append(re.escape(char))
+    return "".join(parts)
+
+
+def _compile_renovate_glob(body: str) -> re.Pattern[str] | None:
+    """Translate the modeled subset of Renovate's minimatch(..., {dot: true,
+    nocase: true}) globs (Renovate main 208cd854196d, lib/util/string-match.ts).
+    Measured against minimatch 10.2.6 and 11.0.8:
+    - {uv,numpy} matches uv and numpy, and [u]v and +(u)v match uv (brace
+      expansion, character class, extglob -> not modeled, None);
+    - requirements/*.in does not match requirements/locks/tooling-tests.in and
+      u?v does not match u/v (* and ? never cross /);
+    - requirements/** matches requirements/locks/tooling-tests.in; a/** matches
+      a/ and a/.b (dot: true) but not a; uv/** does not match uv;
+    - a** matches ab and not a/b (non-segment ** -> not modeled, None);
+    - UV matches uv (nocase: true)."""
+    if not body or len(body) > MAX_PATTERN_LENGTH:
+        return None
+    for char in body[:MAX_PATTERN_LENGTH]:
+        if char not in _GLOB_ALLOWED_CHARS:
+            return None
+    if body == "**":
+        translated = ".*"
+    elif body.endswith("/**") and "**" not in body[:-3]:
+        translated = f"{_translate_single_star_glob(body[:-3])}/.*"
+    elif "**" not in body:
+        translated = _translate_single_star_glob(body)
+    else:
+        return None
+    return re.compile(translated, re.IGNORECASE | re.DOTALL)
+
+
+def _matches_single_pattern(value: str, body: str) -> bool | None:
+    regex = re.fullmatch(r"/(.+)/(i?)", body, re.DOTALL)
+    if regex is not None:
+        flags = re.IGNORECASE if regex[2] == "i" else 0
+        return re.search(to_python(regex[1]), value, flags) is not None
+    compiled = _compile_renovate_glob(body)
+    if compiled is None:
+        return None
+    return compiled.fullmatch(value) is not None
+
+
+def _matches_regex_or_glob_list(value: str, patterns: list[str]) -> bool | None:
     """Mirror matchRegexOrGlobList (Renovate main 208cd854196d,
     lib/util/string-match.ts:13-21, 29-57, 72-77, 94-104): an empty list is
     false; positive/negative split requires at least one positive match when
     positives exist and every !-negated pattern to hold; /re/ and /re/i (plus
-    !/re/ and !/re/i) are regexes, and other patterns (including !glob) are
-    case-insensitive globs."""
+    !/re/ and !/re/i) are regexes; modeled globs follow minimatch(..., {dot:
+    true, nocase: true}) via _compile_renovate_glob ({uv,numpy} vs uv/numpy,
+    [u]v and +(u)v vs uv, and non-segment a** vs ab or a/b return None;
+    requirements/*.in misses requirements/locks/tooling-tests.in and u?v misses
+    u/v; requirements/** matches requirements/locks/tooling-tests.in, a/**
+    matches a/ and a/.b but not a, and uv/** misses uv; UV matches uv); any
+    unmodeled pattern returns None for the whole list."""
     if not patterns:
         return False
+    if len(patterns) > MAX_PATTERN_LIST_LENGTH:
+        return None
     has_positive = False
     positive_matched = False
-    for raw in patterns:
+    negated_matched = False
+    for raw in patterns[:MAX_PATTERN_LIST_LENGTH]:
+        if len(raw) > MAX_PATTERN_LENGTH:
+            return None
         negated = raw.startswith("!")
         body = raw[1:] if negated else raw
-        regex = re.fullmatch(r"/(.+)/(i?)", body, re.DOTALL)
-        if regex is not None:
-            flags = re.IGNORECASE if regex[2] == "i" else 0
-            hit = re.search(to_python(regex[1]), value, flags) is not None
-        else:
-            # fnmatch stands in for minimatch(..., {nocase: true, dot: true}):
-            # its * and ? match /, and brace or extglob syntax is not supported.
-            hit = fnmatch.fnmatchcase(value.lower(), body.lower())
+        hit = _matches_single_pattern(value, body)
+        if hit is None:
+            return None
         if negated:
-            if hit:
-                return False
+            negated_matched = negated_matched or hit
         else:
             has_positive = True
             positive_matched = positive_matched or hit
+    if negated_matched:
+        return False
     return not has_positive or positive_matched
+
+
+_DIRECT_GLOB_CASES: tuple[tuple[str, list[str], bool | None], ...] = (
+    ("uv", ["{uv,numpy}"], None),
+    ("numpy", ["{uv,numpy}"], None),
+    ("uv", ["{u..z}v"], None),
+    ("requirements/locks/tooling-tests.in", ["requirements/*.in"], False),
+    ("u/v", ["u?v"], False),
+    ("requirements/locks/tooling-tests.in", ["requirements/**"], True),
+    ("a/", ["a/**"], True),
+    ("a/.b", ["a/**"], True),
+    ("a", ["a/**"], False),
+    ("uv", ["uv/**"], False),
+    ("ab", ["a**"], None),
+    ("a/b", ["a**"], None),
+    ("uv", ["[u]v"], None),
+    ("uv", ["+(u)v"], None),
+    ("uv", ["UV"], True),
+    ("github.com/example-org/tool", ["github.com/example-org/tool/**"], False),
+    ("github.com/example-org/tool/x/y", ["github.com/example-org/tool/**"], True),
+    ("uv", [], False),
+    ("a/b", ["**"], True),
+    ("uv", ["!uv", "{uv,numpy}"], None),
+    ("uv", ["u" * (MAX_PATTERN_LENGTH + 1)], None),
+)
+
+
+class RenovateRegexOrGlobList(unittest.TestCase):
+    """Direct positive, negative, and boundary cases for _matches_regex_or_glob_list."""
+
+    def test_matches_regex_or_glob_list(self) -> None:
+        for value, patterns, expected in _DIRECT_GLOB_CASES:
+            with self.subTest(value=value, patterns=patterns):
+                self.assertIs(_matches_regex_or_glob_list(value, patterns), expected)
 
 
 # Renovate main 208cd854196d, lib/util/package-rules/matchers.ts:29-48 defines
@@ -932,20 +1031,72 @@ class UvLockGeneratorGroup(unittest.TestCase):
         self.assertEqual(self.findings(append_pip_disable([])), [])
 
     def _append_pip_disable_rule(
-        self, package: str = "uv", **extra: Any
+        self,
+        package: str = "uv",
+        packages: list[str] | None = None,
+        **extra: Any,
     ) -> Callable[[dict[str, Any]], None]:
+        package_patterns = [package] if packages is None else packages
+
         def change(config: dict[str, Any]) -> None:
             config["packageRules"].append(
                 {
                     "matchManagers": ["pip_requirements"],
                     "matchFileNames": [TOOLING_INPUT],
                     **extra,
-                    "matchPackageNames": [package],
+                    "matchPackageNames": package_patterns,
                     "enabled": False,
                 }
             )
 
         return change
+
+    def test_unmodeled_glob_package_patterns_fail_closed(self) -> None:
+        """Negative: brace, bracket, and extglob package patterns fail closed."""
+        rule_index = len(self.config["packageRules"])
+        for pattern in ("{uv,numpy}", "{u..z}v", "[u]v", "+(u)v"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(
+                    self.findings(self._append_pip_disable_rule(packages=[pattern])),
+                    [
+                        f"packageRules[{rule_index}]: "
+                        f"the uv check does not model matchPackageNames={[pattern]!r}"
+                    ],
+                )
+
+    def test_glob_package_patterns_match_like_renovate(self) -> None:
+        """Positive and boundary: modeled package globs follow minimatch."""
+        pip_disabled = [
+            f"{TOOLING_INPUT}: pip_requirements uv ({kind}) disabled"
+            for kind in ("patch", "minor", "major")
+        ]
+        for matching in (["u?"], ["u*"], ["UV"]):
+            with self.subTest(matchPackageNames=matching):
+                self.assertEqual(
+                    self.findings(self._append_pip_disable_rule(packages=matching)),
+                    pip_disabled,
+                )
+        for non_matching in (["u?v"], ["uv/**"]):
+            with self.subTest(matchPackageNames=non_matching):
+                self.assertEqual(
+                    self.findings(self._append_pip_disable_rule(packages=non_matching)),
+                    [],
+                )
+
+    def test_glob_file_patterns_match_like_renovate(self) -> None:
+        """Positive and negative: * stops at / while trailing /** crosses directories."""
+        pip_disabled = [
+            f"{TOOLING_INPUT}: pip_requirements uv ({kind}) disabled"
+            for kind in ("patch", "minor", "major")
+        ]
+        self.assertEqual(
+            self.findings(self._append_pip_disable_rule(matchFileNames=["requirements/*.in"])),
+            [],
+        )
+        self.assertEqual(
+            self.findings(self._append_pip_disable_rule(matchFileNames=["requirements/**"])),
+            pip_disabled,
+        )
 
     def test_unmodeled_current_version_range_fails_closed(self) -> None:
         """Negative: a matchCurrentVersion range on uv is reported as not modeled."""
@@ -961,20 +1112,33 @@ class UvLockGeneratorGroup(unittest.TestCase):
     def test_current_version_regex_and_pep440_release_match_like_renovate(self) -> None:
         """Positive and negative: regexes and exact PEP 440 releases match CurrentVersionMatcher."""
         version = str(json.loads((ROOT / LOCK_MANIFEST).read_text(encoding="utf-8"))["uv_version"])
+        release_parts = version.split(".")
+        major = int(release_parts[0])
+        bumped_version = ".".join([*release_parts[:-1], str(int(release_parts[-1]) + 1)])
+        version_files = {
+            LOCK_MANIFEST: json.dumps({"uv_version": version}),
+            TOOLING_INPUT: f"uv=={version}\n",
+        }
         pip_disabled = [
             f"{TOOLING_INPUT}: pip_requirements uv ({kind}) disabled"
             for kind in ("patch", "minor", "major")
         ]
-        for matching in (r"/^0\./", version, f"{version}.0"):
+        for matching in (rf"/^{major}\./", version, f"{version}.0"):
             with self.subTest(matchCurrentVersion=matching):
                 self.assertEqual(
-                    self.findings(self._append_pip_disable_rule(matchCurrentVersion=matching)),
+                    self.findings(
+                        self._append_pip_disable_rule(matchCurrentVersion=matching),
+                        files=version_files,
+                    ),
                     pip_disabled,
                 )
-        for non_matching in (r"/^1\./", r"!/^0\./", "0.13.5"):
+        for non_matching in (rf"/^{major + 1}\./", rf"!/^{major}\./", bumped_version):
             with self.subTest(matchCurrentVersion=non_matching):
                 self.assertEqual(
-                    self.findings(self._append_pip_disable_rule(matchCurrentVersion=non_matching)),
+                    self.findings(
+                        self._append_pip_disable_rule(matchCurrentVersion=non_matching),
+                        files=version_files,
+                    ),
                     [],
                 )
 
