@@ -87,6 +87,80 @@ class InstallCommandTests(unittest.TestCase):
         with self.assertRaisesRegex(self.checker.ContractError, f"exceeds {limit} bytes"):
             self.findings(text + " ")
 
+    def _minimal_consumer_root(self, root: Path) -> Path:
+        version = "0.12.18"
+        digest = "--hash=sha256:" + "a" * 64
+        write_uv_pin_fixture(
+            root, {"requirements/locks/tooling-tests.in": f"uv=={version}\n"}, version
+        )
+        manifest = self.checker.load_manifest(root)
+        generated = root / "generated.txt"
+        generated.write_text(f"uv=={version} {digest}\n", encoding="utf-8")
+        self.checker.stamp_lock(root, manifest, manifest["locks"][0], generated)
+        generated.unlink()
+        consumer = root / "scripts/setup/install.sh"
+        consumer.parent.mkdir(parents=True)
+        return consumer
+
+    def test_check_refuses_crlf_consumer_over_on_disk_byte_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            consumer = self._minimal_consumer_root(root)
+            limit = self.checker.MAX_INSTALL_SURFACE_BYTES
+            at_cap = b"#" + b"x" * (limit - 3) + b"\r\n"
+            self.assertEqual(len(at_cap), limit)
+            consumer.write_bytes(at_cap)
+            self.assertEqual(self.checker.check(root), 0)
+
+            over_cap = b"#" + b"x" * (limit - 2) + b"\r\n"
+            self.assertEqual(len(over_cap), limit + 1)
+            consumer.write_bytes(over_cap)
+            self.assertEqual(len(consumer.read_text(encoding="utf-8").encode("utf-8")), limit)
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                self.assertEqual(self.checker.check(root), 1)
+            self.assertIn(
+                f"ERROR: scripts/setup/install.sh: install surface exceeds {limit} bytes",
+                stderr.getvalue(),
+            )
+
+    def test_check_scans_crlf_consumer_like_lf_twin(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            lf_root = base / "lf"
+            crlf_root = base / "crlf"
+            lf_consumer = self._minimal_consumer_root(lf_root)
+            crlf_consumer = self._minimal_consumer_root(crlf_root)
+            lf_ok = b"# header\npython -m pip install --require-hashes \\\n  -r tooling-lock.txt\n"
+            lf_consumer.write_bytes(lf_ok)
+            crlf_consumer.write_bytes(lf_ok.replace(b"\n", b"\r\n"))
+            self.assertEqual(self.checker.check(lf_root), 0)
+            self.assertEqual(self.checker.check(crlf_root), 0)
+
+            lf_bad = lf_ok + b"# lone-cr\npython -m pip install pytest\n"
+            crlf_bad = (
+                lf_ok.replace(b"\n", b"\r\n") + b"# lone-cr\rpython -m pip install pytest\r\n"
+            )
+            lf_consumer.write_bytes(lf_bad)
+            crlf_consumer.write_bytes(crlf_bad)
+            lf_err = io.StringIO()
+            crlf_err = io.StringIO()
+            with redirect_stderr(lf_err):
+                self.assertEqual(self.checker.check(lf_root), 1)
+            with redirect_stderr(crlf_err):
+                self.assertEqual(self.checker.check(crlf_root), 1)
+            self.assertEqual(crlf_err.getvalue(), lf_err.getvalue())
+            self.assertIn(
+                "scripts/setup/install.sh:5: pip install must use --require-hashes",
+                crlf_err.getvalue(),
+            )
+
+            crlf_consumer.write_bytes(b"# \xff\r\n")
+            decode_err = io.StringIO()
+            with redirect_stderr(decode_err):
+                self.assertEqual(self.checker.check(crlf_root), 1)
+            self.assertIn("ERROR: scripts/setup/install.sh:", decode_err.getvalue())
+
     def test_install_surface_line_limit(self) -> None:
         limit = self.checker.MAX_INSTALL_SURFACE_LINES
         text = "\n" * limit
@@ -2526,6 +2600,46 @@ class UvBootstrapTests(unittest.TestCase):
                 findings = self.checker.scan_install_commands(workflow, script, root=ROOT)
                 self.assertTrue(any("pip install must use" in finding for finding in findings))
 
+    def test_workflow_bootstrap_run_header_comment_and_chomping(self) -> None:
+        """Positive: a YAML comment on `run: |` stays authorized; split blocks and `|-` fail."""
+        path = Path(".github/workflows/python-lock-refresh.yml")
+        text = (ROOT / path).read_text(encoding="utf-8")
+        header = (
+            "        run: |\n"
+            "          set -euo pipefail\n"
+            '          bootstrap="$RUNNER_TEMP/uv-bootstrap.txt"'
+        )
+        self.assertIn(header, text)
+        commented = text.replace(
+            header,
+            header.replace("run: |", "run: | # install the reviewed uv", 1),
+            1,
+        )
+        self.assertEqual(self.checker.scan_install_commands(path, commented, root=ROOT), [])
+        install_guard = (
+            '          if [ -s "$bootstrap" ]; then\n'
+            '            python -m pip install --no-build-isolation --require-hashes -r "$bootstrap"\n'
+            "          fi"
+        )
+        self.assertIn(install_guard, commented)
+        split_block = commented.replace(
+            install_guard,
+            "      - name: Separate bootstrap install\n"
+            "        shell: bash\n"
+            "        run: |\n" + install_guard,
+            1,
+        )
+        for label, candidate in (
+            ("split-run-block", split_block),
+            ("strip-chomping", text.replace(header, header.replace("run: |", "run: |-", 1), 1)),
+            ("keep-chomping", text.replace(header, header.replace("run: |", "run: |+", 1), 1)),
+            ("indent-indicator", text.replace(header, header.replace("run: |", "run: |2", 1), 1)),
+            ("unspaced-hash", text.replace(header, header.replace("run: |", "run: |#", 1), 1)),
+        ):
+            with self.subTest(case=label):
+                findings = self.checker.scan_install_commands(path, candidate, root=ROOT)
+                self.assertTrue(any("pip install must use" in finding for finding in findings))
+
     def test_previous_compiled_pin_fails(self) -> None:
         """Negative: the previous uv pin cannot bootstrap the reviewed release."""
         self.compiled = f"uv=={self.old} {self.digest}\n"
@@ -2764,6 +2878,35 @@ class UvBootstrapTests(unittest.TestCase):
         self.assertEqual(self.bootstrap(), 0)
         self.assertFalse(self.output.exists())
         self.run_uv.assert_not_called()
+
+    def test_failed_bootstrap_compile_leaves_no_output(self) -> None:
+        """Negative: a mismatch unlinks existing output before compile and leaves none on error."""
+        for partial in (False, True):
+            with self.subTest(partial=partial):
+                self.output.write_text("stale", encoding="utf-8")
+                existed_at_compile: list[bool] = []
+
+                def fail_compile(
+                    binary: str,
+                    args: list[str],
+                    *,
+                    cwd: Path,
+                    write_partial: bool = partial,
+                    seen: list[bool] = existed_at_compile,
+                ) -> subprocess.CompletedProcess[str]:
+                    target = Path(args[args.index("-o") + 1])
+                    seen.append(target.exists())
+                    if write_partial:
+                        target.write_text("partial", encoding="utf-8")
+                    return subprocess.CompletedProcess([binary, *args], 1, "", "compile failed")
+
+                self.run_uv.side_effect = fail_compile
+                with self.assertRaisesRegex(
+                    self.checker.ContractError, r"^uv failed for tooling-lock\.txt: compile failed$"
+                ):
+                    self.bootstrap()
+                self.assertEqual(existed_at_compile, [False])
+                self.assertFalse(self.output.exists())
 
     def test_ambiguous_generator_entries_fail(self) -> None:
         """Boundary: report both lock entries that carry an exact generator pin."""

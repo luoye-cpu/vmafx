@@ -1276,7 +1276,7 @@ def _bootstrap_install_line(path: Path, text: str) -> int | None:
     if path != Path(".github/workflows/python-lock-refresh.yml"):
         return None
     match = re.search(
-        r"^ +run: \|\n(?P<indent> +)set -euo pipefail\n"
+        r"^ +run: \|(?: +#[^\r\n]*)?\n(?P<indent> +)set -euo pipefail\n"
         r'(?P=indent)bootstrap="\$RUNNER_TEMP/uv-bootstrap\.txt"\n'
         r"(?P=indent)python3 scripts/ci/check_python_dependency_locks\.py "
         r'bootstrap-uv --output "\$bootstrap"\n'
@@ -2059,7 +2059,14 @@ def check(root: Path) -> int:
 
         for relative in tracked_consumer_paths(root, all_paths=all_tracked):
             try:
-                text = (root / relative).read_text(encoding="utf-8")
+                with (root / relative).open("rb") as handle:
+                    raw = handle.read(MAX_INSTALL_SURFACE_BYTES + 1)
+                if len(raw) > MAX_INSTALL_SURFACE_BYTES:
+                    problems.append(
+                        f"{relative}: install surface exceeds {MAX_INSTALL_SURFACE_BYTES} bytes"
+                    )
+                    continue
+                text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
             except (OSError, UnicodeDecodeError) as error:
                 problems.append(f"{relative}: {error}")
                 continue

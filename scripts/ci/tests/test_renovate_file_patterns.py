@@ -258,6 +258,37 @@ class RenovateFilePatterns(unittest.TestCase):
         self.assertTrue(any("missing from postUpdateOptions" in e for e in errors))
 
 
+def _matches_regex_or_glob_list(value: str, patterns: list[str]) -> bool:
+    """Mirror matchRegexOrGlobList (Renovate main 208cd854196d,
+    lib/util/string-match.ts:13-21, 29-57, 72-77, 94-104): an empty list is
+    false; positive/negative split requires at least one positive match when
+    positives exist and every !-negated pattern to hold; /re/ and /re/i (plus
+    !/re/ and !/re/i) are regexes, and other patterns (including !glob) are
+    case-insensitive globs."""
+    if not patterns:
+        return False
+    has_positive = False
+    positive_matched = False
+    for raw in patterns:
+        negated = raw.startswith("!")
+        body = raw[1:] if negated else raw
+        regex = re.fullmatch(r"/(.+)/(i?)", body, re.DOTALL)
+        if regex is not None:
+            flags = re.IGNORECASE if regex[2] == "i" else 0
+            hit = re.search(to_python(regex[1]), value, flags) is not None
+        else:
+            # fnmatch stands in for minimatch(..., {nocase: true, dot: true}):
+            # its * and ? match /, and brace or extglob syntax is not supported.
+            hit = fnmatch.fnmatchcase(value.lower(), body.lower())
+        if negated:
+            if hit:
+                return False
+        else:
+            has_positive = True
+            positive_matched = positive_matched or hit
+    return not has_positive or positive_matched
+
+
 def matching_package_rules(config: dict[str, Any], dependency: dict[str, str]) -> list[int]:
     """Find matching rules for these concrete fixtures in their configured order."""
     result = []
@@ -268,14 +299,7 @@ def matching_package_rules(config: dict[str, Any], dependency: dict[str, str]) -
                 continue
             value = dependency.get(key, "")
             choices = patterns if isinstance(patterns, list) else [patterns]
-            if not any(
-                (
-                    re.search(p[1:-1], value)
-                    if p.startswith("/") and p.endswith("/")
-                    else fnmatch.fnmatchcase(value, p)
-                )
-                for p in choices
-            ):
+            if not _matches_regex_or_glob_list(value, choices):
                 matches = False
                 break
         if matches:
@@ -603,51 +627,83 @@ def _is_ignored_by_renovate(path: str, ignore_paths: list[str]) -> bool:
     )
 
 
+def _fold_uv_pin_rules(
+    config: dict[str, Any],
+    manager: str,
+    path: str,
+    current_value: str,
+    version: str,
+    update_type: str,
+) -> tuple[list[int], bool, Any, Any]:
+    """Fold matching packageRules in order for one uv pin (Renovate main
+    208cd854196d, lib/util/package-rules/index.ts:64-137, mergeChildConfig)."""
+    rules = config["packageRules"]
+    indices = matching_package_rules(
+        config,
+        {
+            "matchManagers": manager,
+            "matchFileNames": path,
+            "matchDatasources": "pypi",
+            "matchPackageNames": "uv",
+            "matchDepNames": "uv",
+            "matchUpdateTypes": update_type,
+            "matchCurrentValue": current_value,
+            "matchCurrentVersion": version,
+        },
+    )
+    enabled = bool(config.get(manager, {}).get("enabled", True))
+    group_name = config.get("groupName")
+    group_slug = config.get("groupSlug")
+    for index in indices:
+        rule = rules[index]
+        enabled = bool(rule.get("enabled", enabled))
+        group_name = rule.get("groupName", group_name)
+        group_slug = rule.get("groupSlug", group_slug)
+    return indices, enabled and _manager_enabled_by_list(config, manager), group_name, group_slug
+
+
 def _uv_group_finding(
     config: dict[str, Any], update_type: str, manifest_version: str, pip_version: str
 ) -> list[str]:
     """Check manager enablement (Renovate main 208cd854196d,
-    lib/modules/manager/index.ts:146-156) and shared uv group precedence."""
+    lib/modules/manager/index.ts:146-156), effective groupName folding
+    (lib/util/package-rules/index.ts:64-137, mergeChildConfig), and effective
+    groupSlug agreement (lib/workers/repository/updates/branch-name.ts:70-95).
+    Stricter than Renovate, which compares slugify(groupSlug or groupName): this
+    compares the configured groupSlug values, so it never misses a split branch
+    but also reports a slug that only one pin sets, even when it equals the
+    slug Renovate derives from groupName."""
     rules = config["packageRules"]
     shared = {index for index, rule in enumerate(rules) if rule.get("groupName") == UV_GROUP}
-    matches = {}
+    groups: dict[str, Any] = {}
+    slugs: dict[str, Any] = {}
     disabled: list[str] = []
-    for manager, path, version in (
-        ("pip_requirements", TOOLING_INPUT, pip_version),
-        ("custom.regex", LOCK_MANIFEST, manifest_version),
+    for manager, path, current_value, version in (
+        ("pip_requirements", TOOLING_INPUT, f"=={pip_version}", pip_version),
+        ("custom.regex", LOCK_MANIFEST, manifest_version, manifest_version),
     ):
-        indices = matching_package_rules(
-            config,
-            {
-                "matchManagers": manager,
-                "matchFileNames": path,
-                "matchDatasources": "pypi",
-                "matchPackageNames": "uv",
-                "matchDepNames": "uv",
-                "matchUpdateTypes": update_type,
-                "matchCurrentValue": f"=={version}" if manager == "pip_requirements" else version,
-                "matchCurrentVersion": version,
-            },
+        indices, is_enabled, group_name, group_slug = _fold_uv_pin_rules(
+            config, manager, path, current_value, version, update_type
         )
-        enabled = config.get(manager, {}).get("enabled", True)
-        for index in indices:
-            enabled = rules[index].get("enabled", enabled)
-        if not enabled or not _manager_enabled_by_list(config, manager):
+        if not is_enabled:
             disabled.append(f"{path}: {manager} uv ({update_type}) disabled")
         shared.intersection_update(indices)
-        matches[manager] = indices
+        groups[manager] = group_name
+        slugs[manager] = group_slug
     if disabled:
         return disabled
     if not shared:
         return [f"uv ({update_type}): missing shared {UV_GROUP!r} rule"]
-    group_index = min(shared)
-    for manager, indices in matches.items():
-        for index in indices:
-            group = rules[index].get("groupName", UV_GROUP)
-            if index > group_index and group != UV_GROUP:
-                return [
-                    f"uv ({update_type}): later {manager} rule overrides the uv group with {group!r}"
-                ]
+    for manager, group_name in groups.items():
+        if group_name != UV_GROUP:
+            return [
+                f"uv ({update_type}): later {manager} rule overrides the uv group with {group_name!r}"
+            ]
+    if slugs["pip_requirements"] != slugs["custom.regex"]:
+        return [
+            f"uv ({update_type}): uv pins have mismatched groupSlug "
+            f"({slugs['pip_requirements']!r} vs {slugs['custom.regex']!r})"
+        ]
     return []
 
 
@@ -735,6 +791,32 @@ class UvLockGeneratorGroup(unittest.TestCase):
         self.assertIn(
             f"{TOOLING_INPUT}: pip_requirements uv (patch) disabled", self.findings(disable)
         )
+
+    def test_negative_and_regex_package_patterns_match_like_renovate(self) -> None:
+        """Negative and boundary: !glob, !/re/ and /re/i follow Renovate string-match.ts."""
+        pip_disabled = f"{TOOLING_INPUT}: pip_requirements uv (patch) disabled"
+
+        def append_pip_disable(patterns: list[str]) -> Callable[[dict[str, Any]], None]:
+            def change(config: dict[str, Any]) -> None:
+                config["packageRules"].append(
+                    {
+                        "matchManagers": ["pip_requirements"],
+                        "matchFileNames": [TOOLING_INPUT],
+                        "matchPackageNames": patterns,
+                        "enabled": False,
+                    }
+                )
+
+            return change
+
+        self.assertIn(pip_disabled, self.findings(append_pip_disable(["!numpy"])))
+        self.assertEqual(self.findings(append_pip_disable(["!uv"])), [])
+        self.assertIn(pip_disabled, self.findings(append_pip_disable(["UV"])))
+        self.assertIn(pip_disabled, self.findings(append_pip_disable(["/^UV$/i"])))
+        self.assertIn(pip_disabled, self.findings(append_pip_disable(["!/^numpy$/i"])))
+        self.assertEqual(self.findings(append_pip_disable(["!/^UV$/i"])), [])
+        self.assertEqual(self.findings(append_pip_disable(["u*", "!uv"])), [])
+        self.assertEqual(self.findings(append_pip_disable([])), [])
 
     def test_uv_managers_must_be_enabled(self) -> None:
         pip_disabled = f"{TOOLING_INPUT}: pip_requirements uv (patch) disabled"
@@ -895,6 +977,69 @@ class UvLockGeneratorGroup(unittest.TestCase):
                     f"uv (major): later {manager} rule overrides the uv group with 'another group'",
                     self.findings(override),
                 )
+
+    def test_later_shared_rule_can_restore_uv_group_after_pip_override(self) -> None:
+        """Positive and negative: folding matching rules lets a later shared rule restore UV_GROUP."""
+        pip_split = {
+            "matchManagers": ["pip_requirements"],
+            "matchFileNames": [TOOLING_INPUT],
+            "matchPackageNames": ["uv"],
+            "groupName": "split",
+        }
+        shared_restore = {
+            "matchDatasources": ["pypi"],
+            "matchFileNames": [TOOLING_INPUT, LOCK_MANIFEST],
+            "matchPackageNames": ["uv"],
+            "groupName": UV_GROUP,
+        }
+        self.assertIn(
+            "uv (patch): later pip_requirements rule overrides the uv group with 'split'",
+            self.findings(lambda cfg: cfg["packageRules"].append(pip_split)),
+        )
+        self.assertEqual(
+            self.findings(lambda cfg: cfg["packageRules"].extend([pip_split, shared_restore])),
+            [],
+        )
+
+    def test_uv_group_slug_must_agree_across_both_pins(self) -> None:
+        """Negative and positive: diverging groupSlug splits branches; a shared slug agrees."""
+        pip_slug = {
+            "matchManagers": ["pip_requirements"],
+            "matchFileNames": [TOOLING_INPUT],
+            "matchPackageNames": ["uv"],
+            "groupSlug": "uv-pip-only",
+        }
+        shared_slug = {
+            "matchDatasources": ["pypi"],
+            "matchFileNames": [TOOLING_INPUT, LOCK_MANIFEST],
+            "matchPackageNames": ["uv"],
+            "groupSlug": "uv-lock-generator",
+        }
+
+        def top_and_pip_slug(cfg: dict[str, Any]) -> None:
+            cfg["groupSlug"] = "top-slug"
+            cfg["packageRules"].append(pip_slug)
+
+        self.assertIn(
+            "uv (patch): uv pins have mismatched groupSlug ('uv-pip-only' vs None)",
+            self.findings(lambda cfg: cfg["packageRules"].append(pip_slug)),
+        )
+        self.assertEqual(
+            self.findings(lambda cfg: cfg["packageRules"].append(shared_slug)),
+            [],
+        )
+        self.assertEqual(
+            self.findings(lambda cfg: cfg["packageRules"].extend([pip_slug, shared_slug])),
+            [],
+        )
+        self.assertEqual(
+            self.findings(lambda cfg: cfg.update(groupSlug="top-slug")),
+            [],
+        )
+        self.assertIn(
+            "uv (patch): uv pins have mismatched groupSlug ('uv-pip-only' vs 'top-slug')",
+            self.findings(top_and_pip_slug),
+        )
 
     def test_match_strings_reading_nothing_fails(self) -> None:
         def miss(config: dict[str, Any]) -> None:

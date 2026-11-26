@@ -38,6 +38,7 @@ GENERATOR_RE = re.compile(r"pip-compile|uv\s+pip\s+compile|uv\s+lock")
 
 ORDER_FINDING = "guard, tooling install, bootstrap, bootstrap install, write and publish are missing or out of order"
 REQUIRED_STEP_FINDING = "bootstrap and write must run unconditionally and propagate failures"
+SHELL_FINDING = "bootstrap and write must set shell: bash"
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -137,12 +138,15 @@ def guard_order_findings(steps: list[dict[str, Any]]) -> list[str]:
                 if marker in positions:
                     return [ORDER_FINDING]
                 positions[marker] = (index, line)
-    if sorted(positions, key=positions.__getitem__) != list(markers):
-        return [ORDER_FINDING]
-    if positions[bootstrap][0] != positions[install][0]:
+    if (
+        sorted(positions, key=positions.__getitem__) != list(markers)
+        or positions[bootstrap][0] != positions[install][0]
+    ):
         return [ORDER_FINDING]
     for marker in (bootstrap, write):
         index, line = positions[marker]
+        if steps[index].get("shell") != "bash":
+            return [SHELL_FINDING]
         if not unconditional_refresh_command(steps[index], line, marker, install):
             return [REQUIRED_STEP_FINDING]
     return []
@@ -258,6 +262,19 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
                     step = next(s for s in steps_of(wf) if command in s.get("run", ""))
                     step[key] = value
                     self.assertIn(REQUIRED_STEP_FINDING, shape_findings(wf, self.inputs))
+
+    def test_planted_non_bash_or_missing_refresh_shell_is_reported(self) -> None:
+        """Negative: a non-bash or omitted shell on bootstrap or write is reported."""
+        for command in ("bootstrap-uv", "check_python_dependency_locks.py write"):
+            for step_shell in ("python", None):
+                with self.subTest(command=command, step_shell=step_shell):
+                    wf = self.planted()
+                    step = next(s for s in steps_of(wf) if command in s.get("run", ""))
+                    if step_shell is None:
+                        step.pop("shell", None)
+                    else:
+                        step["shell"] = step_shell
+                    self.assertIn(SHELL_FINDING, shape_findings(wf, self.inputs))
 
     def test_planted_late_tooling_install_is_reported(self) -> None:
         """Negative: installing the tooling lock after bootstrap can restore the old uv."""
