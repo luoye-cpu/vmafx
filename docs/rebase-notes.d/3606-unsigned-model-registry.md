@@ -1,6 +1,6 @@
 ## Tiny-model registry bundle metadata stays optional (2026-11-21)
 
-`fix/issue-3606-unsigned-registry`, [ADR-0211](../adr/0211-model-registry-sigstore.md).
+`fix/issue-3606-unsigned-registry`, [ADR-0211](adr/0211-model-registry-sigstore.md).
 
 - Keep `sigstore_bundle` optional for unsigned registry entries. A declared path must remain under
   the registry directory and name an existing `.sigstore.json` file; runtime verification stays

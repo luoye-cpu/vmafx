@@ -190,6 +190,28 @@ def _check_quant_consistency(
             )
 
 
+def _check_sigstore_bundle(
+    m: dict[str, Any], mid: str, registry_dir: Path, errors: list[str]
+) -> None:
+    """Validate an optional sigstore bundle declaration."""
+    if "sigstore_bundle" not in m:
+        return
+    bundle_rel = m["sigstore_bundle"]
+    if not isinstance(bundle_rel, str):
+        errors.append(f"{mid}: sigstore_bundle must be a string")
+        return
+    if not bundle_rel.endswith(".sigstore.json"):
+        errors.append(f"{mid}: sigstore_bundle must end with .sigstore.json (got {bundle_rel!r})")
+    bundle_path = _bundle_path_in_registry(bundle_rel, registry_dir)
+    if bundle_path is None:
+        errors.append(
+            f"{mid}: sigstore_bundle must be a relative path under the registry directory "
+            f"(got {bundle_rel!r})"
+        )
+    elif not bundle_path.is_file():
+        errors.append(f"{mid}: sigstore_bundle missing bundle file {bundle_rel!r}")
+
+
 def _rank2_width(sig: OnnxSignature, slot: int) -> int | None:
     """Width of graph input @p slot when it is a rank-2 [batch, N] tensor."""
     if slot >= len(sig.inputs):
@@ -362,23 +384,7 @@ def _consistency_check(reg: dict[str, Any], registry_dir: Path) -> list[str]:
         if got == want:
             _check_graph_metadata(m, mid, onnx_path, errors)
 
-        if "sigstore_bundle" in m:
-            bundle_rel = m["sigstore_bundle"]
-            if not isinstance(bundle_rel, str):
-                errors.append(f"{mid}: sigstore_bundle must be a string")
-                continue
-            if not bundle_rel.endswith(".sigstore.json"):
-                errors.append(
-                    f"{mid}: sigstore_bundle must end with .sigstore.json (got {bundle_rel!r})"
-                )
-            bundle_path = _bundle_path_in_registry(bundle_rel, registry_dir)
-            if bundle_path is None:
-                errors.append(
-                    f"{mid}: sigstore_bundle must be a relative path under the registry directory "
-                    f"(got {bundle_rel!r})"
-                )
-            elif not bundle_path.is_file():
-                errors.append(f"{mid}: sigstore_bundle missing bundle file {bundle_rel!r}")
+        _check_sigstore_bundle(m, mid, registry_dir, errors)
     return errors
 
 

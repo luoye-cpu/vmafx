@@ -409,7 +409,7 @@ def test_consistency_check_accepts_nested_bundle_path(tmp_path: Path) -> None:
     assert VMR._consistency_check({"models": [row]}, tmp_path) == []
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # type: ignore[untyped-decorator]  # pytest untyped for the mypy gate
     "value",
     [
         "",
