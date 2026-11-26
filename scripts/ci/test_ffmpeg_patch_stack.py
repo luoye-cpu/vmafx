@@ -51,6 +51,65 @@ class ReleaseSelection(unittest.TestCase):
                 STACK.stable_version(tag)
 
 
+class LiteralReplacements(unittest.TestCase):
+    def test_mirror_preserves_windows_remote(self) -> None:
+        remote = r"C:\Users\runner\1\ffmpeg.git"
+        original = "# build\nARG FFMPEG_TAG=n9.0\nARG FFMPEG_REMOTE=old.git\nFROM build\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for name in STACK.MIRRORS:
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(original.encode())
+            expected = original.replace("old.git", remote).encode()
+            self.assertEqual(
+                STACK.mirrors(repo, remote, "n9.0"),
+                {repo / name: expected for name in STACK.MIRRORS},
+            )
+
+    def test_pinned_config_preserves_tag(self) -> None:
+        tag = r"n9.0\Users\1"
+        original = '# pins\nFFMPEG_TAG="old-tag"\nFFMPEG_COMMIT="abc"\n# end\n'
+        self.assertEqual(
+            STACK.pinned_config(original, tag, "abc"), original.replace("old-tag", tag)
+        )
+
+    def test_pinned_config_preserves_commit(self) -> None:
+        commit = r"abc\1\Users"
+        original = '# pins\nFFMPEG_TAG="n9.0"\nFFMPEG_COMMIT="old-commit"\n# end\n'
+        self.assertEqual(
+            STACK.pinned_config(original, "n9.0", commit), original.replace("old-commit", commit)
+        )
+
+    def test_readme_claim_preserves_shared_series(self) -> None:
+        series = r"fixes\Users\1"
+        receipt = {
+            "tag": "n9.0",
+            "patch_count": 2,
+            "shared_series": series,
+            "shared_patch_count": 1,
+            "upstream_commit": "a" * 40,
+            "patched_tree": "b" * 40,
+        }
+        original = (
+            "# Replay\n\n"
+            "> `n9.0` checkout (cumulative `git am --3way`), NOT a per-patch\n"
+            "> `git apply --check`. The latter rejects `0002+` because they\n"
+            "> reference cumulative-state hunks that don't exist in pristine `n9.0`.\n"
+            "> The 1 patches of the shared fix series `old-series` and the 2\n"
+            "> patches here replay cumulatively on upstream commit\n"
+            f"> `{receipt['upstream_commit']}`; the resulting tree is\n"
+            f"> `{receipt['patched_tree']}`\n\nEnd.\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            path = repo / "ffmpeg-patches/README.md"
+            path.parent.mkdir()
+            path.write_bytes(original.encode())
+            expected = original.replace("old-series", series).encode()
+            self.assertEqual(STACK.readme_claim(repo, receipt), {path: expected})
+
+
 class BashInputsLineEndings(unittest.TestCase):
     def test_shared_series_inputs_check_out_with_lf(self) -> None:
         repo = Path(__file__).resolve().parents[2]
