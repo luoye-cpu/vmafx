@@ -699,15 +699,49 @@ class DockerfileLabelTests(GateTestCase):
             gate.dockerfile_licence_label_problems(self.root)
         self.assertIn("cyclic reference", str(error.exception))
 
-    def test_a_dockerfile_stage_cycle_is_refused(self) -> None:
+    def test_a_forward_reference_is_not_a_stage_base(self) -> None:
         self._tree()
         (self.root / "docker/Dockerfile.controller").write_text(
             "FROM builder AS controller\n" "FROM controller AS builder\n",
             encoding="utf-8",
         )
-        with self.assertRaises(gate.ModelError) as error:
-            gate.dockerfile_licence_label_problems(self.root)
-        self.assertIn("Dockerfile stage cycle", str(error.exception))
+        problems = gate.dockerfile_licence_label_problems(self.root)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("stage controller: no org.opencontainers.image.licenses label", problems[0])
+
+    def test_a_numeric_from_does_not_name_an_earlier_stage(self) -> None:
+        self._tree()
+        (self.root / "docker/Dockerfile.controller").write_text(
+            "FROM scratch AS builder\n"
+            f'LABEL org.opencontainers.image.licenses="{self.LABEL}"\n'
+            "FROM 0 AS controller\n",
+            encoding="utf-8",
+        )
+        problems = gate.dockerfile_licence_label_problems(self.root)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("stage controller: no org.opencontainers.image.licenses label", problems[0])
+
+    def test_an_escaped_backslash_does_not_continue_a_line(self) -> None:
+        stages = gate._dockerfile_stages(
+            "FROM debian AS controller\n"
+            'LABEL org.opencontainers.image.licenses="BSD-2-Clause AND MIT"\n'
+            "RUN echo \\\\\n"
+            'LABEL org.opencontainers.image.licenses="MIT"\n'
+        )
+        self.assertEqual(
+            gate._effective_labels(stages, 0)["org.opencontainers.image.licenses"], "MIT"
+        )
+
+    def test_a_dockerfile_with_no_from_stage_is_refused(self) -> None:
+        self._tree()
+        (self.root / "docker/Dockerfile.controller").write_text(
+            "# no stage here\n", encoding="utf-8"
+        )
+        problems = gate.dockerfile_licence_label_problems(self.root)
+        self.assertEqual(
+            problems,
+            ["docker/Dockerfile.controller: listed in IMAGE_STAGE_RECORDS but has no FROM stage"],
+        )
 
     def test_a_child_stage_overrides_a_parent_label(self) -> None:
         self._tree()

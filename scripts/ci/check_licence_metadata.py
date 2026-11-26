@@ -804,8 +804,9 @@ def _logical_lines(text: str) -> list[str]:
         line = raw.rstrip()
         if not line.strip() or line.lstrip().startswith("#"):
             continue
+        continues = line.endswith("\\") and (len(line) == 1 or line[-2] != "\\")
         line = pending + line
-        if line.endswith("\\"):
+        if continues:
             pending = line[:-1]
             continue
         logical.append(line)
@@ -842,10 +843,10 @@ def _dockerfile_stages(text: str) -> list[dict[str, Any]]:
     return stages
 
 
-def _stage_index(stages: list[dict[str, Any]], reference: str) -> int | None:
+def _stage_index(stages: list[dict[str, Any]], reference: str, before: int) -> int | None:
     """The index of the stage a ``FROM`` reference names, or None for an external base."""
     wanted = reference.lower()
-    for index, stage in enumerate(stages):
+    for index, stage in enumerate(stages[:before]):
         if stage.get("name") and stage["name"].lower() == wanted:
             return index
     return None
@@ -861,7 +862,7 @@ def _effective_labels(stages: list[dict[str, Any]], index: int) -> dict[str, str
         if current in chain:
             raise ModelError("Dockerfile stage cycle")
         chain.append(current)
-        current = _stage_index(stages, stages[current]["base"])
+        current = _stage_index(stages, stages[current]["base"], current)
     labels: dict[str, str] = {}
     for position in reversed(chain):
         labels.update(stages[position]["labels"])
@@ -878,7 +879,7 @@ def _image_stage_labels(
     found: list[tuple[str, str | None]] = []
     problems: list[str] = []
     for stage in stage_records:
-        index = _stage_index(stages, stage)
+        index = _stage_index(stages, stage, len(stages))
         if index is None:
             problems.append(f"{relative}: listed stage {stage} is missing")
             continue
