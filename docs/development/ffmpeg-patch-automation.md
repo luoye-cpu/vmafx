@@ -159,6 +159,14 @@ tag's name, so the hook at every commit and push reads the commit from disk.
 - **Self-repair:** an empty or corrupt cache directory, or a ref whose objects
   are gone, is dropped and fetched again. A missing cache directory is expected
   on first use. Any other removal failure stops the run with the error.
+  Before deleting anything, cache removal refuses trees with more than 65,536
+  entries and roots that are symlinks or junctions.
+  The read-only retry runs only on Windows and assumes the tool created and
+  owns the cache tree and that no other process is writing to it.
+  If the walk reports an error, `remove_tree` raises the first unrecovered
+  error received by the `onexc` hook, preserving that error's filename.
+  If the walk reports no error but the root remains, `remove_tree` raises
+  `ENOTEMPTY` with the root as its filename.
   A cached commit that differs from the pin is not repaired silently; delete
   the directory below to discard it.
 

@@ -13,8 +13,9 @@ import shutil
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -23,8 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.ci import ffmpeg_shared_series_fixture as shared_series
 from scripts.lib.safe_subprocess import run as run_command
-from scripts.lib.scratch_program import remove_file, remove_tree
-from scripts.lib.test_scratch_program import FD_WALKER_REASON, HAS_FD_WALKER, vanish_before_chmod
+from scripts.lib.scratch_program import remove_file, remove_tree, walk_tree
+from scripts.lib.test_scratch_program import windows_rmtree
 
 SPEC = importlib.util.spec_from_file_location(
     "patch_stack", Path(__file__).with_name("ffmpeg_patch_stack.py")
@@ -39,6 +40,70 @@ MAINTENANCE_SETTINGS = (
     "maintenance.auto=false",
     "maintenance.autoDetach=false",
 )
+_MAX_FIXTURE_ENTRIES = 128
+
+
+def remove_fixture_objects(objects: Path) -> None:
+    for entry in walk_tree(objects, _MAX_FIXTURE_ENTRIES):
+        if entry.is_symlink() or entry.is_junction() or entry.is_file(follow_symlinks=False):
+            remove_file(Path(entry.path))
+
+
+class FixtureObjectRemoval(unittest.TestCase):
+    def setUp(self) -> None:
+        self.objects = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.pack = self.objects / "pack"
+        self.pack.mkdir()
+        for index in range(_MAX_FIXTURE_ENTRIES - 1):
+            (self.pack / str(index)).touch()
+
+    def test_removes_files_at_entry_limit(self) -> None:
+        remove_fixture_objects(self.objects)
+        self.assertIsNone(next(self.pack.iterdir(), None))
+
+    def test_linked_objects_root_preserves_target(self) -> None:
+        link = Path(self.enterContext(tempfile.TemporaryDirectory())) / "objects"
+        try:
+            link.symlink_to(self.objects, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"cannot create a directory symlink: {error}")
+        with self.assertRaisesRegex(OSError, "refusing to walk linked root"):
+            remove_fixture_objects(link)
+        self.assertTrue((self.pack / "0").is_file())
+
+    def test_rejects_one_entry_over_limit(self) -> None:
+        (self.objects / "extra").touch()
+        with (
+            patch(f"{__name__}.remove_file") as remove,
+            self.assertRaisesRegex(OSError, rf"exceeds {_MAX_FIXTURE_ENTRIES} entries$"),
+        ):
+            remove_fixture_objects(self.objects)
+        remove.assert_not_called()
+
+    def test_bounds_scandir_consumption(self) -> None:
+        pulled = 0
+
+        def entries() -> Iterator[Mock]:
+            nonlocal pulled
+            for index in range(_MAX_FIXTURE_ENTRIES + 50):
+                entry = Mock(spec=os.DirEntry)
+                entry.name = str(index)
+                entry.path = str(self.objects / entry.name)
+                entry.is_symlink.return_value = False
+                entry.is_junction.return_value = False
+                entry.is_dir.return_value = False
+                entry.is_file.return_value = True
+                pulled += 1
+                yield entry
+
+        with (
+            patch.object(os, "scandir", side_effect=lambda path: nullcontext(entries())),
+            patch(f"{__name__}.remove_file") as remove,
+            self.assertRaisesRegex(OSError, rf"exceeds {_MAX_FIXTURE_ENTRIES} entries$"),
+        ):
+            remove_fixture_objects(self.objects)
+        self.assertLessEqual(pulled, _MAX_FIXTURE_ENTRIES + 1)
+        remove.assert_not_called()
 
 
 class ReleaseSelection(unittest.TestCase):
@@ -138,20 +203,43 @@ class SourceCacheReset(unittest.TestCase):
         )
         self.assertTrue(self.cache.repo.is_dir())
 
-    @unittest.skipUnless(HAS_FD_WALKER, FD_WALKER_REASON)
-    def test_fd_reset_propagates_vanished_child(self) -> None:
+    def test_reset_propagates_child_refusal_after_failed_retry(self) -> None:
         self.cache.repo.mkdir(parents=True)
         child = self.cache.repo / "object"
         child.touch()
-        with vanish_before_chmod(child) as missing, self.assertRaises(FileNotFoundError) as exc:
+        child.chmod(0o444)
+        refused = PermissionError(errno.EACCES, "unlink refused", str(child))
+        with (
+            windows_rmtree(),
+            patch("scripts.lib.scratch_program._RETRY_READ_ONLY", True),
+            patch("os.unlink", side_effect=refused),
+            patch(
+                "scripts.lib.scratch_program._chmod",
+                side_effect=FileNotFoundError("missing object"),
+            ),
+            self.assertRaises(PermissionError) as exc,
+        ):
             self.cache.reset()
-        self.assertIs(exc.exception, missing)
+        self.assertIs(exc.exception, refused)
         self.assertEqual(exc.exception.filename, str(child))
+        self.assertIn("missing object", refused.__notes__[0])
         self.replay.run_git.assert_not_called()
 
     def test_reset_rejects_missing_root_error_for_existing_cache(self) -> None:
         self.cache.repo.mkdir(parents=True)
         missing = FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self.cache.repo))
+        with (
+            patch.object(STACK, "remove_tree", side_effect=missing),
+            self.assertRaises(FileNotFoundError) as exc,
+        ):
+            self.cache.reset()
+        self.assertIs(exc.exception, missing)
+        self.replay.run_git.assert_not_called()
+
+    def test_reset_propagates_missing_child_when_root_is_absent(self) -> None:
+        self.assertFalse(self.cache.repo.exists())
+        child = self.cache.repo / "obj"
+        missing = FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(child))
         with (
             patch.object(STACK, "remove_tree", side_effect=missing),
             self.assertRaises(FileNotFoundError) as exc,
@@ -543,9 +631,7 @@ class RealReplay(unittest.TestCase):
         self.assertEqual(
             STACK.maintain(self.repo, self.output, False, False)["source"], "fetched into cache"
         )
-        for pack in (cache / "objects").rglob("*"):  # ref kept, objects gone
-            if pack.is_file():
-                remove_file(pack)
+        remove_fixture_objects(cache / "objects")  # ref kept, objects gone
         result = STACK.maintain(self.repo, self.output, False, False)
         self.assertIn("fetched into cache", result["source"])
         self.assertEqual(
