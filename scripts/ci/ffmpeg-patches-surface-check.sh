@@ -446,7 +446,7 @@ prepare_head_surface_tree() {
 checkout_repo_root="${REPO_ROOT}"
 checkout_patches_dir="${PATCHES_DIR}"
 surface_use_find=0
-if [ "$surface_only" -eq 0 ] && [ -n "${HEAD_SHA:-}" ]; then
+if [ "$surface_only" -eq 0 ] && [ "$skip_invariants" -eq 0 ] && [ -n "${HEAD_SHA:-}" ]; then
   prepare_head_surface_tree "${checkout_repo_root}"
   REPO_ROOT="${tmp_surface_root}"
   PATCHES_DIR="${tmp_surface_root}/ffmpeg-patches"

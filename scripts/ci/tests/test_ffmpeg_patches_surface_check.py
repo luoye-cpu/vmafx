@@ -480,7 +480,26 @@ class SkipInvariantsModeTests(_FixtureTree, unittest.TestCase):
             self.assertEqual(res.returncode, 0, f"stderr:\n{res.stderr}")
             self.assertIn(self.SKIP_MARKER, res.stdout)
 
-    def test_no_automation_passes_skip_invariants(self) -> None:
+    def test_a_valid_head_sha_is_not_extracted_in_skip_mode(self) -> None:
+        """Skip mode must not run the tree extraction even when HEAD_SHA is set."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = self._prepare_temp_worktree(Path(td))
+            script = tmp / "scripts" / "ci" / SCRIPT.name
+            head = _rev_parse(tmp, "HEAD")
+            (tmp / "scripts" / "ci" / EXTRACTOR.name).write_text(
+                "import sys\nprint('stub extractor failure', file=sys.stderr)\nsys.exit(1)\n",
+                encoding="utf-8",
+            )
+
+            res = _run_script(script, tmp, "--skip-invariants", REPO_ROOT=str(tmp), HEAD_SHA=head)
+            self.assertEqual(res.returncode, 0, f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}")
+            self.assertIn("PR body from", res.stdout)
+            self.assertNotIn("cannot extract surface inputs", res.stderr)
+
+            full = _run_script(script, tmp, REPO_ROOT=str(tmp), HEAD_SHA=head)
+            self.assertEqual(full.returncode, 2, f"stdout:\n{full.stdout}\nstderr:\n{full.stderr}")
+            self.assertIn("cannot extract surface inputs", full.stderr)
+
         """Nothing under the automation surfaces may pass --skip-invariants to the gate.
 
         The flag exists so the PR-body-input selection test can measure the
@@ -508,6 +527,7 @@ class SkipInvariantsModeTests(_FixtureTree, unittest.TestCase):
                     f"{path.relative_to(ROOT)} passes {self.FLAG} to the surface gate; "
                     "the #2435 invariant scans must run in CI",
                 )
+
 
 class HeadRevisionConsumedSetTests(_FixtureTree, unittest.TestCase):
     """Verify section 4 builds the consumed symbol set from HEAD_SHA, not the checkout."""
@@ -1299,6 +1319,7 @@ class NulDelimitedPathListingTests(_FixtureTree, unittest.TestCase):
             err_lines = res.stderr.splitlines()
             self.assertEqual(len(err_lines), 1, res.stderr)
             self.assertIn(f"exceeds {PATCH_TREE_RECORD_CAP} tree entries", err_lines[0])
+
 
 if __name__ == "__main__":
     unittest.main()
