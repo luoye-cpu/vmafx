@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,41 +48,61 @@ def _openapi_errors(document: dict[str, Any], section: str, component: str) -> l
 
 
 TIME_KEYS = ("frame_index", "timestamp_ns", "timecode")
+_TIMECODE_RE = re.compile(r"^(\d{2}):(\d{2}):(\d{2})(?:[:;](\d{2}))?$")
 
 
-def _common_time_key(entries: list[dict[str, Any]], label: str) -> str:
-    """The first sortable coordinate every entry in the series carries."""
-    for key in TIME_KEYS:
-        if all(key in entry["time"] for entry in entries):
-            return key
-    raise TimelineContractError(
-        f"{label}: entries share no sortable time-key coordinate (frame_index, timestamp_ns, timecode)"
-    )
+def _time_value(key: str, value: Any) -> Any:
+    """A comparable value for one time-key kind."""
+    if key != "timecode":
+        return value
+    match = _TIMECODE_RE.fullmatch(value)
+    if match is None:
+        raise TimelineContractError(f"timecode is not HH:MM:SS[:FF]: {value!r}")
+    fields = [int(part) if part is not None else 0 for part in match.groups()]
+    return tuple(fields)
 
 
-def _series_sort_keys(entries: list[dict[str, Any]], label: str) -> list[Any]:
+def _shared_time_keys(entries: list[dict[str, Any]]) -> list[str]:
+    """The time-key kinds every entry in the series carries."""
     if not entries:
         return []
-    key = _common_time_key(entries, label)
-    return [entry["time"][key] for entry in entries]
+    shared = set(entries[0]["time"])
+    for entry in entries[1:]:
+        shared.intersection_update(entry["time"])
+    return [key for key in TIME_KEYS if key in shared]
 
 
 def _check_order(entries: list[dict[str, Any]], label: str, *, strict: bool) -> None:
-    keys = _series_sort_keys(entries, label)
-    for prev, current in itertools.pairwise(keys):
-        violation = current <= prev if strict else current < prev
-        if violation:
-            raise TimelineContractError(
-                f"{label}: time keys are not {'strictly ' if strict else ''}ascending"
-            )
+    shared = _shared_time_keys(entries)
+    if entries and not shared:
+        raise TimelineContractError(
+            f"{label}: entries share no sortable time-key coordinate "
+            "(frame_index, timestamp_ns, timecode)"
+        )
+    for key in shared:
+        values = [_time_value(key, entry["time"][key]) for entry in entries]
+        for prev, current in itertools.pairwise(values):
+            violation = current <= prev if strict else current < prev
+            if violation:
+                raise TimelineContractError(
+                    f"{label}: {key} keys are not {'strictly ' if strict else ''}ascending"
+                )
 
 
 def _check_windows(windows: list[dict[str, Any]]) -> None:
     for index, window in enumerate(windows):
         start, end = window["start"], window["end"]
-        key = _common_time_key([{"time": start}, {"time": end}], f"windows[{index}]")
-        if start[key] >= end[key]:
-            raise TimelineContractError(f"windows[{index}]: start must strictly precede end")
+        shared = [key for key in TIME_KEYS if key in start and key in end]
+        if not shared:
+            raise TimelineContractError(
+                f"windows[{index}]: start and end share no sortable time-key coordinate "
+                "(frame_index, timestamp_ns, timecode)"
+            )
+        for key in shared:
+            if _time_value(key, start[key]) >= _time_value(key, end[key]):
+                raise TimelineContractError(
+                    f"windows[{index}]: {key} start must strictly precede end"
+                )
 
 
 def validate_timeline(document: dict[str, Any]) -> None:
@@ -91,17 +112,19 @@ def validate_timeline(document: dict[str, Any]) -> None:
     this function is the contract callers run when both matter. It raises
     :class:`TimelineContractError` with one or more messages.
     """
-    errors = [
+    schema_errors = [
         f"{error.json_path}: {error.message}" for error in _schema_validator().iter_errors(document)
     ]
-    errors.extend(_openapi_errors(document, "provenance", "Provenance"))
-    errors.extend(_openapi_errors(document, "scoring_configuration", "ScoreOptions"))
-    try:
-        _check_order(document.get("frames", []), "frames", strict=True)
-        _check_order(document.get("events", []), "events", strict=False)
-        _check_windows(document.get("windows", []))
-    except TimelineContractError as exc:
-        errors.append(str(exc))
+    errors = list(schema_errors)
+    if not schema_errors:
+        errors.extend(_openapi_errors(document, "provenance", "Provenance"))
+        errors.extend(_openapi_errors(document, "scoring_configuration", "ScoreOptions"))
+        try:
+            _check_order(document.get("frames", []), "frames", strict=True)
+            _check_order(document.get("events", []), "events", strict=False)
+            _check_windows(document.get("windows", []))
+        except TimelineContractError as exc:
+            errors.append(str(exc))
     if errors:
         raise TimelineContractError("; ".join(errors))
 
@@ -111,7 +134,14 @@ def main(argv: list[str] | None = None) -> int:
     if len(args) != 1:
         print("usage: run_result_timeline_contract.py <timeline.json>")
         return 2
-    validate_timeline(json.loads(Path(args[0]).read_text(encoding="utf-8")))
+    try:
+        validate_timeline(json.loads(Path(args[0]).read_text(encoding="utf-8")))
+    except TimelineContractError as exc:
+        print(f"{args[0]}: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"{args[0]}: {exc}", file=sys.stderr)
+        return 1
     print(f"{args[0]}: valid")
     return 0
 

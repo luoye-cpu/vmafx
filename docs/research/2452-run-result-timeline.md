@@ -8,7 +8,7 @@ one addressable timeline, and how should that shape evolve?
 
 ## Sources
 
-- [VMAFx/vmafx#2452](https://github.com/VMAFx/vmafx/issues/2452) - the RC5
+- [vidiko/vmafx#2452](https://github.com/vidiko/vmafx/issues/2452) - the RC5
   issue and its acceptance criteria.
 - `api/run-result-timeline.schema.json` - the skeleton proposed by PR #3385.
 - `api/openapi/vmafx-server-v1.yaml` - the `Provenance` and `ScoreOptions`

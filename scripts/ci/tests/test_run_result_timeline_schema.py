@@ -20,6 +20,7 @@ lands with it in a later PR of the same issue.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -146,10 +147,19 @@ class RunResultTimelineSchemaTests(unittest.TestCase):
             validate_timeline(document)
         self.assertIn("pixel_format", str(caught.exception))
 
-    def test_duplicate_and_out_of_order_frames_are_refused(self) -> None:
-        """Duplicate and descending frame coordinates are refused, not just sorted away."""
+    def test_duplicate_frame_coordinates_are_refused(self) -> None:
+        """Duplicate frame coordinates are refused, not just sorted away."""
         document = self.load("valid-full.json")
         document["frames"][1]["time"]["frame_index"] = 0
+        with self.assertRaises(TimelineContractError) as caught:
+            validate_timeline(document)
+        self.assertIn("frames", str(caught.exception))
+
+    def test_descending_frame_keys_are_refused(self) -> None:
+        """A genuinely descending frame series is refused."""
+        document = self.load("valid-full.json")
+        for index, frame_index in enumerate((1, 0)):
+            document["frames"][index]["time"] = {"frame_index": frame_index}
         with self.assertRaises(TimelineContractError) as caught:
             validate_timeline(document)
         self.assertIn("frames", str(caught.exception))
@@ -169,10 +179,44 @@ class RunResultTimelineSchemaTests(unittest.TestCase):
     def test_out_of_order_timecode_series_is_refused(self) -> None:
         """Timecode ordering is checked by its HH:MM:SS[:FF] fields."""
         document = self.load("valid-full.json")
-        document["frames"][1]["time"] = {"timecode": "00:00:00:00"}
+        for index, timecode in enumerate(("00:00:00:01", "00:00:00:00")):
+            document["frames"][index]["time"] = {"timecode": timecode}
         with self.assertRaises(TimelineContractError) as caught:
             validate_timeline(document)
         self.assertIn("frames", str(caught.exception))
+
+    def test_timecode_drop_and_non_drop_neighbours_compare(self) -> None:
+        """A drop-frame and a non-drop-frame neighbour compare in both directions."""
+        for earlier, later in (("00:00:00;02", "00:00:00:03"), ("00:00:00:02", "00:00:00:03")):
+            with self.subTest(earlier=earlier, later=later):
+                document = self.load("valid-full.json")
+                for index, timecode in enumerate((earlier, later)):
+                    document["frames"][index]["time"] = {"timecode": timecode}
+                validate_timeline(document)
+
+                document = self.load("valid-full.json")
+                for index, timecode in enumerate((later, earlier)):
+                    document["frames"][index]["time"] = {"timecode": timecode}
+                with self.assertRaises(TimelineContractError):
+                    validate_timeline(document)
+
+    def test_series_without_common_coordinate_is_refused(self) -> None:
+        """A series whose entries share no time-key kind is refused."""
+        document = self.load("valid-full.json")
+        document["frames"][0]["time"] = {"frame_index": 0}
+        document["frames"][1]["time"] = {"timecode": "00:00:00:01"}
+        with self.assertRaises(TimelineContractError) as caught:
+            validate_timeline(document)
+        self.assertIn("frames", str(caught.exception))
+
+    def test_shared_coordinates_must_disagree_on_order_only(self) -> None:
+        """Shared coordinate kinds must agree on order, not just the first one."""
+        document = self.load("valid-full.json")
+        document["frames"][0]["time"] = {"frame_index": 0, "timestamp_ns": 10}
+        document["frames"][1]["time"] = {"frame_index": 1, "timestamp_ns": 0}
+        with self.assertRaises(TimelineContractError) as caught:
+            validate_timeline(document)
+        self.assertIn("timestamp_ns", str(caught.exception))
 
     def test_window_without_common_coordinate_is_refused(self) -> None:
         """A window cannot compare a frame index with a timecode."""
@@ -189,6 +233,50 @@ class RunResultTimelineSchemaTests(unittest.TestCase):
         with self.assertRaises(TimelineContractError) as caught:
             validate_timeline(document)
         self.assertIn("windows[0]", str(caught.exception))
+
+    def test_window_timestamp_and_timecode_coordinates_validate(self) -> None:
+        """Window ordering works for timestamp-only and timecode-only endpoints."""
+        pairs = (
+            ({"timestamp_ns": 0}, {"timestamp_ns": 41708333}),
+            ({"timecode": "00:00:00:00"}, {"timecode": "00:00:00:01"}),
+        )
+        for start, end in pairs:
+            with self.subTest(start=start, end=end):
+                document = self.load("valid-full.json")
+                document["windows"][0]["start"] = start
+                document["windows"][0]["end"] = end
+                validate_timeline(document)
+
+    def test_window_shared_coordinates_must_agree_on_order(self) -> None:
+        """A window's start and end must order consistently for every shared coordinate."""
+        document = self.load("valid-full.json")
+        document["windows"][0]["start"] = {"frame_index": 0, "timestamp_ns": 2}
+        document["windows"][0]["end"] = {"frame_index": 2, "timestamp_ns": 0}
+        with self.assertRaises(TimelineContractError) as caught:
+            validate_timeline(document)
+        self.assertIn("timestamp_ns", str(caught.exception))
+
+    def test_cli_refuses_invalid_fixtures_by_name(self) -> None:
+        """The CLI exits 1 with the named error, not a traceback, for both invalid fixtures."""
+        cases = (
+            ("invalid-event-without-time.json", "events[0]"),
+            ("invalid-unknown-schema-version.json", "schema_version"),
+        )
+        for name, expected in cases:
+            with self.subTest(fixture=name):
+                completed = subprocess.run(  # noqa: S603 - fixed repository paths
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts" / "ci" / "run_result_timeline_contract.py"),
+                        str(FIXTURE_DIR / name),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.returncode, 1)
+                self.assertIn(expected, completed.stderr)
+                self.assertNotIn("Traceback", completed.stderr)
 
 
 if __name__ == "__main__":

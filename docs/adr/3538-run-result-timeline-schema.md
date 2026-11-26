@@ -107,16 +107,17 @@ Digest: [`docs/research/2452-run-result-timeline.md`](../research/2452-run-resul
 
 ## References
 
-- `req` (#2452, Scope): "A versioned JSON document (additive evolution,
-  HISS-14) holding: provenance record (#2142), per-frame series, per-window
-  statistics, events (alignment decisions, drops, repeats, freezes, switches,
-  masked area), and a time key that can carry frame index, timestamp and
-  timecode."
-- `Q-116`, `Q-139` (#2452 opening line): "One report format before alignment,
-  fields, masks and bits per pixel each invent their own (Q-116, Q-139)."
-- `req` (#2452, Acceptance): "A planted event without a time key is refused
-  by name; an unknown schema version is refused by name."
-- [#2452](https://github.com/VMAFx/vmafx/issues/2452) — the run-result timeline issue.
+- `req` (#2452, Scope, paraphrased): a versioned JSON document with additive
+  evolution (HISS-14), carrying a provenance record (#2142), a per-frame series,
+  per-window statistics, events (alignment decisions, drops, repeats, freezes,
+  switches and masked areas), and a time key that can carry frame index,
+  timestamp and timecode.
+- `Q-116`, `Q-139` (#2452 opening line, paraphrased): one report format should
+  precede alignment, fields, masks and bits per pixel each inventing their own
+  reports.
+- `req` (#2452, Acceptance, paraphrased): a planted event without a time key
+  and an unknown schema version must each be refused by name.
+- [#2452](https://github.com/vidiko/vmafx/issues/2452) — the run-result timeline issue.
 - [ADR-3311](3311-stream-metadata-field-list.md) — the append-only precedent.
 - `docs/hardware-reports/report.schema.json` — the closed-object precedent.
 - `api/openapi/vmafx-server-v1.yaml` — the single sources this schema references.
