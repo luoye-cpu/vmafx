@@ -289,22 +289,114 @@ def _matches_regex_or_glob_list(value: str, patterns: list[str]) -> bool:
     return not has_positive or positive_matched
 
 
+# Renovate main 208cd854196d, lib/util/package-rules/matchers.ts:29-48 defines
+# 19 packageRule matchers; only these 8 delegate to matchRegexOrGlobList.
+_REGEX_OR_GLOB_LIST_MATCHERS: frozenset[str] = frozenset(
+    {
+        "matchManagers",
+        "matchFileNames",
+        "matchDatasources",
+        "matchPackageNames",
+        "matchDepNames",
+        "matchDepTypes",
+        "matchCurrentValue",
+        "matchUpdateTypes",
+    }
+)
+_RENOVATE_REGEX = re.compile(r"!?/(.+)/(i?)", re.DOTALL)
+_PLAIN_RELEASE = re.compile(r"^[0-9]+(\.[0-9]+)*$")
+MAX_RELEASE_PARTS = 16
+
+
+class UnsupportedPackageRuleError(ValueError):
+    """Raised when a matching packageRule carries an unmodeled matcher or value
+    (Renovate main 208cd854196d, lib/util/package-rules/matchers.ts:29-48,
+    lib/util/package-rules/current-version.ts:24-79)."""
+
+    def __init__(self, rule_index: int, key: str, value: Any) -> None:
+        self.rule_index = rule_index
+        self.key = key
+        self.value = value
+        super().__init__(f"packageRules[{rule_index}]: matcher {key}={value!r} is not modeled")
+
+
+def _plain_release_numbers(text: str) -> tuple[int, ...] | None:
+    """Parse an exact PEP 440 release (`^[0-9]+(\\.[0-9]+)*$`) and drop trailing
+    zeros for exact-version equality in CurrentVersionMatcher (Renovate main
+    208cd854196d, lib/util/package-rules/current-version.ts:24-79)."""
+    if _PLAIN_RELEASE.fullmatch(text) is None:
+        return None
+    raw_parts = text.split(".")
+    if len(raw_parts) > MAX_RELEASE_PARTS:
+        return None
+    parts = [int(part) for part in raw_parts[:MAX_RELEASE_PARTS]]
+    end = 1
+    for index, number in enumerate(parts[:MAX_RELEASE_PARTS]):
+        if number != 0:
+            end = index + 1
+    return tuple(parts[:end])
+
+
+def _matches_current_version(version: str | None, pattern: Any) -> bool | None:
+    """Mirror Renovate CurrentVersionMatcher (Renovate main 208cd854196d,
+    lib/util/package-rules/current-version.ts:24-79): /re/, /re/i, !/re/, and
+    !/re/i reuse regex matching from lib/util/string-match.ts:29-57, 94-104;
+    plain PEP 440 releases (`^[0-9]+(\\.[0-9]+)*$`) compare release numbers
+    after dropping trailing zeros; ranges, globs, and non-strings return None."""
+    if version is None or not isinstance(pattern, str):
+        return None
+    if _RENOVATE_REGEX.fullmatch(pattern) is not None:
+        return _matches_regex_or_glob_list(version, [pattern])
+    current = _plain_release_numbers(version)
+    wanted = _plain_release_numbers(pattern)
+    if current is not None and wanted is not None:
+        return current == wanted
+    return None
+
+
+def _eval_modeled_matcher(key: str, raw: Any, dependency: dict[str, str]) -> bool | None:
+    """Evaluate one match* key: dispatch the 8 allow-listed keys to
+    matchRegexOrGlobList (Renovate main 208cd854196d,
+    lib/util/package-rules/matchers.ts:29-48), matchCurrentVersion to
+    CurrentVersionMatcher (current-version.ts:24-79), and return None for any
+    other matcher or non-string pattern list."""
+    if key == "matchCurrentVersion":
+        return _matches_current_version(dependency.get(key), raw)
+    if key not in _REGEX_OR_GLOB_LIST_MATCHERS:
+        return None
+    choices = raw if isinstance(raw, list) else [raw]
+    if not all(isinstance(item, str) for item in choices):
+        return None
+    return _matches_regex_or_glob_list(dependency.get(key, ""), choices)
+
+
+def _rule_matches(index: int, rule: dict[str, Any], dependency: dict[str, str]) -> bool:
+    """Evaluate a packageRule's matchers (Renovate main 208cd854196d,
+    lib/util/package-rules/index.ts:64-137, matchers.ts:29-48): check every
+    modeled predicate first so a rule excluded by one is skipped, then raise
+    UnsupportedPackageRuleError if an unmodeled key or value remains."""
+    unmodeled: tuple[str, Any] | None = None
+    for key, raw in rule.items():
+        if not key.startswith("match"):
+            continue
+        matched = _eval_modeled_matcher(key, raw, dependency)
+        if matched is False:
+            return False
+        if matched is None and unmodeled is None:
+            unmodeled = (key, raw)
+    if unmodeled is not None:
+        raise UnsupportedPackageRuleError(index, unmodeled[0], unmodeled[1])
+    return True
+
+
 def matching_package_rules(config: dict[str, Any], dependency: dict[str, str]) -> list[int]:
-    """Find matching rules for these concrete fixtures in their configured order."""
-    result = []
-    for index, rule in enumerate(config["packageRules"]):
-        matches = True
-        for key, patterns in rule.items():
-            if not key.startswith("match"):
-                continue
-            value = dependency.get(key, "")
-            choices = patterns if isinstance(patterns, list) else [patterns]
-            if not _matches_regex_or_glob_list(value, choices):
-                matches = False
-                break
-        if matches:
-            result.append(index)
-    return result
+    """Find matching rules for these concrete fixtures in their configured order
+    (Renovate main 208cd854196d, lib/util/package-rules/index.ts:64-137)."""
+    return [
+        index
+        for index, rule in enumerate(config["packageRules"])
+        if _rule_matches(index, rule, dependency)
+    ]
 
 
 def matching_group_rules(config: dict[str, Any], dependency: dict[str, str]) -> list[int]:
@@ -707,6 +799,28 @@ def _uv_group_finding(
     return []
 
 
+def _collect_uv_group_findings(
+    config: dict[str, Any], manifest_version: str, pip_version: str
+) -> list[str]:
+    """Run _uv_group_finding across patch, minor, and major; turn an
+    UnsupportedPackageRuleError (Renovate main 208cd854196d,
+    lib/util/package-rules/matchers.ts:29-48, current-version.ts:24-79) into
+    one fail-closed finding and stop the group check for that update type."""
+    findings: list[str] = []
+    for update_type in ("patch", "minor", "major"):
+        try:
+            group_findings = _uv_group_finding(config, update_type, manifest_version, pip_version)
+        except UnsupportedPackageRuleError as exc:
+            group_findings = [
+                f"packageRules[{exc.rule_index}]: "
+                f"the uv check does not model {exc.key}={exc.value!r}"
+            ]
+        for finding in group_findings:
+            if finding not in findings:
+                findings.append(finding)
+    return findings
+
+
 def uv_lock_generator_findings(config: dict[str, Any], read: Callable[[str], str]) -> list[str]:
     """Every way the config fails to move both uv pins in one pull request."""
     manager = uv_lock_generator_manager(config)
@@ -727,8 +841,7 @@ def uv_lock_generator_findings(config: dict[str, Any], read: Callable[[str], str
     for path in (TOOLING_INPUT, LOCK_MANIFEST):
         if _is_ignored_by_renovate(path, config["ignorePaths"]):
             errors.append(f"{path}: ignored by Renovate")
-    for update_type in ("patch", "minor", "major"):
-        errors.extend(_uv_group_finding(config, update_type, version, pins[0]))
+    errors.extend(_collect_uv_group_findings(config, version, pins[0]))
     return errors
 
 
@@ -817,6 +930,77 @@ class UvLockGeneratorGroup(unittest.TestCase):
         self.assertEqual(self.findings(append_pip_disable(["!/^UV$/i"])), [])
         self.assertEqual(self.findings(append_pip_disable(["u*", "!uv"])), [])
         self.assertEqual(self.findings(append_pip_disable([])), [])
+
+    def _append_pip_disable_rule(
+        self, package: str = "uv", **extra: Any
+    ) -> Callable[[dict[str, Any]], None]:
+        def change(config: dict[str, Any]) -> None:
+            config["packageRules"].append(
+                {
+                    "matchManagers": ["pip_requirements"],
+                    "matchFileNames": [TOOLING_INPUT],
+                    **extra,
+                    "matchPackageNames": [package],
+                    "enabled": False,
+                }
+            )
+
+        return change
+
+    def test_unmodeled_current_version_range_fails_closed(self) -> None:
+        """Negative: a matchCurrentVersion range on uv is reported as not modeled."""
+        rule_index = len(self.config["packageRules"])
+        self.assertEqual(
+            self.findings(self._append_pip_disable_rule(matchCurrentVersion=">=0")),
+            [
+                f"packageRules[{rule_index}]: "
+                "the uv check does not model matchCurrentVersion='>=0'"
+            ],
+        )
+
+    def test_current_version_regex_and_pep440_release_match_like_renovate(self) -> None:
+        """Positive and negative: regexes and exact PEP 440 releases match CurrentVersionMatcher."""
+        version = str(json.loads((ROOT / LOCK_MANIFEST).read_text(encoding="utf-8"))["uv_version"])
+        pip_disabled = [
+            f"{TOOLING_INPUT}: pip_requirements uv ({kind}) disabled"
+            for kind in ("patch", "minor", "major")
+        ]
+        for matching in (r"/^0\./", version, f"{version}.0"):
+            with self.subTest(matchCurrentVersion=matching):
+                self.assertEqual(
+                    self.findings(self._append_pip_disable_rule(matchCurrentVersion=matching)),
+                    pip_disabled,
+                )
+        for non_matching in (r"/^1\./", r"!/^0\./", "0.13.5"):
+            with self.subTest(matchCurrentVersion=non_matching):
+                self.assertEqual(
+                    self.findings(self._append_pip_disable_rule(matchCurrentVersion=non_matching)),
+                    [],
+                )
+
+    def test_unmodeled_package_rule_matcher_fails_closed(self) -> None:
+        """Negative: an unmodeled match* key on a rule that matches uv fails closed."""
+        rule_index = len(self.config["packageRules"])
+        self.assertEqual(
+            self.findings(self._append_pip_disable_rule(matchConfidence=["high"])),
+            [
+                f"packageRules[{rule_index}]: "
+                "the uv check does not model matchConfidence=['high']"
+            ],
+        )
+
+    def test_unmodeled_matcher_on_non_uv_rule_is_ignored(self) -> None:
+        """Boundary: a rule excluded by a modeled matcher is skipped despite unmodeled keys."""
+        self.assertEqual(
+            self.findings(
+                self._append_pip_disable_rule(package="numpy", matchCurrentVersion=">=0")
+            ),
+            [],
+        )
+        self.assertEqual(
+            self.findings(self._append_pip_disable_rule(package="numpy", matchConfidence=["high"])),
+            [],
+        )
 
     def test_uv_managers_must_be_enabled(self) -> None:
         pip_disabled = f"{TOOLING_INPUT}: pip_requirements uv (patch) disabled"

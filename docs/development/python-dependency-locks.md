@@ -27,6 +27,10 @@ version of `uv` (`uv_version` in `requirements/locks/manifest.json`).
 and groups the `requirements/locks/tooling-tests.in` pin with `uv_version` through the
 `uv (lock generator, all managers)` group in `renovate.json`, guarded by
 `test_checked_in_config_owns_uv_pins` in `scripts/ci/tests/test_renovate_file_patterns.py`.
+The guard mirrors Renovate's package-rule matching for the keys it models and
+reports a rule that may apply to a `uv` pin through a matcher or
+`matchCurrentVersion` value it does not model
+(`test_unmodeled_package_rule_matcher_fails_closed`).
 Renovate’s `minimumGroupSize` threshold (`test_uv_group_requires_both_updates`) only
 postpones creation of a new branch, so the `check` hook still rejects a pull request that
 changes just one pin.
