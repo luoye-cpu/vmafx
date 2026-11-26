@@ -1,4 +1,4 @@
-// Copyright 2026 Lusoris
+// Copyright 2026 luoye-cpu
 // SPDX-License-Identifier: EUPL-1.2
 
 // Package executil holds small shared settings for subprocess calls.
@@ -13,6 +13,7 @@ import "time"
 // block the caller forever.
 const SubprocessWaitDelay = 2 * time.Second
 
-// ShortSubprocessWaitDelay is the one-second variant used by probes and
-// one-shot helpers whose children are expected to exit immediately.
+// ShortSubprocessWaitDelay is the one-second post-cancel grace period for
+// probes and single-binary helpers that start no child processes of their own
+// holding the pipes open.
 const ShortSubprocessWaitDelay = time.Second
