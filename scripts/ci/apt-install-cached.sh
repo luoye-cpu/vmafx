@@ -17,6 +17,11 @@
 #       configure, drop Microsoft/Azure apt sources, refresh apt lists, restore
 #       the archive cache, install every non-comment line of LIST, and copy the
 #       archives back for the save step
+#
+# This script is kept instead of cache-apt-pkgs-action because that action
+# skips and ignores apt index refresh errors on GitHub runners, restores
+# packages without running their install scripts, and runs unsigned prebuilt
+# binaries; see docs/adr/3609-keep-apt-cache-sweep.md for the revisit trigger.
 set -euo pipefail
 
 usage() {

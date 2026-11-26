@@ -11,6 +11,9 @@ on:
     # ADR-0331 (design notes)
     types: [opened, synchronize, reopened, ready_for_review]
     # ADR-0341, ADR-1140, ADR-2169, ADR-3293 (design notes)
+  merge_group:
+    types: [checks_requested]
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -98,13 +101,25 @@ jobs:
       - name: Build (CPU, release)
         if: steps.impact.outputs.golden_harness == 'true'
         working-directory: core
+        env:
+          TIER_FULL: ${{ needs.tier.outputs.full }}
+          C_CORE: ${{ steps.impact.outputs.c_core }}
         run: |
           # shellcheck disable=SC2046  # the helper prints one option per line, split on purpose
           meson setup build -Denable_cuda=false -Denable_sycl=false \
             -Denable_zimg=true \
             -Denable_float=true -Denable_avx512=true --buildtype=release \
             -Dwerror=true $(../scripts/ci/werror-args.sh true)
-          meson compile -C build
+          if ! python3 ../scripts/ci/heavy_link_targets.py --job netflix-golden \
+            --build-dir build --tier-full "$TIER_FULL" --c-core "$C_CORE" \
+            >"${RUNNER_TEMP}/link-targets.txt" 2>"${RUNNER_TEMP}/link-summary.txt"; then
+            cat "${RUNNER_TEMP}/link-summary.txt" >&2
+            exit 2
+          fi
+          mapfile -t targets < "${RUNNER_TEMP}/link-targets.txt"
+          if [ "${#targets[@]}" -eq 0 ]; then echo "::error::heavy-link-targets printed no targets"; exit 2; fi
+          ninja -C build "${targets[@]}"
+          echo "::notice::$(cat "${RUNNER_TEMP}/link-summary.txt") (ADR-3625)"
 
       - name: Restore Netflix vmaf_resource fixtures
         id: fixtures
@@ -299,7 +314,7 @@ jobs:
     if: needs.tier.outputs.full == 'true'
     name: "Sanitizers (${{ matrix.sanitizer }})"
     # ADR-0359, ADR-3286 (design notes)
-    runs-on: ${{ vars.ARC_RUNNERS_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'arc-runners' || 'ubuntu-26.04' }}
+    runs-on: ${{ vars.ARC_RUNNERS_ENABLED == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository) && 'arc-runners' || 'ubuntu-26.04' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -483,12 +498,24 @@ jobs:
       - name: Build libvmaf (dnn enabled)
         if: steps.impact.outputs.tiny_ai == 'true'
         working-directory: core
+        env:
+          TIER_FULL: ${{ needs.tier.outputs.full }}
+          C_CORE: ${{ steps.impact.outputs.c_core }}
         run: |
           # shellcheck disable=SC2046  # the helper prints one option per line, split on purpose
           meson setup build -Denable_cuda=false -Denable_sycl=false \
             -Denable_dnn=enabled --buildtype=release \
             -Dwerror=true $(../scripts/ci/werror-args.sh true)
-          meson compile -C build
+          if ! python3 ../scripts/ci/heavy_link_targets.py --job dnn --build-dir build \
+            --tier-full "$TIER_FULL" --c-core "$C_CORE" \
+            >"${RUNNER_TEMP}/link-targets.txt" 2>"${RUNNER_TEMP}/link-summary.txt"; then
+            cat "${RUNNER_TEMP}/link-summary.txt" >&2
+            exit 2
+          fi
+          mapfile -t targets < "${RUNNER_TEMP}/link-targets.txt"
+          if [ "${#targets[@]}" -eq 0 ]; then echo "::error::heavy-link-targets printed no targets"; exit 2; fi
+          ninja -C build "${targets[@]}"
+          echo "::notice::$(cat "${RUNNER_TEMP}/link-summary.txt") (ADR-3625)"
       - name: Run meson dnn suite
         if: steps.impact.outputs.tiny_ai == 'true'
         working-directory: core
@@ -577,7 +604,10 @@ jobs:
     # required-aggregator
     name: Tooling Tests
     runs-on: ubuntu-26.04
-    timeout-minutes: 35
+    # docs/development/ci.md (ADR-3367) adds the step caps (20 min) to 1.25 x the
+    # longest healthy run of the uncapped steps (34.3 min in run 45516254253).
+    # 20 + 1.25 x 34.3 = 62.9 min, rounded up to 63. Pytest still limits each test to 300 s.
+    timeout-minutes: 63
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -859,6 +889,10 @@ jobs:
 
       - name: Build libvmaf (full MCP transport matrix)
         working-directory: core
+        env:
+          TIER_FULL: ${{ needs.tier.outputs.full }}
+          # mcp-smoke has no equivalent libvmaf-build-matrix row; keep every test link.
+          C_CORE: "false"
         run: |
           # shellcheck disable=SC2046  # the helper prints one option per line, split on purpose
           meson setup build-mcp \
@@ -867,7 +901,16 @@ jobs:
             -Denable_mcp_uds=true -Denable_mcp_stdio=true \
             --buildtype=release \
             -Dwerror=true $(../scripts/ci/werror-args.sh true)
-          meson compile -C build-mcp
+          if ! python3 ../scripts/ci/heavy_link_targets.py --job mcp-smoke \
+            --build-dir build-mcp --tier-full "$TIER_FULL" --c-core "$C_CORE" \
+            >"${RUNNER_TEMP}/link-targets.txt" 2>"${RUNNER_TEMP}/link-summary.txt"; then
+            cat "${RUNNER_TEMP}/link-summary.txt" >&2
+            exit 2
+          fi
+          mapfile -t targets < "${RUNNER_TEMP}/link-targets.txt"
+          if [ "${#targets[@]}" -eq 0 ]; then echo "::error::heavy-link-targets printed no targets"; exit 2; fi
+          ninja -C build-mcp "${targets[@]}"
+          echo "::notice::$(cat "${RUNNER_TEMP}/link-summary.txt") (ADR-3625)"
 
       - name: Pack the vmaf CLI for the vmaf-tune suite
         # ADR-1528 (design notes)
@@ -1096,11 +1139,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
         run: |
-          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 1/4 -- \
-            python/test/ -v -m "not slow" --tb=short \
-            --timeout=600 --timeout-method=thread \
-            --ignore=python/test/resource \
-            --deselect python/test/command_line_test.py::CommandLineTest
+          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 1/4 -- @scripts/ci/pytest-coverage-shard.args
       - name: Run Python test suite, shard 2/4
         id: python_coverage_shard_2
         if: steps.impact.outputs.golden_harness == 'true'
@@ -1109,11 +1148,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
         run: |
-          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 2/4 -- \
-            python/test/ -v -m "not slow" --tb=short \
-            --timeout=600 --timeout-method=thread \
-            --ignore=python/test/resource \
-            --deselect python/test/command_line_test.py::CommandLineTest
+          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 2/4 -- @scripts/ci/pytest-coverage-shard.args
       - name: Run Python test suite, shard 3/4
         id: python_coverage_shard_3
         if: steps.impact.outputs.golden_harness == 'true'
@@ -1122,11 +1157,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
         run: |
-          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 3/4 -- \
-            python/test/ -v -m "not slow" --tb=short \
-            --timeout=600 --timeout-method=thread \
-            --ignore=python/test/resource \
-            --deselect python/test/command_line_test.py::CommandLineTest
+          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 3/4 -- @scripts/ci/pytest-coverage-shard.args
       - name: Run Python test suite, shard 4/4
         id: python_coverage_shard_4
         if: steps.impact.outputs.golden_harness == 'true'
@@ -1135,11 +1166,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}/python
           LD_LIBRARY_PATH: ${{ github.workspace }}/core/build-coverage/src
         run: |
-          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 4/4 -- \
-            python/test/ -v -m "not slow" --tb=short \
-            --timeout=600 --timeout-method=thread \
-            --ignore=python/test/resource \
-            --deselect python/test/command_line_test.py::CommandLineTest
+          timeout --kill-after=30s 30m python3 scripts/ci/run_pytest_shard.py --shard 4/4 -- @scripts/ci/pytest-coverage-shard.args
       - name: Gather coverage report (gcovr)
         if: ${{ always() && steps.impact.outputs.golden_harness == 'true' }}
         working-directory: core
@@ -1229,9 +1256,12 @@ jobs:
   # ADR-1319 (design notes)
   gpu-full-runner-available:
     needs: tier
-    if: needs.tier.outputs.full == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: needs.tier.outputs.full == 'true' && (github.event_name == 'push' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository)
     name: Probe GPU Full Runner
     runs-on: ubuntu-26.04
+    permissions:
+      contents: read
+      pull-requests: read
     timeout-minutes: 5
     outputs:
       available: ${{ steps.probe.outputs.available }}
@@ -1241,15 +1271,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Check gpu-full runner availability
         id: probe
-        env:
-          GH_TOKEN: ${{ secrets.SYCL_RUNNER_PROBE_TOKEN || github.token }}
-          RUNNER_ENABLED: ${{ vars.GPU_COVERAGE_ENABLED }}
-          RUNNER_LABELS: "self-hosted linux gpu-full"
-          RUNNER_DISPLAY_NAME: "Coverage GPU"
-          RUNNER_SWITCH_NAME: "GPU_COVERAGE_ENABLED"
-          RUNNER_RUNBOOK: "docs/development/self-hosted-runner.md"
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: bash scripts/ci/check-runner-available.sh
+        uses: ./.github/actions/runner-probe
+        with:
+          token: ${{ secrets.SYCL_RUNNER_PROBE_TOKEN || github.token }}
+          enabled: ${{ vars.GPU_COVERAGE_ENABLED }}
+          labels: "self-hosted linux gpu-full"
+          display-name: "Coverage GPU"
+          switch-name: "GPU_COVERAGE_ENABLED"
+          runbook: "docs/development/self-hosted-runner.md"
 
   coverage-gpu:
     # required-aggregator

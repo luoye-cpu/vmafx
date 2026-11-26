@@ -10,14 +10,21 @@ user or link an issue; and the public radar texts name no third-party company.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
+import inspect
+import io
 import json
 import re
 import shutil
 import sys
 import tempfile
 import unittest
+import unittest.mock
+import urllib.error
+import urllib.request
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -404,6 +411,137 @@ class CliTest(unittest.TestCase):
             )
             self.assertEqual(code, 0)
             self.assertIn("acme/today", out.read_text(encoding="utf-8"))
+
+
+class HttpFetchTest(unittest.TestCase):
+    """HTTP fetches retry transient transport errors through tenacity without network or sleep."""
+
+    @contextlib.contextmanager
+    def fake_transport(
+        self, outcomes: Sequence[bytes | BaseException]
+    ) -> Iterator[tuple[list[tuple[urllib.request.Request, float]], list[float]]]:
+        calls: list[tuple[urllib.request.Request, float]] = []
+        sleeps: list[float] = []
+        steps = iter(outcomes)
+
+        def fake_urlopen(request: urllib.request.Request, timeout: float = 0.0) -> io.BytesIO:
+            calls.append((request, timeout))
+            nxt = next(steps)
+            if isinstance(nxt, BaseException):
+                raise nxt
+            return io.BytesIO(nxt)
+
+        with unittest.mock.patch.object(rc.urllib.request, "urlopen", fake_urlopen):
+            yield calls, sleeps
+
+    def test_first_attempt_succeeds_without_sleep(self) -> None:
+        gh_url = "https://api.github.com/repos/acme/vmafx"
+        with self.fake_transport([b"ok"]) as (calls, sleeps):
+            body = rc.http_fetch(gh_url, "hdr-val", sleep=sleeps.append)
+        self.assertEqual(body, b"ok")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sleeps, [])
+        req, timeout = calls[0]
+        self.assertEqual(timeout, rc.HTTP_TIMEOUT_S)
+        self.assertEqual(req.get_header("Authorization"), "Bearer hdr-val")
+        self.assertEqual(req.get_header("Accept"), "application/vnd.github+json")
+        with self.fake_transport([b"plain"]) as (other_calls, other_sleeps):
+            self.assertEqual(
+                rc.http_fetch("https://example.org/feed", "hdr-val", sleep=other_sleeps.append),
+                b"plain",
+            )
+        self.assertIsNone(other_calls[0][0].get_header("Authorization"))
+        self.assertEqual(other_calls[0][0].get_header("Accept"), "*/*")
+        self.assertEqual(other_sleeps, [])
+
+    def test_absent_token_sends_no_authorization(self) -> None:
+        self.assertIsNone(inspect.signature(rc.http_fetch).parameters["token"].default)
+        gh_url = "https://api.github.com/repos/acme/vmafx"
+        with self.fake_transport([b"ok"]) as (calls, sleeps):
+            self.assertEqual(rc.http_fetch(gh_url, sleep=sleeps.append), b"ok")
+        self.assertIsNone(calls[0][0].get_header("Authorization"))
+        self.assertEqual(calls[0][0].get_header("Accept"), "*/*")
+
+    def test_third_attempt_succeeds_after_configured_backoff(self) -> None:
+        outcomes: list[bytes | BaseException] = [
+            urllib.error.URLError("first"),
+            urllib.error.URLError("second"),
+            b"recovered",
+        ]
+        with self.fake_transport(outcomes) as (calls, sleeps):
+            body = rc.http_fetch("https://example.org/feed", sleep=sleeps.append)
+        self.assertEqual(body, b"recovered")
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, [1.0, 4.0])
+
+    def test_three_url_errors_raise_chained_fetch_error(self) -> None:
+        url = "https://example.org/down"
+        last_err = urllib.error.URLError("third failure")
+        outcomes: list[bytes | BaseException] = [
+            urllib.error.URLError("first failure"),
+            urllib.error.URLError("second failure"),
+            last_err,
+        ]
+        with (
+            self.fake_transport(outcomes) as (calls, sleeps),
+            self.assertRaises(rc.FetchError) as ctx,
+        ):
+            rc.http_fetch(url, sleep=sleeps.append)
+        self.assertIn(url, str(ctx.exception))
+        self.assertIn("third failure", str(ctx.exception))
+        self.assertIs(ctx.exception.__cause__, last_err)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleeps, [1.0, 4.0])
+
+    def test_non_https_url_fails_immediately(self) -> None:
+        with (
+            self.fake_transport([b"unused"]) as (calls, sleeps),
+            self.assertRaisesRegex(rc.FetchError, "only https"),
+        ):
+            rc.http_fetch("http://example.org/insecure", sleep=sleeps.append)
+        self.assertEqual(calls, [])
+        self.assertEqual(sleeps, [])
+
+    def test_oversized_body_fails_without_retry(self) -> None:
+        oversized = b"x" * (rc.MAX_BODY_BYTES + 1)
+        with (
+            self.fake_transport([oversized, b"second"]) as (calls, sleeps),
+            self.assertRaisesRegex(rc.FetchError, "body above"),
+        ):
+            rc.http_fetch("https://example.org/huge", sleep=sleeps.append)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sleeps, [])
+
+    def test_non_retried_exception_propagates_immediately(self) -> None:
+        with (
+            self.fake_transport([ValueError("bad state"), b"second"]) as (calls, sleeps),
+            self.assertRaisesRegex(ValueError, "bad state"),
+        ):
+            rc.http_fetch("https://example.org/bug", sleep=sleeps.append)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(sleeps, [])
+
+    def test_timeout_and_os_error_are_retried_and_backoff_matches_attempts(self) -> None:
+        self.assertEqual(rc.HTTP_ATTEMPTS, 3)
+        self.assertEqual(len(rc.HTTP_BACKOFF_S), rc.HTTP_ATTEMPTS - 1)
+        self.assertEqual(len(rc._http_wait().strategies), rc.HTTP_ATTEMPTS - 1)
+        for err in (TimeoutError("timed out"), OSError("connection reset")):
+            with (
+                self.subTest(error=type(err).__name__),
+                self.fake_transport([err, b"ok"]) as (calls, sleeps),
+            ):
+                body = rc.http_fetch("https://example.org/transient", sleep=sleeps.append)
+                self.assertEqual(body, b"ok")
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(sleeps, [1.0])
+        exact_cap = b"x" * rc.MAX_BODY_BYTES
+        with self.fake_transport([exact_cap]) as (cap_calls, cap_sleeps):
+            self.assertEqual(
+                len(rc.http_fetch("https://example.org/cap", sleep=cap_sleeps.append)),
+                rc.MAX_BODY_BYTES,
+            )
+        self.assertEqual(len(cap_calls), 1)
+        self.assertEqual(cap_sleeps, [])
 
 
 if __name__ == "__main__":
