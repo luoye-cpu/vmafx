@@ -1,6 +1,6 @@
 # Community metrics
 
-Issue [#2554](https://github.com/VMAFx/vmafx/issues/2554) (maintainer decision
+Issue [#2554](https://github.com/vidiko/vmafx/issues/2554) (maintainer decision
 Q-182 item d): response times and contribution flow are measured, not guessed.
 `scripts/dev/community_metrics.py` produces the numbers; **output only** —
 nothing is posted anywhere, the maintainer decides what to publish.
@@ -12,7 +12,7 @@ For a date window `--since` .. `--until` (inclusive):
 | Metric | Definition |
 | --- | --- |
 | Opened / closed | Issues and pull requests created or closed inside the window (a pair both opened and closed inside the window is counted once, in both groups). |
-| Maintainer first response | For every item **opened** in the window: the earliest comment or review authored by a maintainer — the `@logins` of [MAINTAINERS.md](https://github.com/VMAFx/vmafx/blob/master/MAINTAINERS.md) — that is not authored by a bot. Reported as the median and the 90th percentile in days, over the items that have one. An item with none is a stated `no response yet` row — never zero, never dropped. A response arriving after the item was closed still counts and its row is marked `post-close`. |
+| Maintainer first response | For every item **opened** in the window: the earliest comment or review authored by a maintainer — the `@logins` of [MAINTAINERS.md](https://github.com/vidiko/vmafx/blob/master/MAINTAINERS.md) — that is not authored by a bot. Reported as the median and the 90th percentile in days, over the items that have one. An item with none is a stated `no response yet` row — never zero, never dropped. A response arriving after the item was closed still counts and its row is marked `post-close`. |
 | Bots | Every login ending in `[bot]` seen in the window or the merged history. They are excluded from first responses and first merges, and the report lists the logins it treated as bots so the rule is auditable. |
 | Open `good first issue` / `help wanted` | Current open counts for the two labels (a snapshot, not window-scoped). |
 | Aging pull requests | Open pull requests older than 30 days, with their age. |

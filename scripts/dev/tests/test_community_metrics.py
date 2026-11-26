@@ -165,21 +165,21 @@ class GhFixture:
 class PipelineTest(unittest.TestCase):
     def run_pipeline(self) -> dict[str, Any]:
         with mock.patch.object(community_metrics, "run_gh", GhFixture()):
-            window_items = community_metrics.fetch_window_items("VMAFx/vmafx", SINCE, UNTIL)
-            merged = community_metrics.fetch_merged_pull_requests("VMAFx/vmafx")
-            open_pull_requests = community_metrics.fetch_open_pull_requests("VMAFx/vmafx")
+            window_items = community_metrics.fetch_window_items("vidiko/vmafx", SINCE, UNTIL)
+            merged = community_metrics.fetch_merged_pull_requests("vidiko/vmafx")
+            open_pull_requests = community_metrics.fetch_open_pull_requests("vidiko/vmafx")
             responses: dict[int, dict[str, Any] | None] = {}
             for item in window_items:
                 if not item["opened_in_window"]:
                     continue
                 comments, reviews = community_metrics.fetch_first_response_inputs(
-                    "VMAFx/vmafx", item
+                    "vidiko/vmafx", item
                 )
                 responses[int(item["number"])] = community_metrics.first_response(
                     item, comments, reviews, set(MAINTAINERS)
                 )
             report: dict[str, Any] = community_metrics.compute_report(
-                repo="VMAFx/vmafx",
+                repo="vidiko/vmafx",
                 since=SINCE,
                 until=UNTIL,
                 now=datetime.datetime(2026, 11, 8, tzinfo=datetime.timezone.utc),
@@ -247,7 +247,7 @@ class PipelineTest(unittest.TestCase):
 
     def test_empty_window_reports_zeroes_and_no_median(self) -> None:
         report: dict[str, Any] = community_metrics.compute_report(
-            repo="VMAFx/vmafx",
+            repo="vidiko/vmafx",
             since="2026-09-01",
             until="2026-09-02",
             now=datetime.datetime(2026, 11, 8, tzinfo=datetime.timezone.utc),
@@ -299,7 +299,7 @@ class PipelineTest(unittest.TestCase):
     def test_merged_history_at_the_limit_fails_instead_of_truncating(self) -> None:
         with mock.patch.object(community_metrics, "run_gh", lambda args: MERGED[:2]):
             with self.assertRaises(RuntimeError):
-                community_metrics.fetch_merged_pull_requests("VMAFx/vmafx", limit=2)
+                community_metrics.fetch_merged_pull_requests("vidiko/vmafx", limit=2)
 
     def test_search_listing_fails_at_the_result_cap(self) -> None:
         # The search API stops at 1000 results whatever --limit asks for; a
@@ -308,19 +308,19 @@ class PipelineTest(unittest.TestCase):
         rows = [{"number": n} for n in range(cap)]
         with mock.patch.object(community_metrics, "run_gh", lambda args: rows):
             with self.assertRaises(RuntimeError):
-                community_metrics.fetch_window_items("VMAFx/vmafx", SINCE, UNTIL)
+                community_metrics.fetch_window_items("vidiko/vmafx", SINCE, UNTIL)
 
     def test_open_pull_request_list_fails_at_its_limit(self) -> None:
         rows = [{"number": n} for n in range(community_metrics.LIST_LIMIT)]
         with mock.patch.object(community_metrics, "run_gh", lambda args: rows):
             with self.assertRaises(RuntimeError):
-                community_metrics.fetch_open_pull_requests("VMAFx/vmafx")
+                community_metrics.fetch_open_pull_requests("vidiko/vmafx")
 
     def test_label_counts_fail_at_the_fetch_limit(self) -> None:
         rows = [{"number": n} for n in range(community_metrics.LIST_LIMIT)]
         with mock.patch.object(community_metrics, "run_gh", lambda args: rows):
             with self.assertRaises(RuntimeError):
-                community_metrics.fetch_open_label_counts("VMAFx/vmafx")
+                community_metrics.fetch_open_label_counts("vidiko/vmafx")
 
     def test_percentile_boundaries(self) -> None:
         self.assertIsNone(community_metrics.percentile([], 90))
