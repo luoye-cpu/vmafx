@@ -13,10 +13,10 @@ import shutil
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from io import StringIO
-from itertools import islice
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -44,12 +44,23 @@ _MAX_FIXTURE_ENTRIES = 128
 
 
 def remove_fixture_objects(objects: Path) -> None:
-    entries = list(islice(objects.rglob("*"), _MAX_FIXTURE_ENTRIES + 1))
-    if len(entries) > _MAX_FIXTURE_ENTRIES:
-        raise AssertionError(f"fixture object tree exceeds {_MAX_FIXTURE_ENTRIES} entries")
-    for entry in entries:
-        if entry.is_file():
-            remove_file(entry)
+    directories = [objects]
+    files: list[Path] = []
+    count = 0
+    while directories:
+        with os.scandir(directories.pop()) as entries:
+            for entry in entries:
+                count += 1
+                if count > _MAX_FIXTURE_ENTRIES:
+                    raise AssertionError(
+                        f"fixture object tree exceeds {_MAX_FIXTURE_ENTRIES} entries"
+                    )
+                if entry.is_dir(follow_symlinks=False):
+                    directories.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    files.append(Path(entry.path))
+    for path in files:
+        remove_file(path)
 
 
 class FixtureObjectRemoval(unittest.TestCase):
@@ -66,10 +77,39 @@ class FixtureObjectRemoval(unittest.TestCase):
 
     def test_rejects_one_entry_over_limit(self) -> None:
         (self.objects / "extra").touch()
-        with self.assertRaisesRegex(
-            AssertionError, rf"^fixture object tree exceeds {_MAX_FIXTURE_ENTRIES} entries$"
+        with (
+            patch(f"{__name__}.remove_file") as remove,
+            self.assertRaisesRegex(
+                AssertionError, rf"^fixture object tree exceeds {_MAX_FIXTURE_ENTRIES} entries$"
+            ),
         ):
             remove_fixture_objects(self.objects)
+        remove.assert_not_called()
+
+    def test_bounds_scandir_consumption(self) -> None:
+        pulled = 0
+
+        def entries() -> Iterator[Mock]:
+            nonlocal pulled
+            for index in range(_MAX_FIXTURE_ENTRIES + 50):
+                entry = Mock(spec=os.DirEntry)
+                entry.name = str(index)
+                entry.path = str(self.objects / entry.name)
+                entry.is_dir.return_value = False
+                entry.is_file.return_value = True
+                pulled += 1
+                yield entry
+
+        with (
+            patch.object(os, "scandir", side_effect=lambda path: nullcontext(entries())),
+            patch(f"{__name__}.remove_file") as remove,
+            self.assertRaisesRegex(
+                AssertionError, rf"^fixture object tree exceeds {_MAX_FIXTURE_ENTRIES} entries$"
+            ),
+        ):
+            remove_fixture_objects(self.objects)
+        self.assertLessEqual(pulled, _MAX_FIXTURE_ENTRIES + 1)
+        remove.assert_not_called()
 
 
 class ReleaseSelection(unittest.TestCase):

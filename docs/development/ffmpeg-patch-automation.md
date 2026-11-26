@@ -161,8 +161,10 @@ tag's name, so the hook at every commit and push reads the commit from disk.
   on first use. Any other removal failure stops the run with the error.
   The read-only retry runs only on Windows and assumes the tool created and
   owns the cache tree and that no other process is writing to it.
-  Any filename in a removal error comes from the exception received by the
-  `onexc` hook.
+  If the walk reports an error, `remove_tree` raises the first unrecovered
+  error received by the `onexc` hook, preserving that error's filename.
+  If the walk reports no error but the root remains, `remove_tree` raises
+  `ENOTEMPTY` with the root as its filename.
   A cached commit that differs from the pin is not repaired silently; delete
   the directory below to discard it.
 
