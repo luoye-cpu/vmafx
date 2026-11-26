@@ -6,3 +6,5 @@
   error received by the `onexc` hook, preserving its filename and adding bounded
   notes. If the walk reports no error but the root remains, `remove_tree` raises
   `ENOTEMPTY` with the root as its filename.
+  Before deleting anything, cache removal refuses trees with more than 65,536
+  entries and roots that are symlinks or junctions.

@@ -19,11 +19,14 @@ import stat
 import sys
 import tempfile
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from itertools import islice
 from pathlib import Path
 from typing import Any
 from unittest import mock
+
+if sys.platform == "win32":
+    import _winapi
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -35,6 +38,7 @@ from scripts.lib.scratch_program import (  # noqa: E402
     remove_file,
     remove_program,
     remove_tree,
+    walk_tree,
 )
 
 REAL_UNLINK = os.unlink
@@ -148,6 +152,112 @@ class TemporaryDirectoryCleanup(unittest.TestCase):
             scratch.cleanup()
         self.assertFalse(Path(scratch.name).exists())
         self.assertEqual(calls.count("harness"), 3)
+
+
+class BoundedTreeWalk(unittest.TestCase):
+    LIMIT = 8
+
+    def setUp(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.tree = root / "tree"
+        self.tree.mkdir()
+        self.outside = root / "outside"
+        self.outside.mkdir()
+        self.marker = self.outside / "keep"
+        self.marker.touch()
+        self.enterContext(mock.patch(f"{MODULE}.MAX_TREE_ENTRIES", self.LIMIT))
+
+    def test_walk_counts_entries_across_directories(self) -> None:
+        child = self.tree / "child"
+        child.mkdir()
+        paths = [child / str(i) for i in range(self.LIMIT - 1)]
+        for path in paths:
+            path.touch()
+        self.assertCountEqual(
+            (Path(entry.path) for entry in walk_tree(self.tree, self.LIMIT)), paths
+        )
+        extra = self.tree / "extra"
+        extra.touch()
+        with self.assertRaises(OSError) as exc:
+            walk_tree(self.tree, self.LIMIT)
+        self.assertEqual(str(exc.exception), f"tree at {self.tree} exceeds {self.LIMIT} entries")
+        self.assertTrue(all(path.is_file() for path in [*paths, extra]))
+
+    def test_walk_bounds_pulls_before_using_entry(self) -> None:
+        pulled = 0
+        leaf = mock.Mock(spec=os.DirEntry)
+        leaf.is_symlink.return_value = True
+        overflow = mock.Mock(spec=os.DirEntry)
+        overflow.is_symlink.side_effect = AssertionError("used over-limit entry")
+
+        def entries() -> Iterator[mock.Mock]:
+            nonlocal pulled
+            for index in range(self.LIMIT + 50):
+                pulled += 1
+                yield leaf if index < self.LIMIT else overflow
+
+        with (
+            mock.patch(f"{MODULE}.os.scandir", return_value=contextlib.nullcontext(entries())),
+            self.assertRaisesRegex(OSError, rf"exceeds {self.LIMIT} entries$"),
+        ):
+            walk_tree(self.tree, self.LIMIT)
+        self.assertLessEqual(pulled, self.LIMIT + 1)
+        self.assertEqual(overflow.mock_calls, [])
+
+    def test_remove_tree_preserves_every_over_limit_entry(self) -> None:
+        paths = [self.tree / str(i) for i in range(self.LIMIT + 1)]
+        for path in paths:
+            path.touch()
+        with self.assertRaisesRegex(OSError, rf"exceeds {self.LIMIT} entries$"):
+            remove_tree(self.tree)
+        self.assertTrue(all(path.is_file() for path in paths))
+
+    def assert_linked_root_refused(self, link: Path) -> None:
+        with mock.patch(f"{MODULE}.os.scandir") as scan:
+            for operation in (lambda: walk_tree(link, self.LIMIT), lambda: remove_tree(link)):
+                with self.assertRaises(OSError) as exc:
+                    operation()
+                self.assertEqual(str(exc.exception), f"refusing to walk linked root: {link}")
+            scan.assert_not_called()
+        self.assertTrue(self.marker.is_file())
+
+    def assert_link_entry_removed(self, link: Path) -> None:
+        with mock.patch(f"{MODULE}.os.scandir", wraps=os.scandir) as scan:
+            leaves = walk_tree(self.tree, self.LIMIT)
+        scan.assert_called_once_with(self.tree)
+        self.assertEqual([Path(entry.path) for entry in leaves], [link])
+        remove_tree(self.tree)
+        self.assertTrue(path_absent(self.tree))
+        self.assertTrue(self.marker.is_file())
+
+    def test_directory_symlink_as_root_and_entry(self) -> None:
+        link = self.tree / "link"
+        try:
+            link.symlink_to(self.outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"cannot create a directory symlink: {error}")
+        self.assert_linked_root_refused(link)
+        self.assert_link_entry_removed(link)
+
+    def test_junction_entry_is_never_scanned(self) -> None:
+        junction = mock.Mock(spec=os.DirEntry)
+        junction.path = str(self.tree / "junction")
+        junction.is_symlink.return_value = False
+        junction.is_junction.return_value = True
+        junction.is_dir.return_value = True
+        with mock.patch(
+            f"{MODULE}.os.scandir", side_effect=[contextlib.nullcontext(iter([junction]))]
+        ) as scan:
+            self.assertEqual(walk_tree(self.tree, self.LIMIT), [junction])
+        scan.assert_called_once_with(self.tree)
+
+    @unittest.skipUnless(sys.platform == "win32", "requires a Windows junction")
+    def test_windows_junction_as_root_and_entry(self) -> None:
+        link = self.tree / "junction"
+        if sys.platform == "win32":
+            _winapi.CreateJunction(str(self.outside), str(link))
+        self.assert_linked_root_refused(link)
+        self.assert_link_entry_removed(link)
 
 
 class PosixTreeRemoval(unittest.TestCase):

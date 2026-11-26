@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.ci import ffmpeg_shared_series_fixture as shared_series
 from scripts.lib.safe_subprocess import run as run_command
-from scripts.lib.scratch_program import remove_file, remove_tree
+from scripts.lib.scratch_program import remove_file, remove_tree, walk_tree
 from scripts.lib.test_scratch_program import windows_rmtree
 
 SPEC = importlib.util.spec_from_file_location(
@@ -44,23 +44,9 @@ _MAX_FIXTURE_ENTRIES = 128
 
 
 def remove_fixture_objects(objects: Path) -> None:
-    directories = [objects]
-    files: list[Path] = []
-    count = 0
-    while directories:
-        with os.scandir(directories.pop()) as entries:
-            for entry in entries:
-                count += 1
-                if count > _MAX_FIXTURE_ENTRIES:
-                    raise AssertionError(
-                        f"fixture object tree exceeds {_MAX_FIXTURE_ENTRIES} entries"
-                    )
-                if entry.is_dir(follow_symlinks=False):
-                    directories.append(Path(entry.path))
-                elif entry.is_file(follow_symlinks=False):
-                    files.append(Path(entry.path))
-    for path in files:
-        remove_file(path)
+    for entry in walk_tree(objects, _MAX_FIXTURE_ENTRIES):
+        if entry.is_symlink() or entry.is_junction() or entry.is_file(follow_symlinks=False):
+            remove_file(Path(entry.path))
 
 
 class FixtureObjectRemoval(unittest.TestCase):
@@ -75,13 +61,21 @@ class FixtureObjectRemoval(unittest.TestCase):
         remove_fixture_objects(self.objects)
         self.assertIsNone(next(self.pack.iterdir(), None))
 
+    def test_linked_objects_root_preserves_target(self) -> None:
+        link = Path(self.enterContext(tempfile.TemporaryDirectory())) / "objects"
+        try:
+            link.symlink_to(self.objects, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"cannot create a directory symlink: {error}")
+        with self.assertRaisesRegex(OSError, "refusing to walk linked root"):
+            remove_fixture_objects(link)
+        self.assertTrue((self.pack / "0").is_file())
+
     def test_rejects_one_entry_over_limit(self) -> None:
         (self.objects / "extra").touch()
         with (
             patch(f"{__name__}.remove_file") as remove,
-            self.assertRaisesRegex(
-                AssertionError, rf"^fixture object tree exceeds {_MAX_FIXTURE_ENTRIES} entries$"
-            ),
+            self.assertRaisesRegex(OSError, rf"exceeds {_MAX_FIXTURE_ENTRIES} entries$"),
         ):
             remove_fixture_objects(self.objects)
         remove.assert_not_called()
@@ -95,6 +89,8 @@ class FixtureObjectRemoval(unittest.TestCase):
                 entry = Mock(spec=os.DirEntry)
                 entry.name = str(index)
                 entry.path = str(self.objects / entry.name)
+                entry.is_symlink.return_value = False
+                entry.is_junction.return_value = False
                 entry.is_dir.return_value = False
                 entry.is_file.return_value = True
                 pulled += 1
@@ -103,9 +99,7 @@ class FixtureObjectRemoval(unittest.TestCase):
         with (
             patch.object(os, "scandir", side_effect=lambda path: nullcontext(entries())),
             patch(f"{__name__}.remove_file") as remove,
-            self.assertRaisesRegex(
-                AssertionError, rf"^fixture object tree exceeds {_MAX_FIXTURE_ENTRIES} entries$"
-            ),
+            self.assertRaisesRegex(OSError, rf"exceeds {_MAX_FIXTURE_ENTRIES} entries$"),
         ):
             remove_fixture_objects(self.objects)
         self.assertLessEqual(pulled, _MAX_FIXTURE_ENTRIES + 1)

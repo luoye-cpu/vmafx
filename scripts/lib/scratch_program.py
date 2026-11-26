@@ -26,6 +26,10 @@ from pathlib import Path
 
 ATTEMPTS = 20
 DELAY_SECONDS = 0.25  # 5 seconds in all, far beyond the scans seen in CI
+# Dispatcher measurements (2026-11-26): ~/.cache/vmafx/ffmpeg-patch-stack/<key>/source.git
+# had 36 entries (one tag, 3 pack files, 20 MiB). Two full FFmpeg .git directories
+# had 5,865 and 1,305 entries. The limit is about 11 times the largest.
+MAX_TREE_ENTRIES = 65_536
 
 
 _RETRY_READ_ONLY = os.name == "nt"
@@ -110,6 +114,34 @@ def remove_file(path: Path) -> None:
             raise
 
 
+def walk_tree(root: Path, limit: int) -> list[os.DirEntry[str]]:
+    """Collect non-directory entries without following links or exceeding the entry limit."""
+    # The path predicates suppress stat errors. Preserve a refused root lstat.
+    mode = os.lstat(root).st_mode
+    if root.is_symlink() or root.is_junction():
+        raise OSError(f"refusing to walk linked root: {root}")
+    if not stat.S_ISDIR(mode):
+        raise NotADirectoryError(errno.ENOTDIR, os.strerror(errno.ENOTDIR), str(root))
+    directories = [root]
+    leaves: list[os.DirEntry[str]] = []
+    count = 0
+    while directories:
+        with os.scandir(directories.pop()) as entries:
+            for entry in entries:
+                count += 1
+                if count > limit:
+                    raise OSError(f"tree at {root} exceeds {limit} entries")
+                if (
+                    not entry.is_symlink()
+                    and not entry.is_junction()
+                    and entry.is_dir(follow_symlinks=False)
+                ):
+                    directories.append(Path(entry.path))
+                else:
+                    leaves.append(entry)
+    return leaves
+
+
 def remove_tree(path: Path) -> None:
     """Remove the tree, raising the first failure after the walk finishes."""
     first_error: OSError | None = None
@@ -135,6 +167,7 @@ def remove_tree(path: Path) -> None:
             if note_count <= _MAX_NOTES:
                 first_error.add_note(note)
 
+    walk_tree(path, MAX_TREE_ENTRIES)
     shutil.rmtree(path, onexc=onexc)
     if first_error is not None:
         if note_count > _MAX_NOTES:
