@@ -18,9 +18,9 @@
 
 Sources: the latest decisive completed push run of each workflow on the
 default branch (GitHub API with GITHUB_TOKEN), and the OpenSSF Scorecard
-score, OpenSSF Best Practices level and Codacy grade (public APIs, sent no
-token). A source that fails keeps its last value for six hours; after that
-the badge reads "stale". The repository comes from GITHUB_REPOSITORY.
+score and the OpenSSF Best Practices level (public APIs, sent no token). A
+source that fails keeps its last value for six hours; after that the badge
+reads "stale". The repository comes from GITHUB_REPOSITORY.
 """
 
 from __future__ import annotations
@@ -96,7 +96,6 @@ BEST_PRACTICES = {
     "silver": ("silver", GREEN),
     "gold": ("gold", GREEN),
 }
-CODACY = {"A": GREEN, "B": GREEN, "C": AMBER, "D": RED, "E": RED, "F": RED}
 
 Value = tuple[str, str]
 GitHub = Callable[[str], object]
@@ -128,7 +127,6 @@ BADGES = (
     Badge("security", "Security", "workflow", "security-scans.yml"),
     Badge("scorecard", "OpenSSF Scorecard", "scorecard"),
     Badge("best-practices", "OpenSSF Best Practices", "best-practices"),
-    Badge("codacy", "Codacy", "codacy"),
 )
 
 
@@ -181,15 +179,6 @@ def best_practices_value(rows: object, repo_url: str) -> Value:
     return BEST_PRACTICES[level]
 
 
-def codacy_value(doc: object) -> Value:
-    """Codacy grade letter: A and B green, C amber, D to F red."""
-    data = doc.get("data") if isinstance(doc, dict) else None
-    letter = data.get("gradeLetter") if isinstance(data, dict) else None
-    if letter not in CODACY:
-        raise BadgeError(f"Codacy grade {letter!r} is not a letter from A to F")
-    return (str(letter), CODACY[letter])
-
-
 def default_branch(github: GitHub, repository: str) -> str:
     """Name of the repository's default branch, whose push runs the workflow badges show."""
     doc = github(f"/repos/{repository}")
@@ -209,7 +198,6 @@ def read_value(badge: Badge, repository: str, github: GitHub, public: Public) ->
         return workflow_value(
             github(f"/repos/{repository}/actions/workflows/{badge.workflow}/runs?{query}")
         )
-    owner, name = repository.split("/", 1)
     if badge.kind == "scorecard":
         return scorecard_value(
             public(f"https://api.scorecard.dev/projects/github.com/{repository}")
@@ -220,9 +208,6 @@ def read_value(badge: Badge, repository: str, github: GitHub, public: Public) ->
         return best_practices_value(
             public(f"https://www.bestpractices.dev/projects.json?{query}"), repo_url
         )
-    if badge.kind == "codacy":
-        path = f"organizations/gh/{owner}/repositories/{name}"
-        return codacy_value(public(f"https://app.codacy.com/api/v3/analysis/{path}"))
     raise BadgeError(f"{badge.slug}: unknown source kind {badge.kind!r}")
 
 
