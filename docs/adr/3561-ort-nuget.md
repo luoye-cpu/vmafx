@@ -69,6 +69,16 @@ Replace `1.30.0` with the version to measure.
   `matchStrings` at `renovate.json:610-614` matching `ORT_SHA256`) still
   references the old GitHub release tarball source.
 
+## References
+
+- req (paraphrased, 2026-11-18, runtime fetch source): the maintainer asked
+  for one shared helper that fetches ONNX Runtime from the NuGet package with
+  a pinned version and sha256, retries, and a named error when the source is
+  gone, with no silent fallback.
+- [Installer](../../scripts/ci/ort_nuget_install.py),
+  [pins](../../scripts/ci/ort-nuget-pins.json), and
+  [guard](../../scripts/ci/check_ort_tarball_pins.py).
+
 ## Status update 2026-11-22
 
 ### Guard scope and limits

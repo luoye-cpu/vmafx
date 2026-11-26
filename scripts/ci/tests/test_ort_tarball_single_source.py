@@ -566,6 +566,49 @@ class TestOrtGuard(unittest.TestCase):
             (1, [f"{container}:2: {SHAPE_FINDING}"]),
         )
 
+    def test_heredoc_operators_are_limited_to_instructions_and_unescaped_delimiters(self) -> None:
+        container = Path(self.temp.name) / "Containerfile"
+        container.write_text(
+            "FROM base\n"
+            "ARG ORT_VERSION=1.30.0\n"
+            "ENV NOTE=<<EOF\n"
+            "RUN python3 scripts/ci/ort_nuget_install.py --package cpu "
+            '--version "${ORT_VERSION}" --prefix /usr/local\n'
+        )
+        self.assertEqual(guard.check_tarball_pins(files=[container]), (0, []))
+        cases = (
+            ("RUN cat <<-EOF", [(True, "EOF")]),
+            ("RUN cat <<EOF", [(False, "EOF")]),
+            ("COPY <<EOF /dest", [(False, "EOF")]),
+            (r"RUN cat <<\EOF", []),
+        )
+        for line, expected in cases:
+            with self.subTest(line=line):
+                self.assertEqual(guard._docker_heredocs(line), expected)
+
+    def test_nuget_segment_spellings_and_same_line_binding(self) -> None:
+        workflow = Path(self.temp.name) / "spellings.yml"
+        address = "https://api.nuget.org/v3-flatcontainer/"
+        cases = (
+            (f"run: curl {address}microsoft.ml.onnxruntime/file\n", "must use helper"),
+            (
+                f"run: PACKAGE=microsoft.ml.onnxruntime curl {address}$PACKAGE/file\n",
+                "must use helper",
+            ),
+            (
+                f"run: PACKAGE=other.package curl {address}${{PACKAGE}}/file\n",
+                None,
+            ),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                workflow.write_text(text, encoding="utf-8")
+                findings = guard.scan_file(workflow, {})[0]
+                if expected:
+                    self.assertIn(expected, "\n".join(findings))
+                else:
+                    self.assertEqual(findings, [])
+
     def test_container_continuation_line_limit_boundary(self) -> None:
         container = Path(self.temp.name) / "Containerfile"
         call = "    && python3 scripts/ci/ort_nuget_install.py --package cpu --version 1.30.0 --prefix /usr/local\n"

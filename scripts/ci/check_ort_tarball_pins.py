@@ -61,6 +61,7 @@ HELPER_FLAGS: frozenset[str] = frozenset(
 )
 CONTAINER_SHAPE_FINDING = "container ort_nuget_install.py instruction violates canonical RUN shape"
 CONTAINER_RUN_RE = re.compile(r"^RUN\s+(?!-|\s*\[)(.+)$", re.I)
+HEREDOC_INSTRUCTION_RE = re.compile(r"^(?:RUN|COPY|ADD)\b", re.I)
 CONTAINER_FORBIDDEN_RE = re.compile(
     r"[`;|(){}]|<<|\$\(|(?<!&)&(?!&)|\beval\b|\b(?:sh|bash)\s+-[A-Za-z]*c\b|\benv\s"
 )
@@ -83,7 +84,7 @@ CONTAINER_LITERAL_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+)+$")
 CONTAINER_VERSION_VAR_RE = re.compile(r"^\$(?:ORT_VERSION|\{ORT_VERSION\})$")
 NUGET_ADDRESS_RE = re.compile(
     r"(?:api\.nuget\.org/v3-flatcontainer/|nuget\.org/api/v2/package/)"
-    r"(\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|[^/\s\"']+)",
+    r"(\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|[A-Za-z0-9_.-]+)",
     re.I,
 )
 ORT_PACKAGE_RE = re.compile(r"microsoft\.ml\.onnxruntime(?:[.a-z0-9_-]*)", re.I)
@@ -155,26 +156,44 @@ def _find_workflow_block(lines: list[str], site_idx: int) -> tuple[int, int]:
     return start_idx, end_idx
 
 
+def _heredoc_delimiter(tokens: list[str], index: int) -> tuple[bool, str] | None:
+    """Return the tab-stripping flag and delimiter for one ``<<`` operator."""
+    if index >= len(tokens):
+        return None
+    value = tokens[index]
+    tabs = value == "-" or value.startswith("-")
+    if value == "-":
+        index += 1
+        if index >= len(tokens):
+            return None
+        value = tokens[index]
+    elif value.startswith("-"):
+        value = value[1:]
+    if not value or value.startswith("\\"):
+        return None
+    delimiter = value.strip("\"'")
+    if re.fullmatch(r"[A-Za-z0-9_.-]+", delimiter) is None:
+        return None
+    return tabs, delimiter
+
+
 def _docker_heredocs(header: str) -> list[tuple[bool, str]]:
-    """Recognize unquoted heredoc operators without treating quoted text as syntax."""
-    header = re.sub(
-        r"\\(.)", lambda match: "\x01" if match.group(1) == "<" else match.group(0), header
-    )
-    lexer = shlex.shlex(header, posix=False, punctuation_chars="<")
-    lexer.whitespace_split = True
+    """Recognize ``<<`` / ``<<-`` operators on RUN, COPY and ADD instructions only."""
+    if not HEREDOC_INSTRUCTION_RE.match(header):
+        return []
     try:
-        tokens = list(lexer)
+        tokens = list(shlex.shlex(header, posix=False, punctuation_chars="<"))
     except ValueError:
         return []
     delimiters: list[tuple[bool, str]] = []
-    for index in range(len(tokens) - 1):
-        if tokens[index] != "<<":
+    for index, word in enumerate(tokens):
+        if word != "<<":
             continue
-        value = tokens[index + 1]
-        tabs = value.startswith("-")
-        delimiter = value.removeprefix("-").strip("\"'")
-        if re.fullmatch(r"[A-Za-z0-9_.-]+", delimiter):
-            delimiters.append((tabs, delimiter))
+        if index > 0 and tokens[index - 1].endswith("\\"):
+            continue
+        parsed = _heredoc_delimiter(tokens, index + 1)
+        if parsed is not None:
+            delimiters.append(parsed)
     return delimiters
 
 
@@ -851,6 +870,7 @@ def _check_nuget_reference(
     path: Path,
     match: re.Match[str],
     is_workflow: bool,
+    line: str,
 ) -> list[str]:
     """Resolve a variable-backed NuGet reference to its pinned package family."""
     name = match.group(1)[1:].strip("{}")
@@ -862,7 +882,10 @@ def _check_nuget_reference(
     )
     if bindings is None:
         return [f"{path}:{idx + 1}: step binding limit exceeded"]
-    values = bindings.get(name, set())
+    inline = dict(INLINE_BINDING_RE.findall(line))
+    values = bindings.get(name, set()).copy()
+    if name in inline:
+        values.add(inline[name])
     if not values or "<unresolved>" in values or "" in values:
         return [f"{path}:{idx + 1}: NuGet download with unresolved package"]
     if any(ORT_PACKAGE_RE.fullmatch(value) for value in values):
@@ -881,7 +904,7 @@ def _check_nuget_download(
     for match in NUGET_ADDRESS_RE.finditer(line):
         package = match.group(1)
         if package.startswith("$"):
-            findings.extend(_check_nuget_reference(lines, idx, path, match, is_workflow))
+            findings.extend(_check_nuget_reference(lines, idx, path, match, is_workflow, line))
         elif ORT_PACKAGE_RE.fullmatch(package):
             findings.append(f"{path}:{idx + 1}: ONNX Runtime download must use helper")
     return list(dict.fromkeys(findings))
