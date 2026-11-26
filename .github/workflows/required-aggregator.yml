@@ -17,6 +17,9 @@ on:
   pull_request:
     branches: [master]
     types: [opened, edited, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+    branches: [master]
   push:
     branches: [master]
   workflow_dispatch:
@@ -27,13 +30,14 @@ permissions:
   checks: read
   pull-requests: read
 
-# Master pushes: SHA-scoped group, never cancelled (docs/development/ci.md,
-# "Master push runs"). A re-run of an older master head therefore cannot cancel
-# the aggregator of a newer one. PR refs keep one group per ref with
-# cancel-in-progress: re-running an older PR head still cancels the current one.
+# Master pushes keep one group per SHA and are never cancelled
+# (docs/development/ci.md, "Master push runs"). A PR ref keeps one group per
+# ref, and only a `synchronize` (new head) cancels the running run; `edited`,
+# `reopened` and `ready_for_review` runs wait as pending and collapse to the
+# newest (ADR-3557).
 concurrency:
   group: required-aggregator-${{ github.workflow }}-${{ github.ref == 'refs/heads/master' && github.sha || github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
 
 jobs:
   aggregator:
@@ -203,11 +207,9 @@ jobs:
               // `# required-aggregator` markers and they agreed: the gap was
               // not drift, it was the declared state.
               //
-              // NOTE for anyone editing the comments in this array: the
-              // checker extracts names with a single-quote regex over the
-              // whole block, so prose here must contain no apostrophes and no
-              // single-quoted phrases. Write "the ADR-0313 rule", not
-              // "ADR-0313" followed by an apostrophe.
+              // NOTE: contract tests extract required[] with a single-quote
+              // regex, so comments here must contain no apostrophes or single
+              // quotes (write "the ADR-0313 rule", no apostrophe).
               //
               // Platform build legs (libvmaf-build-matrix.yml). The shipped
               // library must compile on every platform and toolchain the
@@ -295,8 +297,6 @@ jobs:
               // length of time before that workflow existed. `E2E — kind +
               // kuttl` does not cover it: that lane is label-gated, so it does
               // not run on the pull request that breaks the chart. This does.
-              // NOTE: no apostrophes in this block — check-aggregator-names.sh
-              // extracts required[] by matching single-quoted literals.
               'helm lint + template',
               // Documentation surfaces. `Docs Site Build` was reported under
               // the bare job id `build` until this change renamed it; a
@@ -555,7 +555,14 @@ jobs:
               'Semgrep OSS',
               'gitleaks',
             ];
-            const eventExempt = new Set();
+            // ADR-3556: merge_group exempts Scorecard Master Gate (runs on push; PR gate ran).
+            const mergeGroupExempt = [
+              'Scorecard Master Gate',
+            ];
+            const mergeGroupExemptSet = new Set(
+              context.eventName === 'merge_group' ? mergeGroupExempt : []
+            );
+            const eventExempt = new Set(mergeGroupExemptSet);
             if (context.eventName !== 'pull_request') {
               for (const name of pullRequestOnly) eventExempt.add(name);
             }
@@ -1137,7 +1144,10 @@ jobs:
                 continue;
               }
               if (eventExempt.has(name) && (!run || run.conclusion === 'skipped')) {
-                core.info(`OK (pull-request-only context, ${context.eventName} event): ${name}`);
+                const exemptLabel = mergeGroupExemptSet.has(name)
+                  ? 'merge-group-exempt'
+                  : 'pull-request-only';
+                core.info(`OK (${exemptLabel} context, ${context.eventName} event): ${name}`);
                 continue;
               }
               if (strictMustReport.includes(name)) {

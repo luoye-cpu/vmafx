@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 """Hold the number of pull-request workflows under the Scorecard window.
 
-OpenSSF Scorecard's SAST check (scorecard v5.6.0) reads the check suites of a
+OpenSSF Scorecard's SAST check (scorecard v5.7.0) reads the check suites of a
 commit with the GraphQL field ``checkSuites(first: 30)``. Every workflow a
 ``pull_request`` event starts is one check suite, and the GitHub Apps that
 report on a pull request add more. A workflow over the window can push CodeQL
