@@ -16,6 +16,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from io import StringIO
+from itertools import islice
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -39,6 +40,36 @@ MAINTENANCE_SETTINGS = (
     "maintenance.auto=false",
     "maintenance.autoDetach=false",
 )
+_MAX_FIXTURE_ENTRIES = 128
+
+
+def remove_fixture_objects(objects: Path) -> None:
+    entries = list(islice(objects.rglob("*"), _MAX_FIXTURE_ENTRIES + 1))
+    if len(entries) > _MAX_FIXTURE_ENTRIES:
+        raise AssertionError(f"fixture object tree exceeds {_MAX_FIXTURE_ENTRIES} entries")
+    for entry in entries:
+        if entry.is_file():
+            remove_file(entry)
+
+
+class FixtureObjectRemoval(unittest.TestCase):
+    def setUp(self) -> None:
+        self.objects = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.pack = self.objects / "pack"
+        self.pack.mkdir()
+        for index in range(_MAX_FIXTURE_ENTRIES - 1):
+            (self.pack / str(index)).touch()
+
+    def test_removes_files_at_entry_limit(self) -> None:
+        remove_fixture_objects(self.objects)
+        self.assertIsNone(next(self.pack.iterdir(), None))
+
+    def test_rejects_one_entry_over_limit(self) -> None:
+        (self.objects / "extra").touch()
+        with self.assertRaisesRegex(
+            AssertionError, rf"^fixture object tree exceeds {_MAX_FIXTURE_ENTRIES} entries$"
+        ):
+            remove_fixture_objects(self.objects)
 
 
 class ReleaseSelection(unittest.TestCase):
@@ -557,9 +588,7 @@ class RealReplay(unittest.TestCase):
         self.assertEqual(
             STACK.maintain(self.repo, self.output, False, False)["source"], "fetched into cache"
         )
-        for pack in (cache / "objects").rglob("*"):  # ref kept, objects gone
-            if pack.is_file():
-                remove_file(pack)
+        remove_fixture_objects(cache / "objects")  # ref kept, objects gone
         result = STACK.maintain(self.repo, self.output, False, False)
         self.assertIn("fetched into cache", result["source"])
         self.assertEqual(

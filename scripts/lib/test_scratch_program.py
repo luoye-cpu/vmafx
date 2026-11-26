@@ -150,6 +150,23 @@ class TemporaryDirectoryCleanup(unittest.TestCase):
         self.assertEqual(calls.count("harness"), 3)
 
 
+class PosixTreeRemoval(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "requires the native POSIX rmtree walker")
+    def test_preserves_unlink_refusal_and_its_filename(self) -> None:
+        tree = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (tree / "object").touch()
+        marker = "filename from unlink"
+        refused = PermissionError(errno.EACCES, "unlink refused", marker)
+        with (
+            mock.patch(f"{MODULE}._RETRY_READ_ONLY", False),
+            mock.patch("os.unlink", side_effect=refused),
+            self.assertRaises(PermissionError) as exc,
+        ):
+            remove_tree(tree)
+        self.assertIs(exc.exception, refused)
+        self.assertEqual(exc.exception.filename, marker)
+
+
 class ReadOnlyTreeRemoval(unittest.TestCase):
     def setUp(self) -> None:
         scratch = tempfile.TemporaryDirectory()

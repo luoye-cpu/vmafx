@@ -159,6 +159,10 @@ tag's name, so the hook at every commit and push reads the commit from disk.
 - **Self-repair:** an empty or corrupt cache directory, or a ref whose objects
   are gone, is dropped and fetched again. A missing cache directory is expected
   on first use. Any other removal failure stops the run with the error.
+  The read-only retry runs only on Windows and assumes the tool created and
+  owns the cache tree and that no other process is writing to it.
+  Any filename in a removal error comes from the exception received by the
+  `onexc` hook.
   A cached commit that differs from the pin is not repaired silently; delete
   the directory below to discard it.
 
