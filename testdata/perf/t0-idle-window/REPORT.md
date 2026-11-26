@@ -29,7 +29,7 @@ with occasional spikes into the 40-60 % band. Gate samples verbatim:
 - cuda N=60: `[23, 26, 55, 26]`
 - cuda N=120: `[24, 24, 25, 23]`
 
-So: baseline ~23 %, spikes 44-58 % (7 of 36 samples). This is residual desktop
+So: baseline ~23 %, spikes 44-58 % (6 of 36 samples). This is residual desktop
 compositor activity, not a dedicated compute job; it is quantified here so the
 numbers below can be read with that noise floor in mind.
 
@@ -67,7 +67,9 @@ Per-run detail (wall ms): cpu N=10: 266.0/245.6/252.5; cpu N=30:
 
 CPU is almost perfectly linear with a ~31 ms fixed cost and 21.3 ms/frame.
 CUDA has a large fixed cost (~350-400 ms: CUDA context/extractor setup) but a
-6.3-6.9 ms/frame slope — i.e. in-window ~145-159 fps vs CPU's ~47 fps. The
+6.3-6.9 ms/frame slope — i.e. an asymptotic full-process rate of ~145-159 fps
+at large N, above the measured in-window rates (for example 126.85 fps at
+N = 60) and CPU's ~47 fps. The
 crossover (primary fit) is at N ≈ 24.8, below the fitted range (N ≥ 30): below
 it the CUDA cell is setup-dominated.
 
@@ -82,8 +84,9 @@ The maintainer's two hypotheses for the earlier loaded-run result (CPU
   backends at the same rate.
 
 On the now-quiet GPU the min-of-3 matched-run CUDA in-window rates are
-126.85-137.46 fps across N in {30, 60, 120} (131.0 / 126.85 / 137.46) — the
-recorded runs span 92.7-153 fps, and the quoted range covers the selected
+126.85-137.46 fps across N in {30, 60, 120} (131.0 / 126.85 / 137.46), with
+the N = 10 matched run at 149.25 fps; all recorded matched-run rates span
+92.74-153.85 fps, and the quoted range covers the selected
 min-of-3 runs — i.e.
 **~2.7-2.9x the CPU's ~47 fps** — nowhere near equal. If hypothesis (b) were
 true, a shared per-frame serial cost would keep the CUDA in-window rate
@@ -95,8 +98,9 @@ the ~400 ms fixed setup, not by a per-frame cap.
 
 **Verdict: hypothesis (a) is supported, with the load attribution qualified.**
 The quieter run rules out a *persistent* shared 33 fps cap: the CUDA in-window
-rate recovered to 126.85-137.46 fps across the min-of-3 matched runs (the
-recorded runs span 92.7-153 fps) while the CPU also rose to its usual ~47 fps
+rate recovered to 126.85-149.25 fps across all four min-of-3 matched cells
+(N = 30/60/120 span 126.85-137.46; N = 10 is 149.25), while all recorded
+matched-run rates span 92.74-153.85 fps, and the CPU also rose to its usual ~47 fps
 (47.1-47.8 in this window vs 33.1 under the loaded run). Because the CPU
 throughput moved too, this window does not isolate GPU load from host load —
 the CPU change is consistent with load on the host as well, though these runs
@@ -107,7 +111,7 @@ load independently. What the measurements do establish is the decisive ~3x
 CUDA recovery, which only happens on the GPU side.
 
 Honest caveats: the machine is *quieter*, not idle — the utilization gates
-above show a ~22-26 % compositor baseline with 44-58 % spikes (7 of 36
+above show a ~22-26 % compositor baseline with 44-58 % spikes (6 of 36
 samples), and CUDA run-to-run spread is visible (e.g. cuda N=60 runs
 1014.9/857.7/829.2 ms; cuda N=120 1224.7/1487.0/1143.0 ms), consistent with
 that residual load grazing the measurements. The R² of the CUDA fit (0.979)

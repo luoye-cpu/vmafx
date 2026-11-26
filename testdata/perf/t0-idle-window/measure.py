@@ -10,12 +10,16 @@ cold run (kept on disk, discarded from the minimum, per the maintainer's
 JSON report is kept; per run we extract frames count (asserted == N), fps,
 wall_fps, backend_used, feature_backends. OLS fit T(N) = T0 + N*t_frame per
 backend on the min-of-3 wall times, primary fit over N>=30, secondary over all
-four points. Read-only wrt the repo; artifacts land next to this script.
-Usage: python -I measure.py
+four points. Read-only wrt the repo; artifacts land in this directory unless
+`--out` names another directory. A run refuses to overwrite an existing
+`summary.json` unless `--force` is passed, so a rerun cannot silently replace
+the committed calibration.
+Usage: python -I measure.py [--out DIR] [--force]
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import statistics
@@ -155,7 +159,25 @@ def ols(points: list[tuple[float, float]]) -> tuple[float, float, float]:
     return intercept, slope, r2
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the output directory and overwrite switch."""
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--out", type=Path, default=HERE, help="directory for the run reports")
+    parser.add_argument("--force", action="store_true", help="replace an existing summary.json")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    global OUT
+    args = parse_args(argv)
+    OUT = args.out.resolve()
+    if (OUT / "summary.json").exists() and not args.force:
+        print(
+            f"refusing to replace {OUT / 'summary.json'}; pass --force or --out DIR",
+            file=sys.stderr,
+        )
+        return 1
+    OUT.mkdir(parents=True, exist_ok=True)
     gate = util_sample()
     print(f"pre-run util gate (5080, 4 samples): {gate}")
     results = {
