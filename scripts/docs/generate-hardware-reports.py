@@ -428,6 +428,17 @@ def _gpu_verdicts(match: dict[str, Any], report: dict[str, Any]) -> list[str]:
     return found
 
 
+def _unit_status(report: dict[str, Any], with_metal: bool) -> str:
+    """The row's unit-test status. A row without Metal checks leaves out the
+    `test_metal_*` tests; a report without per-test results keeps the suite status."""
+    unit = report["unit_tests"]
+    results = unit.get("results")
+    if with_metal or not isinstance(results, dict) or not results:
+        return str(unit["status"])
+    own = [status for name, status in results.items() if not name.startswith("test_metal_")]
+    return "fail" if "fail" in own else "pass"
+
+
 def _host_verdict(row: dict[str, Any], report: dict[str, Any]) -> str:
     """`fail` when one of the row's own checks failed (or the image's files do not match
     its build), else `pass`. A section an older schema lacks is not counted — including
@@ -435,7 +446,17 @@ def _host_verdict(row: dict[str, Any], report: dict[str, Any]) -> str:
     writer counts through hw_report.EXECUTED_CHECK."""
     checks = CPU_CHECKS + (METAL_CHECKS if row.get("metal_rows") else ())
     keys = [CHECK_KEYS[check] for check in checks]
-    failed = [k for k in keys if k in report and report[k]["status"] not in PASSING[k]]
+    failed = []
+    for check, key in zip(checks, keys):
+        if key not in report:
+            continue
+        status = (
+            _unit_status(report, bool(row.get("metal_rows")))
+            if key == "unit_tests"
+            else report[key]["status"]
+        )
+        if status not in PASSING[key]:
+            failed.append(key)
     executed = report.get("executed_dispatch")
     if executed and executed["status"] not in PASSING["executed_dispatch"]:
         failed.append("executed_dispatch")

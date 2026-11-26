@@ -161,7 +161,36 @@ class CpuRowVerdictTests(unittest.TestCase):
         self.assertEqual(GEN._status(row("Apple M-series, native"), [passing]),
                          "1 reported, worst pass")  # fmt: skip
 
-    def test_executed_dispatch_mismatch_fails_the_cpu_row(self) -> None:
+    def test_metal_unit_failures_do_not_fail_the_cpu_row(self) -> None:
+        # The M4 Pro report's Metal parity tests fail, but the CPU row only owns
+        # the non-Metal unit tests (review of PR #3443).
+        mac = {"platform": "darwin", "machine": "arm64", "dispatch_flags": ["neon"],
+               "cpu_model": "Apple M4 Pro"}  # fmt: skip
+        report = checked_report([], **mac)
+        report["unit_tests"] = {
+            "status": "fail",
+            "results": {
+                "test_scalar_parity": "pass",
+                "test_metal_integer_adm_parity": "fail",
+                "test_metal_integer_cambi_parity": "fail",
+            },
+        }
+        self.assertEqual(GEN._host_verdict({}, report), "pass")
+
+    def test_non_metal_unit_failure_fails_the_cpu_row(self) -> None:
+        report = checked_report([], **self.avx2_host())
+        report["unit_tests"] = {
+            "status": "fail",
+            "results": {"test_scalar_parity": "fail", "test_metal_integer_adm_parity": "pass"},
+        }
+        self.assertEqual(GEN._host_verdict({}, report), "fail")
+
+    def test_unit_status_without_results_keeps_the_suite_status(self) -> None:
+        report = checked_report([], **self.avx2_host())
+        report["unit_tests"] = {"status": "fail"}
+        self.assertEqual(GEN._host_verdict({}, report), "fail")
+
+
         # Schema 4: the level the library reports it executed is part of the dispatch
         # check (hw_report.EXECUTED_CHECK) and the report writer counts it, so a
         # mismatch must fail the CPU row instead of reading pass against the report's
