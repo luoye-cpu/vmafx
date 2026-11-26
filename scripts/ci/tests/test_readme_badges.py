@@ -199,33 +199,6 @@ class BestPracticesValue(unittest.TestCase):
                 rb.best_practices_value([{"repo_url": self.URL, "badge_level": level}], self.URL)
 
 
-class CodacyValue(unittest.TestCase):
-    """The Codacy badge shows the grade letter."""
-
-    def test_every_grade_letter(self) -> None:
-        """Every letter from A to F maps to its colour."""
-        for letter, color in rb.CODACY.items():
-            with self.subTest(letter=letter):
-                want = (letter, color)
-                self.assertEqual(rb.codacy_value({"data": {"gradeLetter": letter}}), want)
-        self.assertEqual(rb.CODACY["B"], rb.GREEN)
-        self.assertEqual(rb.CODACY["C"], rb.AMBER)
-        self.assertEqual(rb.CODACY["D"], rb.RED)
-
-    def test_anything_but_a_letter_from_a_to_f_is_refused(self) -> None:
-        """Anything but an upper-case letter from A to F is refused."""
-        docs: tuple[object, ...] = (
-            {"data": {"gradeLetter": "G"}},
-            {"data": {"gradeLetter": "a"}},
-            {"data": {}},
-            {},
-            [],
-        )
-        for doc in docs:
-            with self.subTest(doc=doc), self.assertRaises(rb.BadgeError):
-                rb.codacy_value(doc)
-
-
 class ReadValue(unittest.TestCase):
     """``read_value`` asks the right source for each badge kind."""
 
@@ -257,15 +230,12 @@ class ReadValue(unittest.TestCase):
                 rb.read_value(badge, REPO, self.github([], branch), lambda url: {})
 
     def test_public_sources_get_their_own_urls_and_no_github_call(self) -> None:
-        """Scorecard, Best Practices and Codacy are read from their own URLs only."""
+        """Scorecard and Best Practices are read from their own URLs only."""
         answers = {
             "https://api.scorecard.dev/projects/github.com/vidiko/vmafx": {"score": 8.9},
             "https://www.bestpractices.dev/projects.json?url=https%3A%2F%2Fgithub.com%2Fvidiko%2Fvmafx": [
                 {"repo_url": "https://github.com/vidiko/vmafx", "badge_level": "passing"}
             ],
-            "https://app.codacy.com/api/v3/analysis/organizations/gh/vidiko/repositories/vmafx": {
-                "data": {"gradeLetter": "A"}
-            },
         }
         public = answers.__getitem__
         for badge in rb.BADGES:
@@ -277,6 +247,13 @@ class ReadValue(unittest.TestCase):
         """A badge kind the script does not know is refused."""
         with self.assertRaises(rb.BadgeError):
             rb.read_value(rb.Badge("x", "X", "rss"), REPO, lambda p: {}, lambda u: {})
+
+    def test_codacy_is_not_a_badge_or_source_kind(self) -> None:
+        """BADGES has no codacy slug or kind, and read_value refuses the codacy kind."""
+        self.assertNotIn("codacy", {b.slug for b in rb.BADGES})
+        self.assertNotIn("codacy", {b.kind for b in rb.BADGES})
+        with self.assertRaisesRegex(rb.BadgeError, r"^x: unknown source kind 'codacy'$"):
+            rb.read_value(rb.Badge("x", "X", "codacy"), REPO, self.fail, self.fail)
 
 
 class Usable(unittest.TestCase):
@@ -882,9 +859,9 @@ class Verdict(unittest.TestCase):
 
     def test_a_failure_fails_the_run_with_an_annotation(self) -> None:
         """A failure exits 1 with a GitHub error annotation."""
-        rc, out = self.verdict({"failures": ["codacy: down"]})
+        rc, out = self.verdict({"failures": ["scorecard: down"]})
         self.assertEqual(rc, 1)
-        self.assertIn("::error title=Badge source failed::codacy: down", out)
+        self.assertIn("::error title=Badge source failed::scorecard: down", out)
 
     def test_a_state_without_a_failures_list_is_an_error(self) -> None:
         """A failures field that is not a list exits 2."""
