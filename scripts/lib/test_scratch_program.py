@@ -46,6 +46,7 @@ REAL_RMDIR = os.rmdir
 MODULE = "scripts.lib.scratch_program"
 MAX_SOURCE_BYTES = 1024 * 1024
 MAX_AST_NODES = 100_000
+SOURCE_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
 
 
 def held_for(name: str, times: int) -> tuple[Callable[..., None], list[str]]:
@@ -709,6 +710,31 @@ def tracked_python_files() -> list[str]:
     return [os.fsdecode(entry) for entry in tracked.stdout.split(b"\0") if entry]
 
 
+def read_tracked_source(root: Path, name: str) -> bytes:
+    """Read one source file without following a link or blocking on a FIFO."""
+    path = root / name
+    if not hasattr(os, "O_NOFOLLOW"):
+        try:
+            mode = path.lstat().st_mode
+        except OSError as exc:
+            raise ValueError(f"{name}: cannot inspect source: {exc}") from exc
+        if not stat.S_ISREG(mode):
+            raise ValueError(f"{name}: source is not a regular file")
+    try:
+        descriptor = os.open(path, SOURCE_OPEN_FLAGS)
+    except OSError as exc:
+        raise ValueError(f"{name}: refusing to open source: {exc}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError(f"{name}: source is not a regular file")
+        with os.fdopen(descriptor, "rb") as source:
+            descriptor = -1
+            return source.read(MAX_SOURCE_BYTES + 1)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 class GitDirectoryRemovalScan(unittest.TestCase):
     def test_listing_ignores_an_inherited_git_index(self) -> None:
         """Negative: a foreign Git index and directory cannot redirect the listing."""
@@ -724,9 +750,21 @@ class GitDirectoryRemovalScan(unittest.TestCase):
         """Positive: tracked Python files use read-only-aware cleanup for literal Git paths."""
         findings = []
         for name in tracked_python_files():
-            with (ROOT / name).open("rb") as source:
-                findings.extend(bare_git_rmtree_calls(source.read(MAX_SOURCE_BYTES + 1), name))
+            findings.extend(bare_git_rmtree_calls(read_tracked_source(ROOT, name), name))
         self.assertFalse(findings, "\n".join(findings))
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(os, "O_NOFOLLOW"),
+        "POSIX FIFO and O_NOFOLLOW only",
+    )
+    def test_tracked_symlink_to_fifo_is_refused(self) -> None:
+        """A tracked Python symlink to a FIFO fails before open can block."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            os.mkfifo(root / "pipe")
+            (root / "tracked.py").symlink_to(root / "pipe")
+            with self.assertRaisesRegex(ValueError, "refusing to open source|not a regular file"):
+                read_tracked_source(root, "tracked.py")
 
     def test_scan_refuses_oversized_source(self) -> None:
         with self.assertRaisesRegex(ValueError, "bytes"):
