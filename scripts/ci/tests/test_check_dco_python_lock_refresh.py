@@ -524,6 +524,18 @@ class PythonLockLandedTest(unittest.TestCase):
             )
         )
 
+    def test_positive_squash_with_uv_version_and_its_digests_changed_passes(self) -> None:
+        """The adjacent digest pin moves with the release (issue #3659)."""
+        before = lock_checker.load_manifest(self.exc_root)
+        after = dict(before, uv_version="99.0.0", uv_sha256=["b" * 64])
+        self.assertIsNone(self.judge_manifest_squash(json.dumps(before), json.dumps(after)))
+
+    def test_squash_changing_only_the_uv_digests_is_refused(self) -> None:
+        """Digests without a release change are no reviewed bump."""
+        before = lock_checker.load_manifest(self.exc_root)
+        after = dict(before, uv_sha256=["b" * 64])
+        self.assert_refused(self.judge_manifest_squash(json.dumps(before), json.dumps(after)))
+
     def test_manifest_changes_beyond_uv_version_refused(self) -> None:
         before = dict(lock_checker.load_manifest(self.exc_root), policy={"enabled": True})
         bump = dict(before, uv_version="99.0.0")

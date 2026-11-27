@@ -16,9 +16,9 @@ subject and author on a Renovate PR. Every changed path must have a live, path-e
 ``dco-python-lock-refresh`` exception. In ``--landed`` mode the squash must change at
 least one of the 30 live grant paths. Other paths must be manifest inputs, or the
 manifest itself if valid parent and squash copies read from local Git objects
-differ only in the top-level ``uv_version`` value. The new value must be an exact
-release. Missing or invalid objects, malformed or duplicate-key JSON, and any
-other manifest change keep the trailer.
+differ only in the top-level ``uv_version`` value and its adjacent ``uv_sha256``
+digest list. The new value must be an exact release. Missing or invalid objects,
+malformed or duplicate-key JSON, and any other manifest change keep the trailer.
 
 ADR-3624 strips a single exact release-bot ``Co-authored-by:`` line in ``--landed`` mode
 when the commit author is that same release bot. A second line and any bot or
@@ -668,7 +668,12 @@ def forge_commit_paths(fetch: ci_tier.Fetcher, sha: str) -> list[str]:
 
 
 def manifest_uv_version_only(sha: str) -> bool:
-    """Prove the parent-to-squash manifest diff changes only the exact uv release."""
+    """Prove the parent-to-squash manifest diff changes only the exact uv release.
+
+    The adjacent ``uv_sha256`` digest list moves with the release (issue #3659):
+    the refresh workflow installs the generator from those pins, so a bump that
+    leaves them behind cannot bootstrap. Any other difference refuses.
+    """
     manifest = check_python_dependency_locks.MANIFEST_PATH.as_posix()
     before, after = (
         check_python_dependency_locks.parse_manifest(
@@ -678,6 +683,8 @@ def manifest_uv_version_only(sha: str) -> bool:
         for rev in (f"{sha}^", sha)
     )
     old_version, new_version = before.pop("uv_version"), after.pop("uv_version")
+    before.pop("uv_sha256", None)
+    after.pop("uv_sha256", None)
     if old_version == new_version or before != after:
         return False
     # Equality checks Decimal values exactly. Serialization also distinguishes true from 1.

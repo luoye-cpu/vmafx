@@ -98,3 +98,18 @@ refresh again; otherwise rerun it against the current tip.
 
 - [ADR-3555](3555-intel-neo-lock-file.md): asset lock refresh and author handling.
 - [Python dependency locks](../development/python-dependency-locks.md).
+
+### Status update 2026-11-28: the refresh generator bootstraps from the manifest pins
+
+The refresh workflow used to install the pinned uv from the compiled
+`requirements/locks/tooling-tests.txt`, so on a uv bump the job booted with the
+previous release (the lock still names it until the refresh itself rewrites it)
+and the writer refused the mismatch — the deadlock of issue #3659. The manifest
+now carries the reviewed release's artifact digests in an `uv_sha256` list next
+to `uv_version`, and the workflow installs the generator through a new
+`check_python_dependency_locks.py uv-bootstrap` command that reads those pins
+alone; no run step of the workflow touches the compiled tooling lock any more.
+The landed exemption of this ADR therefore covers the manifest diff that moves
+`uv_version` together with its adjacent `uv_sha256` digests; any other manifest
+difference still keeps the co-author line, and a digest list that does not
+belong to the named release fails at the install, which fails closed.

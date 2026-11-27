@@ -4,8 +4,10 @@
 """Generate and verify hash-locked Python dependency inputs.
 
 The committed lock files are the install authority.  The manifest binds each
-lock to its source bytes and to one reviewed uv release; ``check`` is entirely
-offline, while ``write`` is the explicit networked refresh operation.
+lock to its source bytes and to one reviewed uv release with that release's
+artifact digests; ``check`` is entirely offline, ``uv-bootstrap`` installs the
+reviewed generator from the manifest pins alone, and ``write`` is the explicit
+networked refresh operation.
 """
 
 from __future__ import annotations
@@ -48,6 +50,8 @@ MANIFEST_PATH = Path("requirements/locks/manifest.json")
 GIT_TIMEOUT_S = 60
 # 10x the slowest cold-cache uv pip compile of the manifest: 10.6 s.
 SUBPROCESS_TIMEOUT_S = 120
+# 5x the slowest observed cold-cache `pip install uv` on a fresh CI runner.
+BOOTSTRAP_TIMEOUT_S = 600
 HASH_RE = re.compile(r"--hash=sha256:[0-9a-f]{64}(?:\s|$)")
 EXACT_REQUIREMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?==[^;\s]+")
 EXACT_INPUT_PIN_RE = re.compile(
@@ -430,6 +434,21 @@ def parse_manifest(text: str, *, parse_float: Callable[[str], object] = float) -
     version = data.get("uv_version")
     if not isinstance(version, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", version):
         raise ContractError(f"{MANIFEST_PATH}: uv_version must be an exact release")
+    digests = data.get("uv_sha256")
+    if not isinstance(digests, list) or not digests:
+        raise ContractError(
+            f"{MANIFEST_PATH}: uv_sha256 must be a non-empty list of the reviewed "
+            "uv release's artifact digests"
+        )
+    if any(
+        not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        for digest in digests
+    ):
+        raise ContractError(
+            f"{MANIFEST_PATH}: uv_sha256 entries must be lowercase sha256 hex digests"
+        )
+    if len(set(digests)) != len(digests):
+        raise ContractError(f"{MANIFEST_PATH}: uv_sha256 entries must be unique")
     install_targets: set[str] = set()
     for raw_entry in data["locks"]:
         if not isinstance(raw_entry, dict):
@@ -2054,6 +2073,31 @@ def uv_version(binary: str) -> str:
     return match.group(1)
 
 
+def _run_pip(
+    args: Sequence[str],
+    *,
+    timeout_seconds: float = BOOTSTRAP_TIMEOUT_S,
+    max_output_bytes: int = 16 * 1_048_576,
+) -> TextCommandResult:
+    """Execute the running interpreter's pip via safe_subprocess."""
+    try:
+        return run_command(
+            [sys.executable, *args],
+            allowed_executables=(sys.executable,),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout_seconds=timeout_seconds,
+            max_output_bytes=max_output_bytes,
+        )
+    except CommandTimedOut as error:
+        raise ContractError(f"pip timed out after {timeout_seconds:g}s: {error}") from error
+    except CommandOutputLimitExceeded as error:
+        raise ContractError(f"pip output exceeded {max_output_bytes} bytes: {error}") from error
+    except (CommandValidationError, OSError) as error:
+        raise ContractError(f"cannot execute pip ({sys.executable}): {error}") from error
+
+
 def stamp_lock(
     root: Path, manifest: dict[str, Any], entry: dict[str, Any], generated: Path
 ) -> None:
@@ -2117,6 +2161,37 @@ def write(root: Path, uv_binary: str) -> int:
     return check(root)
 
 
+def uv_bootstrap_requirements(manifest: dict[str, Any]) -> str:
+    """Return the hash-pinned uv requirement built from the reviewed manifest.
+
+    The refresh workflow bootstraps its generator from these pins instead of
+    the compiled tooling lock: on a uv bump the lock still names the previous
+    release until this very operation regenerates it (issue #3659).
+    """
+    hashes = " ".join(f"--hash=sha256:{digest}" for digest in manifest["uv_sha256"])
+    return f"uv=={manifest['uv_version']} {hashes}"
+
+
+def bootstrap(root: Path) -> int:
+    """Install the reviewed uv release straight from the manifest pins."""
+    manifest = load_manifest(root)
+    requirements = uv_bootstrap_requirements(manifest)
+    with tempfile.TemporaryDirectory(prefix="vmafx-uv-bootstrap-") as temporary:
+        requirements_file = Path(temporary) / "uv-bootstrap.txt"
+        requirements_file.write_text(requirements + "\n", encoding="utf-8")
+        result = _run_pip(
+            ["-m", "pip", "install", "--require-hashes", "-r", str(requirements_file)]
+        )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise ContractError(
+            f"cannot install the reviewed uv {manifest['uv_version']}: "
+            f"pip exited {result.returncode} ({detail})"
+        )
+    print(f"installed the reviewed uv {manifest['uv_version']} from the manifest pins")
+    return 0
+
+
 def find_default_uv(root: Path) -> str:
     env_bin = os.environ.get("VMAFX_UV") or os.environ.get("UV_BINARY")
     if env_bin:
@@ -2137,6 +2212,10 @@ def parse_args() -> argparse.Namespace:
     subparsers.add_parser("check")
     subparsers.add_parser("outputs", help="print the manifest lock outputs, one per line")
     subparsers.add_parser("inputs", help="print the manifest lock inputs, one per line")
+    subparsers.add_parser(
+        "uv-bootstrap",
+        help="install the reviewed uv release from the manifest's own hash pins",
+    )
     writer = subparsers.add_parser("write")
     writer.add_argument("--uv", default=None)
     return parser.parse_args()
@@ -2149,6 +2228,8 @@ def main() -> int:
         if args.command == "write":
             uv_bin = args.uv or find_default_uv(root)
             return write(root, uv_bin)
+        if args.command == "uv-bootstrap":
+            return bootstrap(root)
         if args.command in ("outputs", "inputs"):
             listing = manifest_outputs(root) if args.command == "outputs" else manifest_inputs(root)
             print("\n".join(listing))

@@ -5,10 +5,11 @@
 
 Positive: the path filter equals the manifest inputs read through the lock checker's loader;
 the workflow is Renovate-only, read-only by default, pinned by SHA, capped, serialised per ref,
-pushes through the shared script and calls the lock checker's own write mode.
+bootstraps the uv generator from the manifest's own hash pins, pushes through the shared script
+and calls the lock checker's own write mode.
 Negative: planted copies lose a path, gain a pattern, carry an expression in ``run:``, use an
-unpinned action, push with a force flag, write a second generator or lose the guard step; each
-is reported.
+unpinned action, push with a force flag, write a second generator, reinstall the compiled
+tooling lock or lose the guard step; each is reported.
 Boundary: both lock refresh workflows commit and push only through
 scripts/ci/lock_refresh_publish.py.
 """
@@ -35,6 +36,9 @@ NEO_WORKFLOW = WORKFLOWS / "intel-neo-lock-refresh.yml"
 SHA_RE = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
 FORCE_RE = re.compile(r"(?:^|\s)(?:--force\S*|-f|\+HEAD\S*)(?:\s|$)")
 GENERATOR_RE = re.compile(r"pip-compile|uv\s+pip\s+compile|uv\s+lock")
+# The compiled tooling lock still names the previous uv release until this very
+# workflow regenerates it, so no run step may read it (issue #3659).
+TOOLING_LOCK_RE = re.compile(r"requirements/locks/tooling-tests\.txt")
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -83,6 +87,9 @@ def shape_findings(workflow: dict[str, Any], inputs: list[str]) -> list[str]:
     found += ["expression inside run:" for text in texts if "${{" in text]
     found += ["force push" for text in texts if FORCE_RE.search(text)]
     found += ["second generator" for text in texts if GENERATOR_RE.search(text)]
+    found += [
+        "compiled tooling lock used in a run step" for text in texts if TOOLING_LOCK_RE.search(text)
+    ]
     found += guard_order_findings(texts)
     return found
 
@@ -132,6 +139,28 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
         subject = re.search(r'PYTHON_LOCK_SUBJECT = "([^"]+)"', dco)
         assert subject is not None
         self.assertIn(f'--subject "{subject.group(1)}"', text)
+
+    def test_bootstrap_installs_the_reviewed_generator_from_the_manifest(self) -> None:
+        """Positive: the uv generator comes from the manifest pins, not the compiled lock."""
+        texts = run_texts(self.workflow)
+        text = "\n".join(texts)
+        self.assertIn("check_python_dependency_locks.py uv-bootstrap", text)
+        install = next(t for t in texts if "uv-bootstrap" in t)
+        self.assertIn("--require-hashes -r requirements/locks/package-build.txt", install)
+        for step_text in texts:
+            self.assertNotIn("requirements/locks/tooling-tests.txt", step_text)
+        steps = steps_of(self.workflow)
+        bootstrap = next(i for i, s in enumerate(steps) if "uv-bootstrap" in s.get("run", ""))
+        write = next(i for i, s in enumerate(steps) if "write" in s.get("run", ""))
+        self.assertLess(bootstrap, write)
+
+    def test_planted_tooling_lock_install_is_reported(self) -> None:
+        """Negative: reinstalling uv from the compiled tooling lock re-creates the deadlock."""
+        wf = self.planted()
+        steps_of(wf)[-1]["run"] += (
+            "\npython -m pip install --require-hashes " "-r requirements/locks/tooling-tests.txt\n"
+        )
+        self.assertIn("compiled tooling lock used in a run step", shape_findings(wf, self.inputs))
 
     def test_checkout_keeps_no_credentials_and_the_token_comes_last(self) -> None:
         """Positive: checkout drops credentials; the token is minted after the regeneration."""

@@ -8,7 +8,9 @@ name: python-lock-refresh
 # renovate.json ignores the lock outputs, so the offline `make python-locks-check`
 # fails on the PR.  On a push to renovate/** touching a manifest input, this workflow
 # regenerates every lock with `check_python_dependency_locks.py write` (the uv release
-# pinned by the manifest, installed from the hash-locked tooling lock), then mints an
+# pinned by the manifest, installed from the manifest's own uv_version and uv_sha256
+# digest pins so a uv bump cannot bootstrap from the lock it is about to rewrite,
+# issue #3659), then mints an
 # installation token for the release-bot App (so the pushed commit triggers PR check
 # runs, ADR-1151) and lets scripts/ci/lock_refresh_publish.py commit and push the
 # manifest outputs only when they changed.  The path filter below equals the manifest
@@ -78,15 +80,14 @@ jobs:
           set -euo pipefail
           python3 scripts/ci/lock_refresh_publish.py refuse-non-renovate \
             --label python-lock-refresh
-      - name: Install the pinned uv from the tooling lock
+      - name: Install the pinned uv from the manifest
         env:
           TMPDIR: ${{ runner.temp }}
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --require-hashes -r requirements/locks/package-build.txt
-          python -m pip install --no-build-isolation --require-hashes \
-            -r requirements/locks/tooling-tests.txt
+          python3 scripts/ci/check_python_dependency_locks.py uv-bootstrap
       - name: Regenerate the locks from the manifest
         shell: bash
         run: |

@@ -17,10 +17,15 @@ into lock files (`requirements/locks/*.txt`, `*/*-lock.txt`).
 The central authority is `requirements/locks/manifest.json`, which pairs every
 lock file with its source files and compilation arguments using a reviewed,
 pinned
-version of `uv` (`uv_version` in `requirements/locks/manifest.json`).
-Both `check` and `write` reject a manifest input whose `uv` pin differs from
-`uv_version`, so a Renovate PR that bumps the pin must update `uv_version` in
-the same change to pass.
+version of `uv` (`uv_version` in `requirements/locks/manifest.json`) together
+with that release's artifact digests (`uv_sha256`, the list directly next to
+`uv_version`). Both `check` and `write` reject a manifest input whose `uv` pin
+differs from `uv_version`, so a Renovate PR that bumps the pin must update
+`uv_version` in the same change to pass. The digests are what
+`check_python_dependency_locks.py uv-bootstrap` installs the generator from
+(`pip install --require-hashes` on a requirement line built from those two
+fields alone), so bootstrapping never reads a compiled lock — a lock cannot
+gate the refresh that is supposed to rewrite it (issue #3659).
 
 The checker recognizes `uv` by its case-insensitive, PEP 503-normalized package
 name. It checks `==` and `===` pins with optional extras, whitespace, and
@@ -88,13 +93,16 @@ CI Workflows & Dockerfiles                Local Workstation (make lint-tools, cy
 ## Automatic lock refresh
 
 [ADR-3560](../adr/3560-python-lock-refresh.md) records automatic refresh when a
-dependency-update branch changes a manifest input. The workflow publishes
-manifest outputs as a signed-off release-bot commit. The DCO exemption covers
-only live entries among the 30 exact paths in
+dependency-update branch changes a manifest input. The workflow installs the
+reviewed generator with `check_python_dependency_locks.py uv-bootstrap`, then
+publishes manifest outputs as a signed-off release-bot commit. The DCO
+exemption covers only live entries among the 30 exact paths in
 `.config/lint-exceptions.d/dco-python-lock-refresh.toml`; a new output needs a
-new operator grant. If the branch moves or is deleted, publication fails without
-overwriting it. The next input change runs refresh again; otherwise rerun it
-against the current tip.
+new operator grant. The exemption authorizes a manifest diff that moves
+`uv_version` together with its adjacent `uv_sha256` digests; any other manifest
+change keeps the co-author line. If the branch moves or is deleted, publication
+fails without overwriting it. The next input change runs refresh again;
+otherwise rerun it against the current tip.
 
 ## How to add or update a dependency
 

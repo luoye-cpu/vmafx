@@ -33,6 +33,7 @@ from scripts.lib.safe_subprocess import run as run_command
 ROOT = Path(__file__).resolve().parents[3]
 CHECKER = ROOT / "scripts/ci/check_python_dependency_locks.py"
 SCRIPT_TIMEOUT_S = 60
+FAKE_UV_DIGEST = "0123456789abcdef" * 4
 
 
 def load_checker() -> Any:
@@ -50,7 +51,8 @@ def write_uv_pin_fixture(root: Path, inputs: dict[str, str], version: str) -> No
     manifest_path.parent.mkdir(parents=True)
     entry = {"output": "tooling-lock.txt", "inputs": list(inputs), "compile_args": list(inputs)}
     manifest_path.write_text(
-        json.dumps({"uv_version": version, "locks": [entry]}), encoding="utf-8"
+        json.dumps({"uv_version": version, "uv_sha256": [FAKE_UV_DIGEST], "locks": [entry]}),
+        encoding="utf-8",
     )
     for relative, contents in inputs.items():
         (root / relative).write_text(contents, encoding="utf-8")
@@ -659,7 +661,9 @@ class LockValidationTests(unittest.TestCase):
             )
             manifest_file = manifest_dir / "manifest.json"
             manifest_file.write_text(
-                json.dumps({"uv_version": "0.12.18", "locks": [entry]}),
+                json.dumps(
+                    {"uv_version": "0.12.18", "uv_sha256": [FAKE_UV_DIGEST], "locks": [entry]}
+                ),
                 encoding="utf-8",
             )
 
@@ -843,7 +847,9 @@ class LockValidationTests(unittest.TestCase):
                 },
             ]
             (manifest_dir / "manifest.json").write_text(
-                json.dumps({"uv_version": "0.12.18", "locks": entries}),
+                json.dumps(
+                    {"uv_version": "0.12.18", "uv_sha256": [FAKE_UV_DIGEST], "locks": entries}
+                ),
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(self.checker.ContractError, "install target"):
@@ -2037,7 +2043,7 @@ class UvVersionEchoTests(unittest.TestCase):
             manifest_dir.mkdir(parents=True)
             manifest_file = manifest_dir / "manifest.json"
             manifest_file.write_text(
-                json.dumps({"uv_version": "0.13.6", "locks": []}),
+                json.dumps({"uv_version": "0.13.6", "uv_sha256": [FAKE_UV_DIGEST], "locks": []}),
                 encoding="utf-8",
             )
             self.assertEqual(self.checker.check(temp_root), 0)
@@ -2053,7 +2059,7 @@ class UvVersionEchoTests(unittest.TestCase):
             manifest_dir.mkdir(parents=True)
             manifest_file = manifest_dir / "manifest.json"
             manifest_file.write_text(
-                json.dumps({"uv_version": "0.13.6", "locks": []}),
+                json.dumps({"uv_version": "0.13.6", "uv_sha256": [FAKE_UV_DIGEST], "locks": []}),
                 encoding="utf-8",
             )
             guide = temp_root / "docs" / "oversized.md"
@@ -2070,7 +2076,7 @@ class UvVersionEchoTests(unittest.TestCase):
             manifest_dir.mkdir(parents=True)
             manifest_file = manifest_dir / "manifest.json"
             manifest_file.write_text(
-                json.dumps({"uv_version": "0.13.6", "locks": []}),
+                json.dumps({"uv_version": "0.13.6", "uv_sha256": [FAKE_UV_DIGEST], "locks": []}),
                 encoding="utf-8",
             )
             history_adr = temp_root / "docs" / "adr" / "1000-historical.md"
@@ -2338,6 +2344,183 @@ class UvInputPinTests(unittest.TestCase):
             self.checker.check_uv_input_pins(self.root, self.manifest)
 
 
+def fake_uv_result(checker: Any, stdout: str) -> Any:
+    return checker.TextCommandResult(argv=("uv",), returncode=0, stdout=stdout, stderr="")
+
+
+class UvBootstrapTests(unittest.TestCase):
+    """The refresh generator is installed from the manifest pins alone (issue #3659).
+
+    On a uv bump the reviewed manifest names the new release while the compiled
+    tooling lock still names the previous one; the bootstrap and the writer must
+    stay driven by the manifest so the locks can regenerate.
+    """
+
+    NEW_VERSION = "0.14.0"
+    STALE_VERSION = "0.13.6"
+
+    def setUp(self) -> None:
+        self.checker = load_checker()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.manifest_dir = self.root / "requirements/locks"
+        self.manifest_dir.mkdir(parents=True)
+        self.entry = {
+            "output": "requirements/locks/tooling-tests.txt",
+            "inputs": ["requirements/locks/tooling-tests.in"],
+            "compile_args": ["requirements/locks/tooling-tests.in"],
+        }
+        self.digests = [FAKE_UV_DIGEST, "fedcba9876543210" * 4]
+        self.write_manifest()
+        (self.manifest_dir / "tooling-tests.in").write_text(
+            f"uv=={self.NEW_VERSION}\n", encoding="utf-8"
+        )
+        # The compiled lock is stale: it still pins the previous release, as on
+        # a uv bump pull request before the refresh workflow has run.
+        self.write_compiled_lock(self.STALE_VERSION)
+
+    def write_manifest(self, **overrides: Any) -> None:
+        manifest: dict[str, Any] = {
+            "uv_version": self.NEW_VERSION,
+            "uv_sha256": self.digests,
+            "locks": [self.entry],
+        }
+        manifest.update(overrides)
+        (self.manifest_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def write_compiled_lock(self, version: str) -> None:
+        self.manifest_dir.joinpath("tooling-tests.txt").write_text(
+            "# VMAFx hash lock; regenerate with: make python-locks-write\n"
+            f"# vmafx-uv-version: {version}\n"
+            f"# vmafx-input-sha256: {self.checker.entry_digest(self.root, self.entry)}\n"
+            f"uv=={version} --hash=sha256:{FAKE_UV_DIGEST}\n",
+            encoding="utf-8",
+        )
+
+    def fake_compile(self, checker: Any, stdout_version: str) -> Any:
+        """A uv stand-in: reports one version and compiles into ``-o``."""
+
+        def run(binary: str, args: list[str], cwd: Any = None, **_kwargs: Any) -> Any:
+            if args[:1] == ["--version"]:
+                return fake_uv_result(checker, f"uv {stdout_version}\n")
+            output = Path(args[args.index("-o") + 1])
+            output.write_text(
+                "pyyaml==6.0.3 --hash=sha256:"
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
+                f"uv=={self.NEW_VERSION} --hash=sha256:{FAKE_UV_DIGEST}\n",
+                encoding="utf-8",
+            )
+            return checker.TextCommandResult(argv=tuple(args), returncode=0, stdout="", stderr="")
+
+        return run
+
+    def bootstrap_requirements_file(self) -> tuple[str, list[str]]:
+        """Run the bootstrap against a capturing pip stand-in.
+
+        Returns the pinned requirements text (read while the temp file exists)
+        and the pip argv.
+        """
+        contents: list[str] = []
+        captured: list[list[str]] = []
+
+        def pip(argv: list[str], **_kwargs: Any) -> Any:
+            captured.append(argv)
+            contents.append(Path(argv[argv.index("-r") + 1]).read_text(encoding="utf-8"))
+            return self.checker.TextCommandResult(
+                argv=tuple(argv), returncode=0, stdout="Installed uv\n", stderr=""
+            )
+
+        with mock.patch.object(self.checker, "_run_pip", pip):
+            self.assertEqual(self.checker.bootstrap(self.root), 0)
+        return contents[0], captured[0]
+
+    def test_bootstrap_pins_the_manifest_version_not_the_compiled_lock(self) -> None:
+        """The bump scenario: the stale compiled lock never reaches the install."""
+        requirements, _ = self.bootstrap_requirements_file()
+        self.assertEqual(
+            requirements,
+            f"uv=={self.NEW_VERSION} --hash=sha256:{self.digests[0]} "
+            f"--hash=sha256:{self.digests[1]}\n",
+        )
+        self.assertNotIn(self.STALE_VERSION, requirements)
+        self.assertNotIn("tooling-tests.txt", requirements)
+
+    def test_bootstrap_installs_require_hashes_from_a_requirements_file(self) -> None:
+        _, argv = self.bootstrap_requirements_file()
+        self.assertEqual(argv[:4], ["-m", "pip", "install", "--require-hashes"])
+        self.assertIn("-r", argv)
+
+    def test_bootstrap_then_write_regenerates_the_stale_lock(self) -> None:
+        """Acceptance: manifest newer than tooling-tests.txt, the locks regenerate."""
+        self.bootstrap_requirements_file()
+        with (
+            mock.patch.object(self.checker, "resolve_executable", return_value="uv"),
+            mock.patch.object(
+                self.checker,
+                "_run_uv",
+                side_effect=self.fake_compile(self.checker, self.NEW_VERSION),
+            ),
+        ):
+            self.assertEqual(self.checker.write(self.root, "uv"), 0)
+        refreshed = (self.manifest_dir / "tooling-tests.txt").read_text(encoding="utf-8")
+        self.assertIn(f"# vmafx-uv-version: {self.NEW_VERSION}", refreshed)
+        self.assertIn(f"uv=={self.NEW_VERSION}", refreshed)
+        self.assertNotIn(f"uv=={self.STALE_VERSION}", refreshed)
+
+    def test_write_still_refuses_a_generator_at_the_stale_lock_version(self) -> None:
+        """The old deadlock: uv from the stale compiled lock cannot write."""
+        with (
+            mock.patch.object(self.checker, "resolve_executable", return_value="uv"),
+            mock.patch.object(
+                self.checker,
+                "_run_uv",
+                side_effect=self.fake_compile(self.checker, self.STALE_VERSION),
+            ),
+        ):
+            with self.assertRaisesRegex(
+                self.checker.ContractError,
+                f"uv {self.STALE_VERSION} does not match reviewed generator {self.NEW_VERSION}",
+            ):
+                self.checker.write(self.root, "uv")
+
+    def test_bootstrap_reports_a_pip_failure(self) -> None:
+        def pip(argv: list[str], **_kwargs: Any) -> Any:
+            return self.checker.TextCommandResult(
+                argv=tuple(argv), returncode=1, stdout="", stderr="hash mismatch"
+            )
+
+        with mock.patch.object(self.checker, "_run_pip", pip):
+            with self.assertRaisesRegex(
+                self.checker.ContractError,
+                f"cannot install the reviewed uv {self.NEW_VERSION}",
+            ):
+                self.checker.bootstrap(self.root)
+
+    def test_bootstrap_maps_a_pip_timeout_to_contract_error(self) -> None:
+        def stub(*_args: Any, **_kwargs: Any) -> Any:
+            raise CommandTimedOut(("pip",), 600.0, "", "")
+
+        with mock.patch.object(self.checker, "run_command", stub):
+            with self.assertRaisesRegex(self.checker.ContractError, "pip timed out"):
+                self.checker._run_pip(["-m", "pip", "install", "--require-hashes"])
+
+    def test_manifest_requires_the_bootstrap_digests(self) -> None:
+        cases = {
+            "missing": ({}, "must be a non-empty list"),
+            "empty": ([], "must be a non-empty list"),
+            "not-a-list": ("0" * 64, "must be a non-empty list"),
+            "short": (["abc123"], "lowercase sha256 hex"),
+            "upper": (["A" * 64], "lowercase sha256 hex"),
+            "duplicate": ([FAKE_UV_DIGEST, FAKE_UV_DIGEST], "must be unique"),
+        }
+        for name, (digests, message) in cases.items():
+            with self.subTest(case=name):
+                self.write_manifest(uv_sha256=digests)
+                with self.assertRaisesRegex(self.checker.ContractError, message):
+                    self.checker.load_manifest(self.root)
+
+
 class UvExecutionAndCompileArgsTests(unittest.TestCase):
     """Verify uv execution through safe_subprocess and compile_args validation."""
 
@@ -2387,7 +2570,13 @@ class UvExecutionAndCompileArgsTests(unittest.TestCase):
                         "compile_args": bad_args,
                     }
                     manifest_file.write_text(
-                        json.dumps({"uv_version": "0.12.18", "locks": [entry]}),
+                        json.dumps(
+                            {
+                                "uv_version": "0.12.18",
+                                "uv_sha256": [FAKE_UV_DIGEST],
+                                "locks": [entry],
+                            }
+                        ),
                         encoding="utf-8",
                     )
                     with (
