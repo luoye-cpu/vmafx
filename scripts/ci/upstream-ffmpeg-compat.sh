@@ -58,7 +58,8 @@ ff_fetch() {
   rm -rf "$FF_SRC"
   mkdir -p "$FF_ROOT"
   uc_log "cloning $FF_REMOTE at $FF_TAG (shallow)"
-  timeout 600 git -c advice.detachedHead=false clone --quiet --depth 1 \
+  python3 "$UC_REPO/scripts/ci/git_clone_retry.py" --timeout 600 \
+    -c advice.detachedHead=false clone --quiet --depth 1 \
     --branch "$FF_TAG" "$FF_REMOTE" "$FF_SRC" || uc_die "cannot clone FFmpeg $FF_TAG"
 }
 

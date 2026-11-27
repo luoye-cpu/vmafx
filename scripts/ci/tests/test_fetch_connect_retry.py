@@ -85,7 +85,7 @@ OLD_CURL_STAGES = (
     ),
 )
 FETCH = re.compile(r"(?<![\w.-])(curl(?:\.exe)?|wget)\s+(?=[\"']?(?:-|https?://|\$|%))")
-GIT_CLONE = re.compile(r"(?<![\w.-])git\s+clone\b")
+GIT_CLONE = re.compile(r"(?<![\w.-])git\s+(?:(?:-c|-C)\s+\S+\s+)*clone\b")
 GIT_CLONE_HELPER = "scripts/ci/git_clone_retry.py"
 GIT_CLONE_LOCAL = frozenset({"scripts/adr/tests/test-next-free-shallow-safe.sh"})
 SHELL_HEADER = re.compile(r"^#![^\n]*\b(?:sh|ash|bash|dash|ksh|zsh|fish|pwsh)\b")
@@ -490,6 +490,11 @@ def git_clone_errors(path: str, text: str) -> list[str]:
         command = strip_comment(source_line)
         for match in GIT_CLONE.finditer(command):
             tail = command[match.start() :]
+            if re.search(r"--shared\b", tail):
+                # --shared only references a local repository's objects, so a
+                # variable-shaped destination is not a network marker here
+                # (the standards-gate scratch clone of the checkout).
+                continue
             if re.search(r"https?://|\$", tail):
                 errors.append(f"{path}:{line}: git clone must use {GIT_CLONE_HELPER}")
     return errors
@@ -883,6 +888,29 @@ class FetchConnectRetryTests(unittest.TestCase):
         self.assertEqual(
             self.check_script("git clone https://example.invalid/r.git dest"),
             ["fetch.sh:1: git clone must use scripts/ci/git_clone_retry.py"],
+        )
+
+    def test_git_clone_with_leading_options_is_still_a_network_clone(self) -> None:
+        # The compat scripts write `git -c <key>=<value> clone`; a search for
+        # the literal `git clone` missed them (issue #3392, lusoris 2026-11-24).
+        for command in (
+            "git -c advice.detachedHead=false clone https://example.invalid/r.git dest",
+            "git -C /tmp/src -c advice.detachedHead=false clone https://example.invalid/r.git",
+            "git -c a=b -C /tmp/src -c c=d clone https://example.invalid/r.git dest",
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(
+                    self.check_script(command),
+                    ["fetch.sh:1: git clone must use scripts/ci/git_clone_retry.py"],
+                )
+
+    def test_helper_invocation_is_not_a_raw_clone(self) -> None:
+        self.assertEqual(
+            self.check_script(
+                "python3 scripts/ci/git_clone_retry.py --timeout 600 "
+                "-c advice.detachedHead=false clone --quiet url dest"
+            ),
+            [],
         )
 
     def test_local_git_clone_is_out_of_scope(self) -> None:

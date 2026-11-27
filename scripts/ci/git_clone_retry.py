@@ -13,6 +13,11 @@ Usage:
 
 `--attempts` must be 1..10; `--delay` defaults to 1 second and may be zero.
 `--timeout` defaults to 600 seconds and must be 1..3600.
+Git's `-c <name>=<value>` and `-C <path>` options may precede `clone` in
+GIT_CLONE_ARGS; the helper hoists them in front of the subcommand, exactly
+where Git expects them. The clone arguments are otherwise passed through
+unchanged, so a caller keeps its branch, depth and destination exactly as
+before.
 The exit status is the last clone's status, 124 when a clone times out, or 2
 for a usage error.
 """
@@ -32,6 +37,8 @@ MAX_ATTEMPTS = 10
 MAX_TIMEOUT = 3600
 # A destination is explicit only when the URL and directory are both present.
 CLONE_POSITIONAL_MIN = 2
+# git -c <name>=<value> and git -C <path>: option token plus its value.
+OPTION_VALUE_TOKENS = 2
 HELPER_OPTIONS = frozenset({"--attempts", "--delay", "--timeout"})
 
 
@@ -45,8 +52,12 @@ def _option(argv: list[str], index: int) -> tuple[str, str, int]:
     return argument, argv[index + 1], index + 2
 
 
-def parse_args(argv: list[str]) -> tuple[int, int, int, list[str]]:
-    """Split the helper's options from the arguments passed to git."""
+def parse_args(argv: list[str]) -> tuple[int, int, int, list[str], list[str]]:
+    """Split the helper's options from the arguments passed to git.
+
+    Returns the helper's three knobs, the clone arguments, and the git
+    `-c`/`-C` options that precede `clone` hoisted out of them.
+    """
     attempts = DEFAULT_ATTEMPTS
     delay = DEFAULT_DELAY
     timeout = DEFAULT_TIMEOUT
@@ -67,7 +78,22 @@ def parse_args(argv: list[str]) -> tuple[int, int, int, list[str]]:
             timeout = _bounded(value, name, MAX_TIMEOUT)
     if index == len(argv):
         raise ValueError("no git clone arguments")
-    return attempts, delay, timeout, argv[index:]
+    clone_args = argv[index:]
+    config: list[str] = []
+    while clone_args and clone_args[0] in ("-c", "-C"):
+        option = clone_args[0]
+        if len(clone_args) < OPTION_VALUE_TOKENS:
+            raise ValueError(f"{option} needs a value")
+        config.extend([option, clone_args[1]])
+        clone_args = clone_args[2:]
+    # The established workflow call sites name the clone arguments only; the
+    # compat scripts write the subcommand too after their -c options. Tolerate
+    # both shapes: the invocation below adds "clone" itself.
+    if clone_args and clone_args[0] == "clone":
+        clone_args = clone_args[1:]
+    if not clone_args:
+        raise ValueError("no git clone arguments")
+    return attempts, delay, timeout, clone_args, config
 
 
 def _bounded(value: str, option: str, maximum: int) -> int:
@@ -109,7 +135,7 @@ def _remove_destination(destination: Path) -> None:
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
-        attempts, delay, timeout, clone_args = parse_args(argv)
+        attempts, delay, timeout, clone_args, config = parse_args(argv)
     except ValueError as error:
         print(f"git_clone_retry: {error}", file=sys.stderr)
         return 2
@@ -121,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             # argv form, no shell; workflow-owned clone arguments.
             status = subprocess.run(  # noqa: S603  # nosec B603
-                [git, "clone", *clone_args], check=False, timeout=timeout
+                [git, *config, "clone", *clone_args], check=False, timeout=timeout
             ).returncode
         except subprocess.TimeoutExpired:
             status = 124

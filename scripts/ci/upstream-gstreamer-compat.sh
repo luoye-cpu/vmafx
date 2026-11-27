@@ -98,7 +98,11 @@ gst_fetch() {
   rm -rf "$GST_SRC"
   mkdir -p "$GST_ROOT"
   uc_log "sparse-cloning $GST_REMOTE at $GST_VER"
-  timeout 600 git -c advice.detachedHead=false clone --quiet --depth 1 \
+  # The bounded-retry helper keeps `-c` in front of the subcommand where Git
+  # expects it (issue #3392: gitlab.freedesktop.org answered 500 on a
+  # merge-queue run and the sparse clone died at checkout).
+  python3 "$UC_REPO/scripts/ci/git_clone_retry.py" --timeout 600 \
+    -c advice.detachedHead=false clone --quiet --depth 1 \
     --filter=blob:none --sparse --branch "$GST_VER" "$GST_REMOTE" "$GST_SRC" ||
     uc_die "cannot clone GStreamer $GST_VER"
   timeout 600 git -C "$GST_SRC" sparse-checkout set "$GST_SUBDIR" ||

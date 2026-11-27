@@ -101,18 +101,48 @@ class GitCloneRetryTests(unittest.TestCase):
             self.assertFalse(destination.exists())
 
     def test_clone_arguments_need_no_separator(self) -> None:
-        attempts, delay, timeout, arguments = MODULE.parse_args(
+        attempts, delay, timeout, arguments, config = MODULE.parse_args(
             ["--attempts", "4", "--branch", "v1.34.0", "url", "dest"]
         )
         self.assertEqual((attempts, delay, timeout), (4, 1, 600))
         self.assertEqual(arguments, ["--branch", "v1.34.0", "url", "dest"])
+        self.assertEqual(config, [])
 
     def test_clone_arguments_are_preserved(self) -> None:
-        attempts, delay, timeout, arguments = MODULE.parse_args(
+        attempts, delay, timeout, arguments, config = MODULE.parse_args(
             ["--attempts", "4", "--delay", "2", "--", "--filter=blob:none", "url", "dest"]
         )
         self.assertEqual((attempts, delay, timeout), (4, 2, 600))
         self.assertEqual(arguments, ["--filter=blob:none", "url", "dest"])
+        self.assertEqual(config, [])
+
+    def test_git_config_options_are_hoisted_in_front_of_clone(self) -> None:
+        # The compat scripts write `git -c advice.detachedHead=false clone`;
+        # the helper must keep those options where Git expects them (issue #3392).
+        attempts, delay, timeout, arguments, config = MODULE.parse_args(
+            ["-c", "advice.detachedHead=false", "clone", "--quiet", "url", "dest"]
+        )
+        self.assertEqual((attempts, delay, timeout), (3, 1, 600))
+        self.assertEqual(arguments, ["--quiet", "url", "dest"])
+        self.assertEqual(config, ["-c", "advice.detachedHead=false"])
+
+    def test_worktree_option_is_hoisted_with_its_value(self) -> None:
+        _, _, _, arguments, config = MODULE.parse_args(
+            ["-C", "scratch/src", "clone", "--depth=1", "url"]
+        )
+        self.assertEqual(arguments, ["--depth=1", "url"])
+        self.assertEqual(config, ["-C", "scratch/src"])
+
+    def test_hoisted_options_repeat_and_interleave(self) -> None:
+        _, _, _, arguments, config = MODULE.parse_args(
+            ["-c", "a=b", "-C", "scratch/src", "-c", "c=d", "clone", "url"]
+        )
+        self.assertEqual(arguments, ["url"])
+        self.assertEqual(config, ["-c", "a=b", "-C", "scratch/src", "-c", "c=d"])
+
+    def test_trailing_option_without_a_value_is_a_usage_error(self) -> None:
+        with self.assertRaises(ValueError):
+            MODULE.parse_args(["-c"])
 
 
 if __name__ == "__main__":
