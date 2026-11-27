@@ -57,6 +57,7 @@ CLI_TIMEOUT_S = 60  # outer deadline for each squash_message.py CLI run
 
 sys.path.insert(0, str(REPO_ROOT))
 from scripts.ci import squash_message  # noqa: E402
+from scripts.ci.tests import symlink_test_support as links  # noqa: E402
 from scripts.dev import merge_train_guard as guard  # noqa: E402
 from scripts.lib.safe_subprocess import TextCommandResult  # noqa: E402
 from scripts.lib.safe_subprocess import run as safe_run  # noqa: E402
@@ -546,6 +547,7 @@ class TestCheckWithStubEngine(unittest.TestCase):
         real_sh = shutil.which("sh")
         if real_sh is None:
             self.skipTest("sh not on PATH")
+        links.skip_without_symlinks(self.dir_path)
         link = self.dir_path / "sh"
         link.symlink_to(real_sh)
         with patch.dict(os.environ, {"PATH": str(self.dir_path)}):
@@ -738,7 +740,7 @@ class TestRealEngine(unittest.TestCase):
                 self.assertNotEqual(
                     res.returncode,
                     0,
-                    f"engine now accepts '{t}': drop the substitution (cordanaLLM/praetor 1861)",
+                    f"engine now accepts '{t}': drop the substitution (tekmora/praetor 1861)",
                 )
             finally:
                 tmp_path.unlink(missing_ok=True)

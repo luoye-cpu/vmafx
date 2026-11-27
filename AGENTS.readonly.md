@@ -91,8 +91,9 @@ praetorctl hiss coverage --verify
 <!-- markdownlint-disable MD013 -->
 # AGENTS.md — VMAFx
 
-> **CORRECT REPO: `VMAFx/vmafx` (active) — NOT `lusoris/vmaf` (archived)**
-> Fork renamed + transferred. All work, PRs, gh commands -> `VMAFx/vmafx`. Session start: `gh repo set-default VMAFx/vmafx`.
+> **CORRECT REPO: `vidiko/vmafx` (active) — NOT `lusoris/vmaf` (archived)**
+> Moved from `VMAFx/vmafx` on 2026-11-20; the old organisation keeps a rename notice. <!-- old-org-ok -->
+> Fork renamed + transferred. All work, PRs, gh commands -> `vidiko/vmafx`. Session start: `gh repo set-default vidiko/vmafx`.
 
 ## GLOBAL PROJECT RULES (TOP PRIORITY)
 
@@ -122,6 +123,7 @@ make format-check  # dry-run
 
 - Build guide: [docs/getting-started/index.md#build-from-source-any-platform](docs/getting-started/index.md#build-from-source-any-platform)
 - Backend guides: [docs/backends/index.md](docs/backends/index.md)
+- Toolchains off PATH: oneAPI icpx/icx via `source /opt/intel/oneapi/setvars.sh`, nvcc /opt/cuda/bin, hipcc /opt/rocm/bin. Run scripts/dev/toolchain-probe.sh before any `no <toolchain>` / `not compiled` claim; paste its output.
 
 ## 3. Coding standards
 

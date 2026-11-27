@@ -192,7 +192,7 @@ by `--port`), `VMAFX_LOG_LEVEL`, `VMAFX_VMAF_BINARY` (same as `VMAF_BIN`) and
 ## Go services (golusoris)
 
 The controller, server and node run on the
-[golusoris](https://github.com/golusoris/golusoris) `fx` framework
+[golusoris](https://github.com/plurano/golusoris) `fx` framework
 ([ADR-1119](../adr/1119-golusoris-go-framework-adoption.md)). Configuration is
 loaded with koanf: the `VMAFX_` prefix is stripped, the name is lowercased, and
 every underscore becomes the `.` key delimiter, so the table columns show the
@@ -366,6 +366,7 @@ addresses are full addresses (`:8080`), not bare ports.
 | `VMAFX_CONTROLLER_HEARTBEAT_INTERVAL` | `controller.heartbeat_interval` | duration | `10s` |  | Heartbeat period. |
 | `VMAFX_CONTROLLER_POLL_INTERVAL` | `controller.poll_interval` | duration | `2s` |  | Wait after an empty `PullWork`. |
 | `VMAFX_FFMPEG_BIN` | `ffmpeg.bin` | path | `ffmpeg` on `PATH` |  | `ffmpeg` of the startup encoder probe; the node image sets `/usr/local/bin/ffmpeg` ([ADR-0717](../adr/0717-vmafx-node-ffmpeg-latest.md)). |
+| `VMAFX_SIDECAR_ENABLED` | `sidecar.enabled` | bool | `false` | `node.sidecar.enabled` | Enable the online-training sidecar client and its `/readyz` check; a non-boolean value stops the node ([ADR-3558](../adr/3558-node-sidecar-readiness-gpu-affinity.md)). |
 | `VMAFX_SIDECAR_SOCKET` | `sidecar.socket` | path | `/tmp/vmafx-sidecar.sock` |  | Unix socket of the online-training sidecar ([ADR-0781](../adr/0781-sidecar-sgd-ema-online-trainer.md)). |
 | `VMAFX_STORAGE_MODE` | `storage.mode` | string | `auto` | `storage.mode` | How rclone-remote job sources are read: `http-serve`, `mount` or `auto`; anything else, or `mount` without FUSE, stops the node ([ADR-1526](../adr/1526-node-storage-streamed-inputs.md)). |
 | `VMAFX_STORAGE_MOUNT_ROOT` | `storage.mount_root` | path | temp directory | set by the chart | Parent of `mount` mode's per-job mount points; must lie under `VMAFX_EBPF_MOUNT_PREFIX` when the tracker is on. |

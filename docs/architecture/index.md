@@ -131,6 +131,8 @@ views. Levels are scaffolded and evolve as internal boundaries stabilise:
   server's direct cgo scoring path.
 - **[vmaf-picture-v2-migration.md](vmaf-picture-v2-migration.md)** — migration
   to the v2 picture type.
+- **[torcul-capability-map.md](torcul-capability-map.md)**: the five Go
+  encode packages mapped to torcul counterparts and VMAFx retirement conditions.
 - **[../principles.md](../principles.md)** — coding standards (NASA/JPL, CERT
   C).
 - **[../ai/overview.md](../ai/overview.md)** — Tiny-AI architecture (C1 / C2 /
