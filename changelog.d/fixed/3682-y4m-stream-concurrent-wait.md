@@ -1,0 +1,1 @@
+- **Decode:** `y4mdecode.Stream` now serializes its state and reaps ffmpeg through one `sync.Once`, so a `Close` concurrent with `Read` no longer calls `cmd.Wait` twice, races on `done`/`err`, or deadlocks stream scoring (issue 3682).

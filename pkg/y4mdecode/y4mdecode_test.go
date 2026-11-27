@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -210,6 +211,63 @@ func TestCloseStopsRunningDecode(t *testing.T) {
 	}
 	if _, err := s.Read(make([]byte, 16)); !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("read after Close = %v, want io.ErrClosedPipe", err)
+	}
+}
+
+// TestY4mdecodeHelperProcess is the child process for the concurrent
+// Read/Close regression test. It writes a header, then exits with failure.
+func TestY4mdecodeHelperProcess(t *testing.T) {
+	if os.Getenv("Y4MDECODE_HELPER_PROCESS") != "1" {
+		return
+	}
+	fmt.Fprint(os.Stdout, "YUV4MPEG2 W64 H48\n")
+	time.Sleep(500 * time.Millisecond)
+	os.Exit(1)
+}
+
+func TestConcurrentReadAndCloseShareOneWait(t *testing.T) {
+	cmd := exec.Command(os.Args[0], "-test.run=TestY4mdecodeHelperProcess", "--")
+	cmd.Env = append(os.Environ(), "Y4MDECODE_HELPER_PROCESS=1")
+	stderr := &limitedBuffer{limit: stderrLimit}
+	cmd.Stderr = stderr
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	s := &Stream{cmd: cmd, out: out, stderr: stderr, src: "helper", headerEnd: -1}
+
+	if _, err := s.Read(make([]byte, 64)); err != nil {
+		t.Fatalf("read header: %v", err)
+	}
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := s.Read(make([]byte, 4096))
+		readDone <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- s.Close() }()
+
+	deadline := time.After(5 * time.Second)
+	for range 2 {
+		select {
+		case err := <-readDone:
+			if err == nil {
+				t.Fatal("Read returned nil after Close")
+			}
+			readDone = nil
+		case err := <-closeDone:
+			if err != nil {
+				t.Fatalf("Close: %v", err)
+			}
+			closeDone = nil
+		case <-deadline:
+			t.Fatal("Read or Close blocked on a second cmd.Wait")
+		}
 	}
 }
 

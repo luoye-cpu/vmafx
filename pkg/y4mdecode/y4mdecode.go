@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -126,8 +127,12 @@ type Stream struct {
 	src       string
 	total     int64
 	headerEnd int64 // offset of the header's newline, -1 until seen
+	readMu    sync.Mutex
+	stateMu   sync.Mutex
 	done      bool
 	err       error
+	waitOnce  sync.Once
+	waitErr   error
 }
 
 // Open starts ffmpeg on src and returns its Y4M output. ctx bounds ffmpeg.
@@ -151,11 +156,18 @@ func Open(ctx context.Context, ffmpeg, src string, w Window) (*Stream, error) {
 	return &Stream{cmd: cmd, out: out, stderr: stderr, src: src, headerEnd: -1}, nil
 }
 
-// Read implements io.Reader.
+// Read implements io.Reader. It holds readMu for the read itself so Close can
+// still kill ffmpeg while a read is blocked on the pipe.
 func (s *Stream) Read(p []byte) (int, error) {
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+	s.stateMu.Lock()
 	if s.done {
-		return 0, s.err
+		err := s.err
+		s.stateMu.Unlock()
+		return 0, err
 	}
+	s.stateMu.Unlock()
 	n, err := s.out.Read(p)
 	if n > 0 && s.headerEnd < 0 {
 		if i := bytes.IndexByte(p[:n], '\n'); i >= 0 {
@@ -166,14 +178,18 @@ func (s *Stream) Read(p []byte) (int, error) {
 	if err == nil {
 		return n, nil
 	}
+	result := s.finish(err)
+	s.stateMu.Lock()
 	s.done = true
-	s.err = s.finish(err)
-	return n, s.err
+	s.err = result
+	s.stateMu.Unlock()
+	return n, result
 }
 
-// finish waits for ffmpeg once the output ended and names the outcome.
+// finish waits for ffmpeg once the output ended and names the outcome. The
+// process is reaped through wait so a concurrent Close cannot call Wait too.
 func (s *Stream) finish(readErr error) error {
-	waitErr := s.cmd.Wait()
+	waitErr := s.wait()
 	if waitErr != nil {
 		return fmt.Errorf("y4mdecode: decode %q failed: %w: %s",
 			filepath.Base(s.src), waitErr, strings.TrimSpace(s.stderr.String()))
@@ -187,13 +203,24 @@ func (s *Stream) finish(readErr error) error {
 	return io.EOF
 }
 
+// wait reaps ffmpeg exactly once, whichever of Read and Close gets there first.
+func (s *Stream) wait() error {
+	s.waitOnce.Do(func() {
+		s.waitErr = s.cmd.Wait()
+	})
+	return s.waitErr
+}
+
 // Close stops ffmpeg if it still runs and reaps it.
 func (s *Stream) Close() error {
+	s.stateMu.Lock()
 	if s.done {
+		s.stateMu.Unlock()
 		return nil
 	}
 	s.done = true
 	s.err = io.ErrClosedPipe
+	s.stateMu.Unlock()
 	var killErr error
 	if err := s.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		killErr = fmt.Errorf("y4mdecode: stop ffmpeg: %w", err)
@@ -201,7 +228,7 @@ func (s *Stream) Close() error {
 	// ffmpeg killed above exits with a signal; only a failure to reap it is
 	// an error.
 	var exitErr *exec.ExitError
-	if err := s.cmd.Wait(); err != nil && !errors.As(err, &exitErr) {
+	if err := s.wait(); err != nil && !errors.As(err, &exitErr) {
 		return errors.Join(killErr, fmt.Errorf("y4mdecode: reap ffmpeg: %w", err))
 	}
 	return killErr
