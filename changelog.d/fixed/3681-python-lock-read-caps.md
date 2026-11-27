@@ -1,0 +1,1 @@
+- **CI:** the Python lock checker now reads manifests, inputs, locks, alias consumers and tracked consumers through one size-checked reader; files over the cap are reported as problems instead of loaded, and the tracked-consumer walk stops at a 32 MiB aggregate cap (issue 3681).

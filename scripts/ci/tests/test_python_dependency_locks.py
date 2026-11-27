@@ -2227,6 +2227,144 @@ class FingerprintTests(unittest.TestCase):
                 self.assertNotEqual(before, self.checker.entry_digest(root, entry))
 
 
+class BoundedReadTests(unittest.TestCase):
+    """Every lock and consumer read is bounded before the bytes are loaded."""
+
+    def setUp(self) -> None:
+        self.checker = load_checker()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def write(self, relative: str, size: int) -> Path:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * size)
+        return path
+
+    def test_reader_accepts_exactly_the_cap_and_refuses_one_byte_over(self) -> None:
+        path = self.write("data.txt", 10)
+        self.assertEqual(self.checker.read_bounded(path, "data.txt", max_bytes=10), b"x" * 10)
+        self.write("data.txt", 11)
+        with self.assertRaisesRegex(
+            self.checker.BoundedReadError, "file size 11 exceeds maximum read limit of 10"
+        ):
+            self.checker.read_bounded(path, "data.txt", max_bytes=10)
+
+    def test_manifest_over_the_cap_is_not_read(self) -> None:
+        manifest = self.root / "requirements/locks/manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text('{"uv_version": "0.12.18", "locks": []}', encoding="utf-8")
+        with (
+            mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 8),
+            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
+            self.assertRaisesRegex(self.checker.ContractError, "file size .* exceeds"),
+        ):
+            self.checker.load_manifest(self.root)
+
+    def test_input_pin_over_the_cap_is_not_read(self) -> None:
+        write_uv_pin_fixture(self.root, {"tooling.in": "uv==0.12.18\n"}, "0.12.18")
+        manifest = self.checker.load_manifest(self.root)
+        with (
+            mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 8),
+            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
+            self.assertRaisesRegex(self.checker.BoundedReadError, "tooling.in: file size"),
+        ):
+            self.checker.check_uv_input_pins(self.root, manifest)
+
+    def test_entry_digest_over_the_cap_is_not_read(self) -> None:
+        self.write("dummy.in", 11)
+        entry = {"output": "dummy.txt", "inputs": ["dummy.in"], "compile_args": ["dummy.in"]}
+        with (
+            mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 10),
+            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
+            self.assertRaisesRegex(self.checker.BoundedReadError, "dummy.in: file size 11"),
+        ):
+            self.checker.entry_digest(self.root, entry)
+
+    def test_lock_outside_the_cap_is_reported_without_reading(self) -> None:
+        self.write("dummy.in", 5)
+        self.write("dummy.txt", 11)
+        entry = {"output": "dummy.txt", "inputs": ["dummy.in"], "compile_args": ["dummy.in"]}
+        with (
+            mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 10),
+            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
+        ):
+            problems = self.checker.validate_lock(self.root, {"uv_version": "0.12.18"}, entry)
+        self.assertEqual(
+            problems, ["dummy.txt: file size 11 exceeds maximum read limit of 10 bytes"]
+        )
+
+    def test_alias_consumer_over_the_cap_is_reported_without_reading(self) -> None:
+        self.write("scripts/setup.sh", 11)
+        entry = {
+            "output": "dummy.txt",
+            "inputs": ["dummy.in"],
+            "compile_args": ["dummy.in"],
+            "install_aliases": [
+                {
+                    "alias": "requirements/locks/dummy.txt",
+                    "consumer": "scripts/setup.sh",
+                    "context": "scripts/setup",
+                }
+            ],
+        }
+        with (
+            mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 10),
+            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
+        ):
+            problems = self.checker._check_alias_liveness(self.root, [entry])
+        self.assertEqual(
+            problems, ["scripts/setup.sh: file size 11 exceeds maximum read limit of 10 bytes"]
+        )
+
+    def test_consumer_scan_reports_the_oversized_file_and_continues(self) -> None:
+        manifest = self.root / "requirements/locks/manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text('{"uv_version": "0.12.18", "locks": []}', encoding="utf-8")
+        self.write("scripts/setup.sh", 101)
+        original_read_bytes = Path.read_bytes
+
+        def guarded_read_bytes(path_obj: Path, *args: Any, **kwargs: Any) -> bytes:
+            if path_obj.name == "setup.sh":
+                raise AssertionError("read oversized")
+            return original_read_bytes(path_obj, *args, **kwargs)
+
+        with (
+            mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 100),
+            mock.patch.object(Path, "read_bytes", guarded_read_bytes),
+            redirect_stderr(stderr := io.StringIO()),
+        ):
+            self.assertEqual(self.checker.check(self.root), 1)
+        self.assertIn(
+            "setup.sh: file size 101 exceeds maximum read limit of 100", stderr.getvalue()
+        )
+
+    def test_consumer_scan_stops_at_the_aggregate_cap(self) -> None:
+        manifest = self.root / "requirements/locks/manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text('{"uv_version": "0.12.18", "locks": []}', encoding="utf-8")
+        self.write("scripts/a.sh", 30)
+        self.write("scripts/b.sh", 30)
+        with (
+            mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 100),
+            mock.patch.object(self.checker, "MAX_AGGREGATE_CONSUMER_BYTES", 50),
+            redirect_stderr(stderr := io.StringIO()),
+        ):
+            self.assertEqual(self.checker.check(self.root), 1)
+        self.assertIn("aggregate consumer size 60 exceeds limit of 50 bytes", stderr.getvalue())
+
+    def test_stamp_lock_refuses_an_oversized_generated_lock(self) -> None:
+        generated = self.write("generated.txt", 11)
+        entry = {"output": "dummy.txt", "inputs": ["dummy.in"], "compile_args": ["dummy.in"]}
+        with (
+            mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 10),
+            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
+            self.assertRaisesRegex(self.checker.BoundedReadError, "generated.txt: file size 11"),
+        ):
+            self.checker.stamp_lock(self.root, {"uv_version": "0.12.18"}, entry, generated)
+
+
 class UvInputPinTests(unittest.TestCase):
     """The checker and writer enforce the manifest version across lock inputs."""
 
