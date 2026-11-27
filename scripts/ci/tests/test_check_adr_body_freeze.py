@@ -905,7 +905,18 @@ class FreezeTests(unittest.TestCase):
         self.commit()
         self.base = self.git("rev-parse", "HEAD").strip()
         self.check_change(original.replace("[bad]: old prose", "[bad]: new prose"), 1)
-        self.check_change(original.replace("[ref]: old.md (Kept)", "[ref]: new.md (Kept)"), 0)
+        self.check_change(original.replace("[ref]: old.md (Kept)", "[ref]: new.md (Kept)"), 1)
+
+    def test_html_comment_does_not_open_a_fence(self) -> None:
+        addition = "\n### Status update 2026-11-20\n<!--\n```\n-->\n## Decision\nNew decision.\n"
+        self.check_change(BASE + addition, 1)
+
+    def test_indented_code_block_dedent_is_content(self) -> None:
+        original = BASE.replace("Old context.", "    if ready:\n        log()\n        reject()")
+        self.write(ADR, original)
+        self.commit()
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.check_change(original.replace("\n        reject()", "\n    reject()"), 1, "## Context")
 
     def test_link_title_escaped_delimiter_is_kept(self) -> None:
         original = BASE.replace(

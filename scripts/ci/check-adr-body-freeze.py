@@ -26,6 +26,9 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 safe_subprocess = importlib.import_module("scripts.lib.safe_subprocess")
 run = safe_subprocess.run
@@ -44,13 +47,8 @@ spec.loader.exec_module(status_module)
 STATUS_RE = status_module.STATUS_RE
 ADR = re.compile(r"^docs/adr/[0-9]{4}-[^/]*\.md$")
 ADR_ID = re.compile(r"\bADR-([0-9]{4})\b")
-# CommonMark 0.31.2 §4.2: ATX marker, ASCII separator and optional closing sequence.
-ATX = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*)|$)")
-# CommonMark 0.31.2 §4.3: a setext underline follows a paragraph in its container.
-SETEXT = re.compile(r"^ {0,3}(=+|-+)[ \t]*$")
 UPDATE = re.compile(r"^Status update \d{4}-\d{2}-\d{2}(?:\b|$)")
 QUOTE = re.compile(r" {0,3}>[ ]?")
-FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 SUCCESSOR = re.compile(r"> Superseded by \[ADR-([0-9]{4})\]\((\1-[a-z0-9]+(?:-[a-z0-9]+)*\.md)\)")
 DEPRECATION = re.compile(r"> Deprecated: [^.!?\s][^.!?]*[.!?]")
 DIRECTIVE = re.compile(
@@ -63,6 +61,8 @@ LINK_TITLE = (
 LINK_END = re.compile(LINK_TITLE + r"\)")
 DEFINITION_END = re.compile(LINK_TITLE + r"$")
 DEFINITION = re.compile(r"^ {0,3}\[(?:\\.|[^\]\\])+\]:[ \t]*")
+MARKDOWN = MarkdownIt("commonmark")
+MAP_ENDS = 2
 MESSAGE = (
     "body of an Accepted, Superseded or Deprecated ADR is frozen (docs/adr/_index_fragments/_header.md); "
     'append a dated "### Status update YYYY-MM-DD" section or supersede it with a new ADR'
@@ -103,6 +103,7 @@ class Line:
     level: int = 0
     title: str = ""
     references: bool = False
+    definition: bool = False
     literal: list[tuple[int, int]] = field(default_factory=list)
 
     @property
@@ -129,58 +130,65 @@ def container(text: str, limit: int) -> tuple[int, str]:
     return depth, text[pos:]
 
 
-def fence_line(body: str, fence: str) -> tuple[bool, str]:
-    # CommonMark 0.31.2 §4.5: only ASCII blanks may follow a matching closer.
-    match = FENCE.match(body)
-    if not match:
-        return bool(fence), fence
-    marker, tail = match.groups()
-    if fence:
-        closes = marker.startswith(fence) and not tail.strip(" \t")
-        return True, "" if closes else fence
-    if marker.startswith("`") and "`" in tail:
-        return False, ""
-    return True, marker
-
-
 def mark_heading(line: Line, level: int, title: str) -> None:
     line.kind = "heading"
     line.level = level
     line.title = title
 
 
-def classify(text: str) -> list[Line]:
-    lines: list[Line] = []
-    fence = ""
-    depth = 0
-    paragraph = 0
-    for i, source in enumerate(text.removesuffix("\n").split("\n") if text else []):
-        raw = source.removesuffix("\r")
-        current, body = container(raw, depth if fence else len(raw))
-        if current != depth:
-            paragraph = i
-            if fence:
-                fence = ""
-                current, body = container(raw, len(raw))
-        depth = current
-        line = Line(raw, depth)
-        lines.append(line)
-        code, fence = fence_line(body, fence)
-        heading = ATX.match(body)
-        underline = SETEXT.fullmatch(body)
-        if code:
-            line.kind = "fence"
-        elif heading:
-            title = re.sub(r"(?:^|[ \t]+)#+[ \t]*$", "", heading[2] or "").strip(" \t")
-            mark_heading(line, len(heading[1]), title)
-        elif underline and paragraph < i:
-            level = 1 if underline[1].startswith("=") else 2
-            title = " ".join(container(item.text, depth)[1].strip() for item in lines[paragraph:i])
-            for item in lines[paragraph:]:
-                mark_heading(item, level, title)
-        elif body.strip(" \t") and not line.ignored and not body.startswith(("    ", "\t")):
+def mark_block(lines: list[Line], tokens: list[Token], index: int, token: Token) -> None:
+    """Copy one Markdown block token's line classification onto its lines."""
+    mapping = token.map
+    if not mapping:
+        return
+    start, stop = mapping
+    stop = min(stop, len(lines))
+    if start >= stop:
+        return
+    block_type = token.type
+    if block_type == "heading_open":
+        level = int(token.tag[1:])
+        title = tokens[index + 1].content if index + 1 < len(tokens) else ""
+        for line in lines[start:stop]:
+            mark_heading(line, level, title)
+    elif block_type in {"fence", "code_block", "html_block"}:
+        for line in lines[start:stop]:
+            if line.kind == "prose":
+                line.kind = block_type
+
+
+def mark_references(lines: list[Line], env: dict[str, object]) -> None:
+    """Copy CommonMark's reference-definition maps onto their source lines."""
+    references = env.get("references")
+    if not isinstance(references, dict):
+        return
+    for value in references.values():
+        if not isinstance(value, dict):
             continue
-        paragraph = i + 1
+        span = value.get("map")
+        if not isinstance(span, list) or len(span) != MAP_ENDS:
+            continue
+        start, stop = int(span[0]), min(int(span[1]), len(lines))
+        for line in lines[start:stop]:
+            line.definition = True
+
+
+def classify(text: str) -> list[Line]:
+    """Map every source line to the CommonMark block that owns it."""
+    source = text.removesuffix("\n").split("\n") if text else []
+    lines: list[Line] = []
+    for raw in source:
+        line_text = raw.removesuffix("\r")
+        depth, _ = container(line_text, len(line_text))
+        lines.append(Line(line_text, depth))
+    env: dict[str, object] = {}
+    tokens = MARKDOWN.parse(text, env)
+    for index, token in enumerate(tokens):
+        mark_block(lines, tokens, index, token)
+    mark_references(lines, env)
+    for line in lines:
+        if line.kind == "html_block" and DIRECTIVE.fullmatch(line.text):
+            line.kind = "prose"
     annotate(lines)
     return lines
 
@@ -290,6 +298,8 @@ def parsed_link(text: str, start: int, target: int, suffix: re.Pattern[str]) -> 
 
 
 def links(line: Line) -> Iterator[Link]:
+    if line.kind in {"fence", "code_block", "html_block"}:
+        return
     text = line.text
     # Mask code spans in the bracket scan, including code inside a link label.
     masked = list(text)
@@ -297,7 +307,7 @@ def links(line: Line) -> Iterator[Link]:
         masked[a:b] = "x" * (b - a)
     syntax = "".join(masked)
     # §4.7: preserve the existing single-line link reference definition repair.
-    definition = DEFINITION.match(text)
+    definition = DEFINITION.match(text) if line.definition else None
     if definition and DEFINITION.match(syntax):
         link = parsed_link(text, 0, definition.end(), DEFINITION_END)
         if link and link.target < link.target_end:
@@ -454,7 +464,14 @@ def permitted(old: list[Line], new: list[Line], a: int, b: int, c: int, d: int) 
 
 
 def classification(line: Line) -> tuple[object, ...]:
-    return line.kind, line.depth, line.level, line.references and not line.ignored, line.literal
+    return (
+        line.kind,
+        line.depth,
+        line.level,
+        line.references and not line.ignored,
+        line.definition,
+        line.literal,
+    )
 
 
 def refused(
