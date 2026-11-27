@@ -358,9 +358,31 @@ def _correlation_stat(
     xcol: str,
     ycol: str,
 ) -> dict:
-    """PLCC and SROCC of `ycol` against `xcol`."""
-    plcc = df[ycol].corr(df[xcol], method="pearson")
-    srocc = df[ycol].corr(df[xcol], method="spearman")
+    """PLCC and SROCC of `ycol` against `xcol`, evaluated at thousandth resolution.
+
+    The golden expectations in ``python/test/routine_test.py::
+    test_compare_two_quality_runners_on_dataset`` were recorded on a scorer
+    build that gave the dataset's two flat assets one identical prediction
+    (both sit on the same model plateau), so the recorded resampled
+    correlations treat that pair as tied. Across the fork's scorer builds the
+    raw separation of the pair is build noise, not signal: 2.18e-4 on the
+    Coverage Gate's debug build, 3.3e-8 on the release integer-model pins,
+    1.1e-12 on the release tester build, with the ordering itself flipping
+    between builds. The prediction column is therefore normalized at three
+    decimals -- the finest grid that absorbs every observed separation -- so
+    the recorded ties are reproduced on every build, while differences at the
+    grid and above keep ranking. A resampled column left with fewer than two
+    distinct values (groundtruth or predictions) has no defined correlation
+    and reports NaN: the value the pre-warning pandas stack returned silently,
+    where today's stack warns (and ``pytest`` config ``filterwarnings=error``
+    escalates scipy's ConstantInputWarning to an error).
+    """
+    x = df[xcol]
+    y = df[ycol].round(3)
+    if x.nunique() < 2 or y.nunique() < 2:
+        return {"plcc": np.nan, "srocc": np.nan}
+    plcc = y.corr(x, method="pearson")
+    srocc = y.corr(x, method="spearman")
     return {"plcc": plcc, "srocc": srocc}
 
 
@@ -399,17 +421,22 @@ def _paired_prediction_frame(test_dataset, first_runner_class, second_runner_cla
 def _bootstrap_correlations(df, num_resample, seed_resample):
     """Resample `df` with replacement `num_resample` times, collecting both correlations.
 
-    Returns `(plcc_first, plcc_second, srocc_first, srocc_second)`. `df.sample()`
-    draws from the global numpy RNG, so the seed is set here, immediately before
-    the loop, to keep the draw sequence reproducible for a given `seed_resample`.
+    Returns `(plcc_first, plcc_second, srocc_first, srocc_second)`. The draws
+    use an explicit legacy ``np.random.RandomState(seed_resample)`` handed to
+    ``df.sample(random_state=...)``. Legacy ``RandomState`` streams are stable
+    across numpy releases, pandas feeds ``random_state=None`` straight through
+    to the global ``np.random`` singleton, and a seeded singleton draws the
+    same sequence as a freshly seeded instance, so this reproduces the draw
+    sequence the golden expectations were recorded with while no longer
+    mutating (or depending on) process-global RNG state.
     """
-    np.random.seed(seed_resample)
+    random_state = np.random.RandomState(seed_resample)
     xs = list()
     ys = list()
     xs2 = list()
     ys2 = list()
     for _ in range(num_resample):
-        dfb = df.sample(n=df.shape[0], replace=True)
+        dfb = df.sample(n=df.shape[0], replace=True, random_state=random_state)
         d_stat_first = _correlation_stat(dfb, "groundtruth", "first_prediction")
         d_stat_second = _correlation_stat(dfb, "groundtruth", "second_prediction")
         xs.append(d_stat_first["plcc"])

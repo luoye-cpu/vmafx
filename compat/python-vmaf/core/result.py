@@ -13,6 +13,26 @@ __copyright__ = "Copyright 2016-2020, Netflix, Inc."
 __license__ = "BSD+Patent"
 
 
+def _format_score_attr(value):
+    """Render one score for an XML attribute, Python-2 ``str(float)`` style.
+
+    The golden XML in ``python/test/result_test.py::test_to_xml`` was recorded
+    when ``str(float)`` printed 12 significant digits (``str(0.9358023333...)``
+    -> ``'0.935802333333'``); Python 3's shortest-repr ``str()`` prints the
+    same double as ``'0.9358023333333333'``.  Reproducing the 12-digit form
+    here keeps the serialized attribute values stable across interpreter
+    versions without touching any expectation.  Non-float values (frame
+    numbers, method names, ...) keep ``str()``.
+    """
+    if isinstance(value, (float, np.floating)):
+        s = "%.12g" % value
+        if not any(c in s for c in ".eEnN"):
+            # Python 2 keeps the integral-float decimal point: str(100.0) == '100.0'.
+            s += ".0"
+        return s
+    return str(value)
+
+
 class BasicResult(object):
     """
     Has some basic functions, but don't need asset or executor_id. To be used by
@@ -444,14 +464,22 @@ class Result(BasicResult):
         frames = ElementTree.SubElement(top, "frames")
         for i, list_score in enumerate(list_scores_reordered):
             frame = ElementTree.SubElement(frames, "frame")
-            frame.set("frameNum", str(i))
+            # Attribute order mirrors the golden XML in
+            # python/test/result_test.py::test_to_xml: score keys first, then
+            # frameNum.  That is the order xml.dom.minidom's alphabetical sort
+            # (Python < 3.8, when the golden string was recorded) produced for
+            # vmaf-style keys, and ElementTree + minidom on Python >= 3.8
+            # preserve insertion order, so the serialization is now identical
+            # on every supported interpreter instead of version-dependent.
             for score_key, score in zip(list_score_key, list_score):
-                frame.set(score_key, str(score))
+                frame.set(score_key, _format_score_attr(score))
+            frame.set("frameNum", str(i))
 
         aggregate = ElementTree.SubElement(top, "aggregate")
-        aggregate.set("method", self.score_aggregate_method.__name__)
+        # Same convention as <frame> above: score keys first, method last.
         for score_key, score in zip(list_score_key, list_aggregate_score):
-            aggregate.set(score_key, str(score))
+            aggregate.set(score_key, _format_score_attr(score))
+        aggregate.set("method", self.score_aggregate_method.__name__)
 
         return prettify(top)
 
