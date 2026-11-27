@@ -23,7 +23,7 @@ import (
 // object first, so these tests run there.
 func requireGeneratedObject(t *testing.T) {
 	t.Helper()
-	if len(_RcloneBypassBytes) == 0 {
+	if len(_RcloneTrackerBytes) == 0 {
 		t.Skip("no generated eBPF object in this build: run `make node-bpf` (scripts/dev/gen-node-bpf.sh), then rebuild")
 	}
 }
@@ -63,7 +63,7 @@ func TestEmbeddedObjectMatchesPinnedDigest(t *testing.T) {
 	if fields[1] != pinned {
 		t.Skipf("object built with clang %s, the pin is %s: not byte-identical to a release build", fields[1], pinned)
 	}
-	sum := sha256.Sum256(_RcloneBypassBytes)
+	sum := sha256.Sum256(_RcloneTrackerBytes)
 	if got, want := hex.EncodeToString(sum[:]), pinFromConfig(t, "BPF_OBJECT_SHA256"); got != want {
 		t.Errorf("object sha256 = %s, BPF_OBJECT_SHA256 = %s: re-record the digest in build-config.env if the source or flags changed on purpose", got, want)
 	}

@@ -234,7 +234,7 @@ workflow publishes them, but Scorecard counts them among the last five releases.
 After publishing one, attest its asset:
 
 ```shell
-gh workflow run fixture-release-provenance.yml -R VMAFx/vmafx \
+gh workflow run fixture-release-provenance.yml -R vidiko/vmafx \
   -f tag=<tag> -f asset=<file> -f sha256=<full sha256>
 ```
 
@@ -308,7 +308,7 @@ attempted without the identity. To set it up:
 1. Create a GitHub App owned by the `VMAFx` org (name it e.g.
    `vmafx-release-bot`). Repository permissions: **Contents: read & write**
    and **Pull requests: read & write**. Nothing else.
-2. Install it on `VMAFx/vmafx` only.
+2. Install it on `vidiko/vmafx` only.
 3. Generate a private key and add two repository secrets:
    - `RELEASE_BOT_APP_ID` — the App's numeric ID.
    - `RELEASE_BOT_PRIVATE_KEY` — the full PEM, including the
@@ -462,7 +462,7 @@ stay together:
 
 ```bash
 mkdir vmafx-linux && cd vmafx-linux
-gh release download v0.1.0 --repo VMAFx/vmafx \
+gh release download v0.1.0 --repo vidiko/vmafx \
   --pattern vmaf --pattern 'libvmaf.so*' --pattern 'libvmafx.so*'
 chmod +x vmaf
 ./vmaf --version
@@ -631,13 +631,17 @@ them next to any other file. The outputs are written by one command,
   forge reports it CLEAN, like every other pull request. Nobody has to open it:
   the `docs-render-pr` workflow runs on every push to `master` and hourly as a
   fallback (since GitHub drops scheduled runs), calling
-  `scripts/ci/check_render_on_master.py --open-after-hours 6`, and once a
-  render has been owed on master for 6 hours `scripts/ci/open-render-pr.sh`
-  renders the master tip on branch `chore/docs-render-auto`, opens the pull
-  request as the release bot and arms auto-merge; when master moves it renders
-  again, and when master's render is current it closes its own pull request
+  `scripts/ci/check_render_on_master.py --open-after-hours 6`. If the last
+  render was inexact on its own tree, or a render has been owed for 6 hours,
+  `scripts/ci/open-render-pr.sh` renders the master tip on branch
+  `chore/docs-render-auto`, opens the pull request as the release bot and arms
+  auto-merge. When master moves it renders
+  again. While its pull request waits in the merge queue it leaves the branch
+  alone, since the queued pull request lands the render; when master's render
+  is current it closes its own pull request
   ([ADR-3373](../adr/3373-scheduled-render-pull-request.md),
-  [ADR-3552](../adr/3552-docs-render-on-master-push.md)). To run it at
+  [ADR-3552](../adr/3552-docs-render-on-master-push.md),
+  [ADR-3627](../adr/3627-render-check-in-the-merge-group.md)). To run it at
   once: `gh workflow run docs-render-pr.yml`. To see what it would decide:
   `python3 scripts/ci/check_render_on_master.py --open-after-hours 6`;
 - **at the release cut:** see
@@ -652,10 +656,20 @@ a current render passes; otherwise the last commit that touched a rendered
 file must pass `make docs-render-check` on its own tree (a hand edit or a
 stale render is red at any age), and the render owed since the first landing
 after it warns for up to 24 hours and turns master red after
-that. An ordinary pull request does not run it: `make docs-fragments-check`
-checks the fragments themselves (changelog sections, ADR index rows, rebase-note
-headings) and the outputs that stay in the pull request (exact-twin table,
-AGENTS indexes, charts, vendored assets).
+that.
+
+The same `Docs` job runs `python3 scripts/ci/check_render_on_master.py
+--group-base <base-sha>` on the merge-group head with the event's base SHA.
+It checks the last first-parent commit in `<base-sha>..HEAD` that touches a
+rendered path. That commit's own tree must pass `make docs-render-check`.
+Groups without a render commit pass at any age. A failure identifies the
+render commit to regenerate after the preceding changes land
+([ADR-3627](../adr/3627-render-check-in-the-merge-group.md)).
+
+On an ordinary pull request, `make docs-fragments-check` checks the
+fragments (changelog sections, ADR index rows, rebase-note headings) and the
+outputs that stay in the pull request (exact-twin table, AGENTS indexes,
+charts, vendored assets).
 
 The render needs full history: the order of the index rows and of the rebase
 notes is the order the fragments landed on the branch, read by
@@ -730,7 +744,7 @@ repo or in CI secrets.
   signed through Sigstore; it is stored with the repository's attestations and
   attached as `vmafx-build-provenance.sigstore.json`. SPDX + CycloneDX SBOM
   attached; the SPDX SBOM is also attested on the same subjects with
-  `actions/attest` (`gh attestation verify <file> --repo VMAFx/vmafx
+  `actions/attest` (`gh attestation verify <file> --repo vidiko/vmafx
   --predicate-type https://spdx.dev/Document/v2.3`). See
   [ADR-1356](../adr/1356-release-provenance-attest.md).
 - **Licences of the release blobs** ([ADR-1513](../adr/1513-production-artifact-licensing.md)):
@@ -752,17 +766,17 @@ repo or in CI secrets.
   and sdist, and PEP 740 attestations stored alongside the PyPI artefact
   (Trusted Publishing, no token). See
   [ADR-0166](../adr/0166-mcp-server-release-channel.md).
-- **Production container images** (`ghcr.io/vmafx/vmafx:<tag>` and the
+- **Production container images** (`ghcr.io/vidiko/vmafx:<tag>` and the
   `-cuda13` / `-rocm10` / `-oneapi2026` (also tagged `-oneapi2025`) / `-server`
   variants): cosign keyless signature plus a GitHub-native build-provenance
   attestation
   (`actions/attest-build-provenance`). See
   [ADR-0902](../adr/0902-signing-and-attestation-audit.md).
-- **Go service images** (`ghcr.io/vmafx/vmafx-server:<tag>`,
-  `ghcr.io/vmafx/vmafx-controller:<tag>` (since
+- **Go service images** (`ghcr.io/vidiko/vmafx-server:<tag>`,
+  `ghcr.io/vidiko/vmafx-controller:<tag>` (since
   [ADR-1589](../adr/1589-helm-controller-workload.md)),
-  `ghcr.io/vmafx/vmafx-operator:<tag>`, and
-  `ghcr.io/vmafx/vmafx-node:<tag>`): the same cosign signature, CycloneDX SBOM,
+  `ghcr.io/vidiko/vmafx-operator:<tag>`, and
+  `ghcr.io/vidiko/vmafx-node:<tag>`): the same cosign signature, CycloneDX SBOM,
   and GitHub-native build provenance, emitted by
   `docker-publish-operator-node.yml`. Each is built per architecture on a
   native runner and published as one multi-arch index, which carries the
@@ -783,45 +797,45 @@ tag=v0.1.0
 # Release blob. Every vmaf/libvmaf.so*/libvmafx.so* asset has a matching FILE.bundle.
 cosign verify-blob --bundle vmaf.bundle vmaf \
   --certificate-identity \
-    "https://github.com/VMAFx/vmafx/.github/workflows/supply-chain.yml@refs/tags/${tag}" \
+    "https://github.com/vidiko/vmafx/.github/workflows/supply-chain.yml@refs/tags/${tag}" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 # Release blob, build provenance (ADR-1356). gh fetches the attestation from
 # GitHub. Works for every native asset; the vmaf-mcp wheel and sdist from the
 # GitHub Release verify the same way.
-gh attestation verify vmaf --repo VMAFx/vmafx \
-  --signer-workflow VMAFx/vmafx/.github/workflows/supply-chain.yml \
+gh attestation verify vmaf --repo vidiko/vmafx \
+  --signer-workflow vidiko/vmafx/.github/workflows/supply-chain.yml \
   --source-ref "refs/tags/${tag}"
 
 # The same check against the attached bundle, without the attestations API.
 # Fetch the Sigstore trusted root once while online; after that no network
 # access is needed.
 gh attestation trusted-root > trusted_root.jsonl
-gh attestation verify vmaf --repo VMAFx/vmafx \
+gh attestation verify vmaf --repo vidiko/vmafx \
   --bundle vmafx-build-provenance.sigstore.json \
   --custom-trusted-root trusted_root.jsonl \
-  --signer-workflow VMAFx/vmafx/.github/workflows/supply-chain.yml \
+  --signer-workflow vidiko/vmafx/.github/workflows/supply-chain.yml \
   --source-ref "refs/tags/${tag}"
 
 # vmaf-mcp wheel on PyPI. The PyPI integrity API supplies the PEP 740
 # provenance; pypi-attestations binds it to the expected source repository.
 pypi-attestations verify pypi \
-  --repository https://github.com/VMAFx/vmafx \
+  --repository https://github.com/vidiko/vmafx \
   pypi:vmaf_mcp-0.1.0-py3-none-any.whl
 
 # Container image, cosign route. Replace DIGEST with the actual sha256 digest.
-cosign verify ghcr.io/vmafx/vmafx@sha256:DIGEST \
+cosign verify ghcr.io/vidiko/vmafx@sha256:DIGEST \
   --certificate-identity \
-    "https://github.com/VMAFx/vmafx/.github/workflows/docker-publish-production.yml@refs/tags/${tag}" \
+    "https://github.com/vidiko/vmafx/.github/workflows/docker-publish-production.yml@refs/tags/${tag}" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 
 # Container image, GitHub-native attestation route (added by ADR-0902).
-gh attestation verify oci://ghcr.io/vmafx/vmafx@sha256:DIGEST --repo VMAFx/vmafx
+gh attestation verify oci://ghcr.io/vidiko/vmafx@sha256:DIGEST --repo vidiko/vmafx
 
 # Go server/operator/node images use their own workflow identity.
-cosign verify ghcr.io/vmafx/vmafx-node@sha256:DIGEST \
+cosign verify ghcr.io/vidiko/vmafx-node@sha256:DIGEST \
   --certificate-identity \
-    "https://github.com/VMAFx/vmafx/.github/workflows/docker-publish-operator-node.yml@refs/tags/${tag}" \
+    "https://github.com/vidiko/vmafx/.github/workflows/docker-publish-operator-node.yml@refs/tags/${tag}" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 
@@ -834,7 +848,7 @@ provenance does not verify is never published.
 Every workflow that creates a GitHub release or publishes release assets
 attaches build-provenance bundles as `*.intoto.jsonl` files (ADR-3316). This
 satisfies the OpenSSF Scorecard Signed-Releases check requirement (scorecard
-v5.6.0), which scores a release 10 when a release asset name ends in
+v5.7.0), which scores a release 10 when a release asset name ends in
 `.intoto.jsonl` (compared to 8 for cryptographic signature bundles alone).
 
 The `.intoto.jsonl` asset contains the normalized single-line in-toto SLSA
@@ -867,7 +881,7 @@ bundle using the GitHub CLI (`gh`):
 ```bash
 gh attestation verify <asset> \
   --bundle <provenance>.intoto.jsonl \
-  --repo VMAFx/vmafx
+  --repo vidiko/vmafx
 ```
 
 For example, to verify the `vmaf` release binary against
@@ -876,7 +890,7 @@ For example, to verify the `vmaf` release binary against
 ```bash
 gh attestation verify vmaf \
   --bundle vmafx-build-provenance.intoto.jsonl \
-  --repo VMAFx/vmafx
+  --repo vidiko/vmafx
 ```
 
 v1.0.0-rc.1 and v1.0.0-rc.2 predate ADR-1356. They carry
@@ -934,7 +948,12 @@ After that:
 - the Go-service workflow starts the Go scoring server and probes
   `/healthz` plus `/readyz`;
 - it also checks the operator version and executes `vmaf --version` plus
-  `ffmpeg -version` from the node image.
+  `ffmpeg -version` from the node image;
+- for `ghcr.io/vidiko/vmafx-node:<tag>-sycl`, `smoke-published-image.sh` with
+  kind `node-sycl` refuses an image whose `Config.Env` lacks the exact
+  `VMAFX_BACKEND=sycl` entry (missing or another value), a wrong entrypoint, a
+  mismatched `--version` or a broken FUSE mount, and prints the GPU skip reason
+  instead of passing SYCL scoring silently.
 
 A signature or runtime-linkage gap fails the release rather than silently
 shipping a broken image.
@@ -955,6 +974,12 @@ fragments so existing release-train history is preserved.
   Markdown bullet under `changelog.d/<section>/<topic>.md`. The fragment is
   the source of truth; the rendered `CHANGELOG.md` is a build artefact that a
   pull request does not carry ([ADR-2197](../adr/2197-render-generated-docs-at-landing.md)).
+  Two pull requests carry it: the render-only pull request
+  ([ADR-3295](../adr/3295-render-only-pull-request.md)), which adds no
+  fragment and owes no other deliverable (`scripts/ci/deliverables-check.sh`
+  section 2a'), and the generated release pull request at the cut
+  ([Cutting a release from fragments](#cutting-a-release-from-fragments)),
+  whose workflow does not run that gate.
 - **Filename convention:** lowercase kebab-case, optionally prefixed with the
   task ID (`T7-39-foo.md`) or ADR number (`adr-0312-deferral-retired.md`)
   for implicit lexical ordering within the section.
@@ -1053,7 +1078,7 @@ of `master`) with the **full SHA**, so the run title names its source:
 ```bash
 SHA=$(git rev-parse origin/master)
 for wf in windows-tester-bundle.yml macos-tester-bundle.yml docker-publish-tester.yml; do
-  gh workflow run "$wf" -R VMAFx/vmafx --ref master -f ref="$SHA"
+  gh workflow run "$wf" -R vidiko/vmafx --ref master -f ref="$SHA"
 done
 ```
 
@@ -1168,7 +1193,7 @@ only, then take the permission away again:
 ```bash
 # 1. Let master deploy to release-publish; the required reviewer still applies.
 policy=$(gh api -X POST \
-  repos/VMAFx/vmafx/environments/release-publish/deployment-branch-policies \
+  repos/vidiko/vmafx/environments/release-publish/deployment-branch-policies \
   -f name=master -f type=branch --jq .id)
 
 # 2. Dispatch the recovery runs and approve their release-publish deployments.
@@ -1177,8 +1202,8 @@ gh workflow run docker-publish-operator-node.yml --ref master -f tag=v1.0.0-rc.1
 
 # 3. After both runs have finished (re-runs need the policy too), remove it.
 gh api -X DELETE \
-  "repos/VMAFx/vmafx/environments/release-publish/deployment-branch-policies/$policy"
-gh api repos/VMAFx/vmafx/environments/release-publish/deployment-branch-policies \
+  "repos/vidiko/vmafx/environments/release-publish/deployment-branch-policies/$policy"
+gh api repos/vidiko/vmafx/environments/release-publish/deployment-branch-policies \
   --jq '.branch_policies[] | "\(.type) \(.name)"'   # expect only: tag v*
 ```
 
@@ -1215,9 +1240,9 @@ Later pushes keep the package's visibility.
 Check that an anonymous client can pull:
 
 ```bash
-token=$(curl -s "https://ghcr.io/token?scope=repository:vmafx/vmafx-node:pull" | jq -r .token)
+token=$(curl -s "https://ghcr.io/token?scope=repository:vidiko/vmafx-node:pull" | jq -r .token)
 curl -s -H "Authorization: Bearer $token" \
-  https://ghcr.io/v2/vmafx/vmafx-node/tags/list | jq '.tags'
+  https://ghcr.io/v2/vidiko/vmafx-node/tags/list | jq '.tags'
 ```
 
 #### Freezing the release PR while you cut it
@@ -1278,7 +1303,7 @@ Run the release-please preview from an origin-faithful clone, not directly
 from the development checkout:
 
 - Local tags include tags fetched from the Netflix `upstream` remote. Those
-  tags do not necessarily exist in `VMAFx/vmafx` and can make a local
+  tags do not necessarily exist in `vidiko/vmafx` and can make a local
   preview select the wrong previous release.
 - The preview clone must expose only the fork's advertised tags and the
   candidate `master` tree.
@@ -1286,7 +1311,7 @@ from the development checkout:
   so the CLI never echoes a literal token in its argument list.
 
 See section 11 of
-[AGENTS.md](https://github.com/VMAFx/vmafx/blob/master/AGENTS.md) for the
+[AGENTS.md](https://github.com/vidiko/vmafx/blob/master/AGENTS.md) for the
 one-line summary and the `/prep-release` skill definition for the full
 checklist.
 
@@ -1306,7 +1331,7 @@ honoured by convention. The declared rule set and its drift check are in
 - **Admin bypass kept on.** The owner can land emergency fixes that skip
   required checks; use sparingly (see the emergency-release section below).
 
-Management: `gh api --method PUT repos/VMAFx/vmafx/branches/master/protection`
+Management: `gh api --method PUT repos/vidiko/vmafx/branches/master/protection`
 with a JSON payload. The current rule set is documented in
 [ADR-0037](../adr/0037-master-branch-protection.md).
 

@@ -5,6 +5,9 @@ on:
     branches: [master]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -158,7 +161,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         if: steps.impact.outputs.docs == 'true'
         with:
-          node-version: "26.12.1"
+          node-version: "26.13.1"
       - name: Check every formula compiles with KaTeX (ADR-2705)
         if: steps.impact.outputs.docs == 'true'
         run: python3 scripts/docs/check_math.py --site build-docs/site

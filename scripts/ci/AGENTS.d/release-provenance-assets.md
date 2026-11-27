@@ -8,7 +8,7 @@ area: release
 <!-- markdownlint-disable MD013 MD060 -->
 # Release build provenance assets (ADR-3316)
 
-OpenSSF Scorecard Signed-Releases check (scorecard v5.6.0) evaluates signature
+OpenSSF Scorecard Signed-Releases check (scorecard v5.7.0) evaluates signature
 assets (.sigstore.json) to 8, in-toto build provenance (*.intoto.jsonl) to 10.
 Every release-publishing workflow writes normalized single-line in-toto SLSA
 attestation bundle and uploads it:
@@ -23,4 +23,4 @@ attestation bundle and uploads it:
 asserts `.intoto.jsonl` write in `run:` step (`jq --compact-output . > ...intoto.jsonl`) and presence
 in uploaded asset set (glob match or `files:` list). Exempt list allows non-binary
 companion workflows (`published-rc-licence-companions.yml`); stale exemptions fail gate.
-Verification: `gh attestation verify <asset> --bundle <bundle>.intoto.jsonl --repo VMAFx/vmafx`.
+Verification: `gh attestation verify <asset> --bundle <bundle>.intoto.jsonl --repo vidiko/vmafx`.
