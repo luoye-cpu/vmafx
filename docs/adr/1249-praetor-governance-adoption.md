@@ -165,3 +165,13 @@ Verification command:
 grep -c '^@docs/' AGENTS.md CLAUDE.md   # 1 each: the hard-rules page
 wc -c docs/development/rebase-sensitive-invariants.md
 ```
+
+### Status update 2026-11-28: the commit-msg stage is delegated too
+
+Issue #3638: `lefthook.yml` now declares a `commit-msg` hook that runs
+`bash scripts/git-hooks/framework-hooks.sh commit-msg {1}`, so
+conventional-pre-commit also runs under a lefthook-only setup and the
+squash-merge judge stops skipping the commit-message check. The
+`framework-hooks.sh` branch uses the same `hook-impl` entry the ADR-1241
+dispatcher uses for the stage, and the installer's `lefthook_owned` check
+keeps lefthook's `commit-msg` shim in place. The dispatcher keeps `pre-rebase`.

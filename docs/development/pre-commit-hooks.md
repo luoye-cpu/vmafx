@@ -21,14 +21,16 @@ therefore cannot break hooks in the surviving checkout.
 
 ## Lefthook and the governance hooks
 
-[`lefthook.yml`](../../lefthook.yml) owns `pre-commit`, `pre-push` and
-`post-commit` ([ADR-1249](../adr/1249-praetor-governance-adoption.md)). Its
-`pre-commit` and `pre-push` jobs run the pre-commit framework stage through
-`scripts/git-hooks/framework-hooks.sh`, next to the praetor governance checks
-(`compile-context --verify`, `audit`, `hiss coverage --verify`, `dedupe scan`).
-`post-commit` synchronises private state. The dispatchers keep `commit-msg`
-(Conventional Commits) and `pre-rebase` (worktree drift guard). Install
-lefthook first, then the dispatchers:
+[`lefthook.yml`](../../lefthook.yml) owns `pre-commit`, `commit-msg`,
+`pre-push` and `post-commit`
+([ADR-1249](../adr/1249-praetor-governance-adoption.md)). Its `pre-commit`,
+`commit-msg` and `pre-push` jobs run the pre-commit framework stage through
+`scripts/git-hooks/framework-hooks.sh` — for `commit-msg` the same `hook-impl`
+entry the ADR-1241 dispatcher uses, so both setups validate the message the
+same way — next to the praetor governance checks (`compile-context --verify`,
+`audit`, `hiss coverage --verify`, `dedupe scan`). `post-commit` synchronises
+private state. The dispatcher keeps `pre-rebase` (worktree drift guard).
+Install lefthook first, then the dispatchers:
 
 ```bash
 lefthook install

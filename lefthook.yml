@@ -44,6 +44,17 @@ pre-commit:
     dedupe-scan:
       run: sh .config/lefthook/engine.sh dedupe scan .
 
+commit-msg:
+  commands:
+    framework-hooks:
+      # ADR-1249: lefthook owns .git/hooks and delegates this stage to the
+      # pre-commit framework too, so conventional-pre-commit (--strict,
+      # Conventional Commits) runs under a lefthook-only setup and the
+      # squash-merge judge stops skipping the commit-message check. Lefthook
+      # hands the message file as {1}; no stdin or remote arguments.
+      # Windows execution and quote-free invocation: ADR-2012.
+      run: bash scripts/git-hooks/framework-hooks.sh commit-msg {1}
+
 post-commit:
   commands:
     state-sync:

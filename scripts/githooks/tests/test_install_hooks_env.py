@@ -222,8 +222,12 @@ class InstallHooksEnvTests(unittest.TestCase):
         self.assertEqual(sorted(tracked), EXPECTED)
         self.assertTrue(self.ran())
 
-    def test_both_stages_install_before_they_run_and_fail_closed(self) -> None:
-        for stage, runner in (("pre-commit", '"$fw" run'), ("pre-push", '"$fw" hook-impl')):
+    def test_all_framework_stages_install_before_they_run_and_fail_closed(self) -> None:
+        for stage, runner in (
+            ("pre-commit", '"$fw" run'),
+            ("commit-msg", '"$fw" hook-impl'),
+            ("pre-push", '"$fw" hook-impl'),
+        ):
             block = framework_block(stage)
             install = f'{UNSET} "$fw" install-hooks || exit 1'
             self.assertIn(install, block, stage)

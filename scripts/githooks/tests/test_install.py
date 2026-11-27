@@ -302,6 +302,19 @@ class HookInstallTests(unittest.TestCase):
         )
         self.run_git("commit", "--allow-empty", "-m", "test: accepted")
 
+    def test_lefthook_owned_commit_msg_shim_is_left_in_place(self) -> None:
+        # lefthook.yml declares commit-msg (issue #3638), so `lefthook install`
+        # writes its shim for the stage and the installer must keep it instead
+        # of replacing it with the ADR-1241 dispatcher.
+        hooks = self.repo / ".git/hooks"
+        shim = '#!/bin/sh\ncall_lefthook()\n{\n  exit 0\n}\ncall_lefthook run "commit-msg" "$@"\n'
+        self.write(".git/hooks/commit-msg", shim, executable=True)
+        result = self.install()
+        self.assertIn("left lefthook's", result.stdout)
+        self.assertIn("lefthook owns commit-msg", result.stdout)
+        self.assertIn('call_lefthook run "commit-msg"', (hooks / "commit-msg").read_text())
+        self.assertEqual(list(hooks.glob("commit-msg.vmafx-backup-*")), [])
+
     def test_framework_migration_preserves_legacy_and_native_stages(self) -> None:
         self.run_command(
             "pre-commit", "install", "--hook-type", "pre-commit", "--hook-type", "commit-msg"
@@ -547,7 +560,7 @@ class LefthookBridgeTests(unittest.TestCase):
             with self.subTest(run=value):
                 self.assertFalse(value.startswith(("|", ">")), "a block scalar hides its quotes")
                 self.assertNotIn('"', value)
-        for stage in ("pre-commit\n", "pre-push {1} {2}\n"):
+        for stage in ("pre-commit\n", "commit-msg {1}\n", "pre-push {1} {2}\n"):
             self.assertEqual(
                 lefthook.count(f"run: bash scripts/git-hooks/framework-hooks.sh {stage}"), 1
             )
@@ -685,6 +698,29 @@ class LefthookBridgeTests(unittest.TestCase):
         )
         self.assertEqual(calls[2] + "\n", refs)
 
+    def test_commit_msg_runs_the_framework_stage_on_the_message_file(self) -> None:
+        # lefthook.yml hands the stage the message file Git wrote ({1}); the
+        # hook-impl entry must match the ADR-1241 dispatcher's commit-msg path
+        # so a lefthook-managed checkout and a dispatcher checkout validate the
+        # same message through the same entry point.
+        self.stub(".venv/bin/pre-commit")
+        result = self.bridge("commit-msg", ".git/COMMIT_EDITMSG")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertEqual(calls[0].split("|")[1], "install-hooks")
+        self.assertIn(
+            "hook-impl --config=.pre-commit-config.yaml --hook-type=commit-msg "
+            "--hook-dir .git/hooks -- .git/COMMIT_EDITMSG",
+            calls[1],
+        )
+
+    def test_commit_msg_without_the_message_file_fails_closed(self) -> None:
+        self.stub(".venv/bin/pre-commit")
+        missing = self.bridge("commit-msg")
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn("commit-msg needs the message file argument", missing.stderr)
+        self.assertEqual(self.calls()[-1].split("|")[1], "install-hooks")
+
     def test_path_fallback_missing_framework_and_unknown_stage(self) -> None:
         tools = self.repo / "tools"
         self.stub("tools/pre-commit")
@@ -711,7 +747,7 @@ class LefthookBridgeTests(unittest.TestCase):
         self.assertEqual(missing.returncode, 1)
         self.assertIn("pre-commit is missing", missing.stderr)
         self.stub(".venv/bin/pre-commit")
-        unknown = self.bridge("commit-msg")
+        unknown = self.bridge("post-merge")
         self.assertEqual(unknown.returncode, 2)
         self.assertIn("unknown stage", unknown.stderr)
 
