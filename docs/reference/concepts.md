@@ -74,6 +74,8 @@ explicitly. Score HDR with the adapters — the `pu21` extractor's
 `pu21_psnr` / `pu21_ssim` for perceptual PSNR/SSIM, and `delta_e_itp` for
 colour difference — and state the transfer and matrix instead of trusting
 defaults ([HDR](glossary.md#hdr), [ΔE-ITP options](../metrics/delta_e_itp.md)).
+Both adapters accept PQ input only: convert HLG to PQ first, because HLG left
+on the default PQ path is decoded as PQ and the score is invalid.
 The fixture row below is a PQ→BT.709 round trip, not tone mapping; the adapter
 commands above are the recommended HDR route.
 

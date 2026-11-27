@@ -130,9 +130,9 @@ def _reference_label(text: str, lineno: int) -> str | None:
     return match.group(1) if match else None
 
 
-def _reference_is_used(text: str, label: str, lineno: int) -> bool:
+def _reference_is_used(text: str, label: str) -> bool:
     """True when a non-definition line uses the reference label as a link."""
-    body = "\n".join(line for i, line in enumerate(text.splitlines(), 1) if i != lineno)
+    body = "\n".join(line for line in text.splitlines() if _REF_DEF_RE.match(line) is None)
     label_re = r"\s+".join(re.escape(part) for part in label.strip().split())
     pattern = re.compile(
         rf"\[[^\]\n]*\]\[\s*{label_re}\s*\]"  # full reference link
@@ -154,7 +154,7 @@ def _has_glossary_link(
     glossary = GLOSSARY.resolve()
     for lineno, target in links:
         label = _reference_label(text, lineno)
-        if label is not None and not _reference_is_used(text, label, lineno):
+        if label is not None and not _reference_is_used(text, label):
             continue
         if target.startswith(("http:", "https:", "mailto:")):
             continue

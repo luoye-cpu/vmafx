@@ -180,6 +180,21 @@ def test_unused_reference_definition_does_not_count(
     assert main([]) == EXIT_SUCCESS
 
 
+def test_definition_title_does_not_count_as_a_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A label inside another definition's title is not a live link."""
+    _make_tree(
+        tmp_path,
+        monkeypatch,
+        "metrics/widget.md",
+        "# Widget\n\n[NEG]: ../reference/glossary.md#neg\n"
+        '[other]: other.md "[NEG]"\n\n'
+        "The NEG variant penalises sharpening.\n",
+    )
+    assert main([]) == EXIT_FAILURE
+
+
 def test_bare_range_needs_the_anchor_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A bare 'range' use needs #range, not just the glossary-file link."""
     page = _make_tree(

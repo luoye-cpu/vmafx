@@ -104,8 +104,10 @@ classic models are trained on SDR content, so they misjudge HDR input; HDR
 work needs the HDR adapters — the `pu21` extractor outputs
 `pu21_psnr`/`pu21_ssim`, which map luminance through a
 contrast-sensitivity curve, and `delta_e_itp` measures colour difference in
-ICtCp. Both adapters currently accept PQ input only; HLG is rejected rather than
-converted ([PU21](../metrics/pu21.md), [ΔE-ITP](../metrics/delta_e_itp.md),
+ICtCp. Both adapters currently accept PQ input only: an explicit non-PQ
+`transfer` is rejected, and HLG samples left on the default PQ path are decoded
+as PQ, producing invalid measurements. Convert HLG to PQ before scoring
+([PU21](../metrics/pu21.md), [ΔE-ITP](../metrics/delta_e_itp.md),
 [concepts: HDR input](concepts.md#hdr-input-with-an-sdr-model)).
 
 ## SDR {#sdr}
@@ -154,8 +156,9 @@ Rescaling an input to the resolution the viewing condition expects. The
 classic setup rescales everything to 1080 before scoring; a native-480 pair
 scored at 480 implies a different viewing condition and inflates the score
 ([FAQ: low resolution](faq.md#q-when-computing-vmaf-on-low-resolution-videos-480-pixel-height-for-example-why-do-the-scores-look-so-high-even-when-there-are-visible-artifacts)).
-The FFmpeg `vmafx` filter's `target_scaling` is reserved and fails with `ENOSYS`
-until device-targeted scoring lands; scale before the filter.
+The FFmpeg `vmafx` filter's non-default `target_scaling` values are reserved and
+fail with `ENOSYS` until device-targeted scoring lands; the default `none` is
+accepted, but scale before the filter for a different resolution.
 
 ## Interlacing {#interlacing}
 

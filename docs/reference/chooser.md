@@ -18,8 +18,8 @@ per backend rather than guesses.
 | Phone screen quality | `vmaf` | `vmaf_v1.0.16_5d0h`, or `vmaf_v0.6.1:enable_transform=true` | The transform changes the output curve, not the features ([phone model](glossary.md#phone-model)) |
 | 4K content | `vmaf` | `vmaf_v1.0.16_1d5h_2160` or `vmaf_4k_v0.6.1` | The 4K v1 3H variant reports on a [0, 110] range — not comparable with [0, 100] models |
 | High-frame-rate content | `vmaf` | the `_hfr` variants | Trained on high-frame-rate subjective data; regular models misjudge high temporal activity |
-| HDR content | `pu21_psnr`, `pu21_ssim` | (adapters, no model) | Both are outputs of the `pu21` extractor (`--feature pu21`); classic models are SDR-trained and PQ/HLG luma breaks their assumptions ([HDR](glossary.md#hdr)) |
-| HDR colour errors | `delta_e_itp` | (features) | Defaults to PQ, BT.2020 NCL, limited range — state the real one ([range](glossary.md#range)); `ciede` is fixed BT.709 and not an HDR metric |
+| HDR content | `pu21_psnr`, `pu21_ssim` | (adapters, no model) | Both are outputs of the `pu21` extractor (`--feature pu21`) and require compatible PQ input — convert HLG to PQ first; classic models are SDR-trained and PQ/HLG luma breaks their assumptions ([HDR](glossary.md#hdr)) |
+| HDR colour errors | `delta_e_itp` | (features) | Requires PQ input — convert HLG to PQ first; defaults to PQ, BT.2020 NCL, limited range, so state the real one ([range](glossary.md#range)); `ciede` is fixed BT.709 and not an HDR metric |
 | SDR/BT.709 colour errors | `ciede` | (feature) | Fixed BT.709 conversion — do not use it for PQ/HLG HDR |
 | Banding / contouring | `cambi` | (feature) | CAMBI measures at 10-bit internally; 8-bit input is converted first |
 | Chroma damage | `ciede2000`, `delta_e_itp` | (features) | Luma-only metrics (`psnr_y`, `ssim`, `vmaf`) do not see chroma subsampling damage; `psnr` also reports `psnr_cb`/`psnr_cr` ([chroma subsampling](glossary.md#chroma-subsampling)) |
