@@ -100,6 +100,7 @@ LEVEL_ZERO_FETCHER_CALL_RE = re.compile(
 
 
 PYTHON_RE = re.compile(r'python-version:\s*[\'"]?([0-9]+\.[0-9]+\.[0-9]+)[\'"]?')
+SUITE_MANIFEST = Path(".github/test-suites.json")
 
 
 def load_config(root: Path) -> dict[str, str]:
@@ -214,6 +215,64 @@ def check_workflows(root: Path, lz_want: str | None, py_want: str | None) -> lis
                         f"{rel}:{line_no} pins python-version '{ver}'; "
                         f"build-config.env says '{py_want}'"
                     )
+    return problems
+
+
+def _suite_manifest_entries(path: Path) -> tuple[list[object] | None, list[str]]:
+    """Load the suite list, returning a finding instead of raising on bad input.
+
+    A missing manifest is not a finding here: ``suite_registry.py check`` owns
+    the manifest's presence, and a consumer of one version knob cannot demand
+    a sibling file a fixture repo legitimately omits.
+    """
+    if not path.is_file():
+        return None, []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return None, [f"{SUITE_MANIFEST} cannot be read as JSON ({exc})"]
+    suites = data.get("suites") if isinstance(data, dict) else None
+    if not isinstance(suites, list):
+        return None, [f"{SUITE_MANIFEST} has no suites list"]
+    return suites, []
+
+
+def check_suite_registry_python(root: Path, py_want: str | None) -> list[str]:
+    """Suite installs inherit PYTHON_CI_VERSION instead of repeating it (issue 3103).
+
+    An explicit ``install.python`` remains a per-suite override for a suite that
+    genuinely needs another interpreter. What this rejects is the old copy of
+    the default in every install: changing ``build-config.env`` then left the
+    registry installing the previous Python.
+    """
+    if not py_want:
+        return ["build-config.env defines no PYTHON_CI_VERSION (issue 3103)"]
+    series = ".".join(py_want.split(".")[:2])
+    suites, problems = _suite_manifest_entries(root / SUITE_MANIFEST)
+    if suites is None:
+        return problems
+    inherits = 0
+    for index, suite in enumerate(suites):
+        if not isinstance(suite, dict):
+            continue
+        install = suite.get("install")
+        if not isinstance(install, dict):
+            continue
+        name = suite.get("name", f"suites[{index}]")
+        if "python" not in install:
+            inherits += 1
+            continue
+        if install["python"] in (py_want, series):
+            problems.append(
+                f"{SUITE_MANIFEST}: suite {name!r} repeats install.python "
+                f"{install['python']!r} ('{series}' or '{py_want}'); omit it so "
+                "PYTHON_CI_VERSION stays the only default"
+            )
+    if not inherits:
+        problems.append(
+            f"{SUITE_MANIFEST}: no suite install inherits PYTHON_CI_VERSION; "
+            "remove at least one install.python default"
+        )
     return problems
 
 
@@ -614,6 +673,125 @@ def check_intel_neo_lock(root: Path, neo_want: str | None, lz_want: str | None) 
     return problems
 
 
+# A versioned clang/LLVM literal: `clang-22`, `clang++-22`, `clang-tools-22`,
+# `lld-22`, `libclang-rt-22-dev`, `libomp-22-dev`, or the `install-llvm.sh 22`
+# invocation. The `clang++-` alternative comes first so `clang++-22` is not
+# also matched by its `clang-` prefix.
+CLANG_MAJOR_RE = re.compile(
+    r"clang\+\+-([0-9]+)\b"
+    r"|clang-([0-9]+)\b"
+    r"|clang-tools-([0-9]+)\b"
+    r"|lld-([0-9]+)\b"
+    r"|libclang-rt-([0-9]+)\b"
+    r"|libomp-([0-9]+)\b"
+    r"|install-llvm\.sh\s+([0-9]+)\b"
+)
+
+# The root Dockerfile's optional SYCL layer copies and sources build-config.env
+# inside its RUN (the dev/Containerfile Level Zero pattern: no ARG mirror that
+# can rot), then installs the packages at "${DOCKERFILE_SYCL_ONEAPI_VERSION}".
+SYCL_LAYER_MARKER = "# ---------- Intel oneAPI (SYCL"
+SYCL_LAYER_CONFIG = "/tmp/build-config.env"  # noqa: S108 -- a path inside the container image the Dockerfile builds, not a host temp file
+# A literally versioned oneAPI package name: the legit line ends in the
+# variable, so `dpcpp-cpp-` followed by a digit can only be a hardcoded pin.
+DOCKERFILE_SYCL_LITERAL_RE = re.compile(r"intel-oneapi-(?:compiler-dpcpp-cpp|runtime-libs)-[0-9]")
+
+
+def check_clang_major(root: Path, want: str | None) -> list[str]:
+    """Every versioned clang/LLVM literal names build-config.env's CLANG_MAJOR.
+
+    The workflows keep their explicit compiler roles -- the matrix `CC:` entries
+    and the sanitizer jobs' env repeat the number as literals, the same mirror
+    shape a `python-version:` pin uses for PYTHON_CI_VERSION, because YAML
+    cannot source build-config.env at parse time. What this rejects is a literal
+    that names another major: bumping CLANG_MAJOR then forces every mirror --
+    the six workflows and the two .github/apt/*.txt package lists, comments
+    included -- to move in the same pull request.
+
+    A repository with no `.github/workflows` directory has nothing to check
+    (the single-source fixtures), so the scan is skipped there.
+    """
+    if not want:
+        return ["build-config.env defines no CLANG_MAJOR"]
+    workflows = root / ".github" / "workflows"
+    if not workflows.is_dir():
+        return []
+    paths: list[Path] = sorted(workflows.glob("*.yml"))
+    paths += sorted((root / ".github" / "apt").glob("*.txt"))
+    problems: list[str] = []
+    found = 0
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        for match in CLANG_MAJOR_RE.finditer(text):
+            found += 1
+            major = next(group for group in match.groups() if group is not None)
+            if major != want:
+                line_no = text[: match.start()].count("\n") + 1
+                problems.append(
+                    f"{path.relative_to(root)}:{line_no} pins LLVM major {major}; "
+                    f"build-config.env says CLANG_MAJOR '{want}'"
+                )
+    if not found:
+        problems.append(
+            "no versioned clang/LLVM literal in .github/workflows or .github/apt; "
+            "is CLANG_MAJOR still the compiler the CI legs build with?"
+        )
+    return problems
+
+
+def check_dockerfile_sycl_pin(root: Path, want: str | None) -> list[str]:
+    """The root Dockerfile's optional SYCL layer installs at DOCKERFILE_SYCL_ONEAPI_VERSION.
+
+    The layer copies and sources build-config.env inside its RUN and names no
+    oneAPI package literal. The pin stays frozen at 2025.3 on purpose: the layer
+    predates the ADR-1368 apt release path, pairs the compiler with the legacy
+    `intel-oneapi-runtime-libs` metapackage instead of the ADR-1368 runtime set,
+    and nothing in CI builds the image, so it deliberately does not follow
+    ONEAPI_VERSION (see the oneAPI block of build-config.env).
+
+    A Dockerfile without the layer has nothing to check -- the pin is inert
+    there, and the single-source fixtures carry Dockerfiles that are not this
+    image -- so the sourcing and the variable are enforced only when the layer
+    exists.
+    """
+    path = root / "Dockerfile"
+    if not path.is_file():
+        return []
+    text = path.read_text(encoding="utf-8")
+    problems: list[str] = []
+    for match in DOCKERFILE_SYCL_LITERAL_RE.finditer(text):
+        line_no = text[: match.start()].count("\n") + 1
+        problems.append(
+            f"Dockerfile:{line_no} pins an intel-oneapi compiler/runtime literally; "
+            'install "intel-oneapi-*-""${DOCKERFILE_SYCL_ONEAPI_VERSION}" '
+            "from the sourced build-config.env"
+        )
+    start = text.find(SYCL_LAYER_MARKER)
+    if start < 0:
+        return problems
+    if not want:
+        problems.append(
+            "the root Dockerfile builds the optional SYCL layer, so build-config.env "
+            "must define DOCKERFILE_SYCL_ONEAPI_VERSION"
+        )
+        return problems
+    block = text[start:]
+    end = block.find("\n# ----------", 1)
+    if end >= 0:
+        block = block[:end]
+    if f". {SYCL_LAYER_CONFIG}" not in block:
+        problems.append(
+            "the root Dockerfile's optional SYCL layer must COPY build-config.env and "
+            f"source it (. {SYCL_LAYER_CONFIG}) before the apt install"
+        )
+    if "${DOCKERFILE_SYCL_ONEAPI_VERSION}" not in block:
+        problems.append(
+            "the root Dockerfile's optional SYCL layer must install the compiler and "
+            'runtime at "intel-oneapi-*-${DOCKERFILE_SYCL_ONEAPI_VERSION}"'
+        )
+    return problems
+
+
 def main() -> int:
     root = Path(
         run_command(
@@ -632,16 +810,21 @@ def main() -> int:
     ver_want = cfg.get("VMAFX_VERSION")
     rust_want = cfg.get("RUST_VERSION")
     node_want = cfg.get("NODE_VERSION")
+    clang_want = cfg.get("CLANG_MAJOR")
+    sycl_want = cfg.get("DOCKERFILE_SYCL_ONEAPI_VERSION")
 
     problems: list[str] = []
     problems.extend(check_level_zero_container(root))
+    problems.extend(check_dockerfile_sycl_pin(root, sycl_want))
     problems.extend(check_workflows(root, lz_want, py_want))
+    problems.extend(check_suite_registry_python(root, py_want))
     problems.extend(check_vmafx_version(root, ver_want))
     problems.extend(check_formatter_pins(root))
     problems.extend(check_makefile_venv_paths(root))
     problems.extend(check_mypy_python_version(root, py_want))
     problems.extend(check_rust_pins(root, rust_want))
     problems.extend(check_node_pins(root, node_want))
+    problems.extend(check_clang_major(root, clang_want))
     problems.extend(check_intel_neo_lock(root, neo_want, lz_want))
 
     for problem in problems:
@@ -654,7 +837,7 @@ def main() -> int:
         return 1
     print(
         f"check-workflow-versions: OK (Level Zero {lz_want}, Python CI {py_want}, "
-        f"Rust {rust_want}, Node {node_want}, VMAFx {ver_want})"
+        f"Rust {rust_want}, Node {node_want}, clang {clang_want}, VMAFx {ver_want})"
     )
     return 0
 

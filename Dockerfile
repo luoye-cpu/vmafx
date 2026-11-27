@@ -81,11 +81,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libzimg2
 
 # ---------- Intel oneAPI (SYCL, optional) ----------
+# The compiler/runtime release comes from build-config.env -- the single
+# source of truth for version pins in this repository. The optional layer
+# stays on its own frozen oneAPI release (DOCKERFILE_SYCL_ONEAPI_VERSION,
+# see the oneAPI block of build-config.env for why it does not follow
+# ONEAPI_VERSION); the layer sources the config and names no literal.
 # Modern keyring pattern (apt-key was deprecated in Ubuntu 22.04+).
 # hadolint ignore=DL3008,DL3009
+COPY build-config.env /tmp/build-config.env
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     if [ "$ENABLE_SYCL" = "true" ]; then \
+        . /tmp/build-config.env && \
         apt-get --error-on=any -o Acquire::Retries=3 update && apt-get install -y --no-install-recommends gnupg2 ca-certificates && \
         key="$(mktemp)" && \
         wget --tries=3 --retry-connrefused --retry-on-host-error -qO "$key" https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB && \
@@ -94,12 +101,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" \
             > /etc/apt/sources.list.d/oneapi.list && \
         apt-get --error-on=any -o Acquire::Retries=3 update && apt-get install -y --no-install-recommends \
-            intel-oneapi-compiler-dpcpp-cpp-2025.3 \
-            intel-oneapi-runtime-libs-2025.3 \
+            "intel-oneapi-compiler-dpcpp-cpp-${DOCKERFILE_SYCL_ONEAPI_VERSION}" \
+            "intel-oneapi-runtime-libs-${DOCKERFILE_SYCL_ONEAPI_VERSION}" \
             libva-dev \
             libva-drm2 \
             level-zero-dev ; \
-    fi
+    fi && \
+    rm -f /tmp/build-config.env
 
 # ---------- nv-codec-headers ----------
 WORKDIR /tmp/nv-codec

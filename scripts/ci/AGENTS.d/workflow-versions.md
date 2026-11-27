@@ -5,8 +5,11 @@ paths:
   - scripts/ci/tests/test_formatter_pins_single_source.py
   - scripts/ci/tests/test_mypy_python_version_single_source.py
   - scripts/ci/tests/test_rust_toolchain_single_source.py
+  - scripts/ci/tests/test_clang_major_single_source.py
+  - scripts/ci/tests/test_dockerfile_sycl_pin_single_source.py
+  - scripts/ci/tests/test_suite_registry_python_default.py
   - rust-toolchain.toml
-invariant: Level Zero, ruff / black, mypy `python_version`, Rust toolchain: one owner each plus checked mirrors.
+invariant: Level Zero, ruff / black, mypy `python_version`, Rust toolchain, clang major, Dockerfile SYCL pin, suite Python default: one owner each plus checked mirrors.
 area: release
 ---
 <!-- markdownlint-disable MD013 MD060 -->
@@ -65,3 +68,32 @@ compares all; fixture `tests/test_rust_toolchain_single_source.py` (also holds
 file from cwd). Renovate: one `custom.regex` manager, group "Rust toolchain",
 no automerge, built-in `rust-toolchain` manager disabled; `RustToolchainGroup`
 in `tests/test_renovate_file_patterns.py`. New pin site -> both, same commit.
+
+Clang major (#3102): `CLANG_MAJOR` in `build-config.env` owns the LLVM major
+the Linux CI legs build with. Mirrors are literals on purpose -- the matrix
+`CC:` entries, the sanitizer env and the `install-llvm.sh` calls keep their
+explicit compiler roles because YAML cannot source the config at parse time,
+the same mirror shape a `python-version:` pin uses -- and the two
+`.github/apt/*.txt` package lists repeat it in package names and comments.
+`check_clang_major()` refuses any workflow or apt-list literal naming another
+major, and refuses no literal at all (the pin would be orphaned). Fixture:
+`tests/test_clang_major_single_source.py`.
+
+Root Dockerfile SYCL pin (#3090): `DOCKERFILE_SYCL_ONEAPI_VERSION` in
+`build-config.env` owns the optional `ENABLE_SYCL=true` layer's frozen 2025.3
+oneAPI release (it pairs the compiler with the legacy
+`intel-oneapi-runtime-libs` metapackage and nothing in CI builds the image,
+so it deliberately does not follow ONEAPI_VERSION). The layer must COPY and
+source `build-config.env` inside its RUN (the dev/Containerfile Level Zero
+pattern, no ARG mirror) and name no oneAPI package literal.
+`check_dockerfile_sycl_pin()` compares; fixture
+`tests/test_dockerfile_sycl_pin_single_source.py`. `clang-tidy-sycl.sh`'s
+`/opt/intel/oneapi-2025.3/...` search candidates stay: they are a legacy
+host-install fallback, not a pin.
+
+Suite Python default (#3103): a suite install without `install.python`
+inherits the `PYTHON_CI_VERSION` series from `build-config.env`
+(`suite_registry.default_python`); an explicit value is a per-suite override.
+`check_suite_registry_python()` refuses an install that repeats the default
+and requires at least one suite to inherit it, so the config stays the only
+owner. Fixture: `tests/test_suite_registry_python_default.py`.
