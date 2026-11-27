@@ -85,12 +85,12 @@ class ScorecardReportTests(unittest.TestCase):
                     gate.assess(data, "master", REPO, SHA)
 
     def test_previous_reviewed_tool_is_refused(self) -> None:
-        # The identity reviewed before the v5.6.0 move; a report from it must
+        # The identity reviewed before the v5.7.0 move; a report from it must
         # not pass once the pins have moved on.
         data = report()
         data["scorecard"] = {
-            "version": "v5.5.0",
-            "commit": "c395761df6afe1a69e476bc60a013a94bcbc153f",
+            "version": "v5.6.0",
+            "commit": "61e84743356275f6ffca23b1b2f2cb945e19eb96",
         }
         with self.assertRaisesRegex(gate.InvalidReport, "differs from reviewed tool"):
             gate.assess(data, "master", REPO, SHA)

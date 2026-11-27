@@ -1,9 +1,19 @@
 # PR-body deliverables validator (pre-push hook)
 
-To check a PR body before pushing, run `make pr-check PR=<number>` or install
-the pre-push hook with `make hooks-install`. Both run the same parser as the
-CI gate, so a malformed body is caught locally instead of after a 3-10 minute
-CI cycle.
+To check a PR body before pushing, run `make pr-check PR=<number>`, run
+`make pr-check BODY=<file> [TITLE=<text>]` (`TITLE` defaults to the `HEAD`
+commit subject when empty), or install the pre-push hook with
+`make hooks-install`. The title and body path are passed to the gates
+literally without `make` or shell expansion, and `PR` must be a positive
+decimal number. PR mode diffs the PR's base and head revisions, fetching them
+from `origin` when missing, and fails when it cannot. In PR mode, the FFmpeg
+surface gate also runs its tree checks against the PR head tree rather than the
+local checkout; the head-tree check reads raw blobs, so archive attributes in
+the PR cannot hide or rewrite inputs. `make pr-check` runs the
+deliverables, `docs/state.md`
+touch and `ffmpeg-patches` surface gates (`scripts/ci/pr-body-gates.sh`),
+while the pre-push hook runs the deliverables parser, catching a malformed
+body before a 3-10 minute CI cycle.
 
 The [rule-enforcement workflow][rule-yml] runs a **deep-dive deliverables
 checklist** gate (ADR-0108) on every non-draft PR. The parser is strict: a
@@ -63,6 +73,11 @@ parser enforces:
    | Research digest   | `^docs/research/[0-9]+-`                         |
    | CHANGELOG fragment| `^CHANGELOG\.md` or `^changelog\.d/<sec>/.*\.md` |
    | Rebase note       | `^docs/rebase-notes\.md$`                        |
+
+3. **Toolchain claims backed by probe output.** Paste the output of
+   `scripts/dev/toolchain-probe.sh` when claiming a toolchain is missing or a
+   backend was skipped. See [toolchain claims and probe verification](#toolchain-claims-and-probe-verification)
+   for the evidence required by `scripts/ci/check-toolchain-claims.sh`.
 
 ## Parser shape gotchas
 
@@ -128,7 +143,7 @@ Exit codes:
 
 ## Where the body comes from
 
-Four gates read a PR body, and all four classify `fd 0` the same way,
+Five gates read a PR body, and all five classify `fd 0` the same way,
 through the shared helper [`scripts/ci/pr-body-input.sh`][input]:
 
 | Gate                              | Rule enforced                    |
@@ -137,26 +152,33 @@ through the shared helper [`scripts/ci/pr-body-input.sh`][input]:
 | `validate-pr-body.sh`             | the same parser, run locally     |
 | `ffmpeg-patches-surface-check.sh` | ADR-0409 ffmpeg-patch surface    |
 | `state-md-touch-check.sh`         | ADR-0165 `docs/state.md` hygiene |
+| `check-toolchain-claims.sh`       | ADR-0108 toolchain claims probe  |
 
 The body is resolved in this order:
 
 1. `--body PATH` (`validate-pr-body.sh` only).
-2. `$PR_BODY`. For the two deliverables entry points, **set counts** — even
-   to the empty string, because setting it is the caller's answer, so a blank
-   one is reported against the variable rather than quietly replaced from
-   stdin. This is the path CI takes
+2. `$PR_BODY`. For `deliverables-check.sh`, `validate-pr-body.sh`, and
+   `check-toolchain-claims.sh`, **set counts** (`${PR_BODY+x}`), even to the
+   empty string, because setting it is the caller's answer. In
+   `deliverables-check.sh` and `validate-pr-body.sh`, a blank `$PR_BODY` is
+   reported against the variable (exit 1) rather than quietly replaced from
+   `stdin`; in `check-toolchain-claims.sh`, a set but blank `$PR_BODY` makes no
+   claims and exits 0. This is the path CI takes
    (`PR_BODY: ${{ github.event.pull_request.body }}`) and the path
    `make pr-check` takes. The surface and `state.md` gates instead take the
    variable only when it is **non-empty**: for them a blank `$PR_BODY` and a
-   blank stdin end at the same empty body, so falling through costs nothing
+   blank `stdin` end at the same empty body, so falling through costs nothing
    and lets an explicitly blank variable still be overridden by a real pipe.
-3. stdin, **when fd 0 is a pipe, a regular file or a socket**.
+3. `stdin`, **when fd 0 is a pipe, a regular file or a socket**.
 
 What happens when none of those supplies a body differs by gate, because the
 gates differ in what else they have to go on:
 
-- `deliverables-check.sh` and `validate-pr-body.sh` exist only to parse a
-  body. No body is a **usage error (exit 2)** naming what fd 0 actually is.
+- `deliverables-check.sh`, `validate-pr-body.sh`, and
+  `check-toolchain-claims.sh` exist only to parse a body. No body is a
+  **usage error (exit 2)** naming what `fd 0` actually is; an open `stdin` pipe
+  carrying no bytes also fails closed (`validate-pr-body.sh` and
+  `check-toolchain-claims.sh` exit 2, and `deliverables-check.sh` exits 1).
 - `ffmpeg-patches-surface-check.sh` and `state-md-touch-check.sh` also have a
   diff to check. No body makes their opt-out sentinel unclaimable, so they
   **name what fd 0 was and fall through to the diff** — passing when it is
@@ -205,7 +227,7 @@ closing there would close the subshell's copy and leave the caller's open,
 inherited by every `git`, `python3` and `mktemp` the gate spawns afterwards.
 
 `scripts/ci/tests/test-pr-body-input-selection.sh` pins every row of that
-table for all four gates, plus the descriptor release, under `timeout`, so a
+table for all five gates, plus the descriptor release, under `timeout`, so a
 re-regression is reported as a hang instead of becoming one.
 
 ## What the hook does on push
@@ -290,6 +312,150 @@ GitHub Actions log surfaces them as inline annotations.
 [rule-yml]: ../../.github/workflows/rule-enforcement.yml
 [deliv]: ../../scripts/ci/deliverables-check.sh
 [input]: ../../scripts/ci/pr-body-input.sh
+
+## Toolchain claims and probe verification
+
+When contributors build on machines where toolchains live off `$PATH` (e.g.
+Intel oneAPI under `/opt/intel/oneapi`, CUDA under `/opt/cuda/bin`, ROCm under
+`/opt/rocm/bin`), asserting that a toolchain is absent or that code was not
+compiled must be backed by evidence from the repository's probe script:
+
+```bash
+scripts/dev/toolchain-probe.sh
+```
+
+The script searches standard vendor directories and sources oneAPI's
+`setvars.sh` in a subshell. Paste its output into the description as text.
+
+```text
+toolchain-probe v1 host=build-01 os=Linux date=2026-11-04T00:00:00Z
+toolchain-probe: icpx found /opt/intel/oneapi/compiler/2026.0/bin/icpx ...
+toolchain-probe: nvcc found /opt/cuda/bin/nvcc ...
+toolchain-probe: metal absent searched=none os=Linux
+```
+
+The producer and checker share the v1 format in
+`scripts/dev/toolchain-probe-format.sh`. The header carries the hostname
+(ASCII letters, digits, dots, hyphens, and underscores), the kernel name from
+`uname -s`, and a UTC timestamp in `YYYY-MM-DDTHH:MM:SSZ` format. Recognized
+kernel names are `Linux`, `Darwin`, `FreeBSD`, `NetBSD`, `OpenBSD`, `DragonFly`,
+`SunOS`, `AIX`, and the versioned Windows names beginning with `MINGW32_NT-`,
+`MINGW64_NT-`, `MSYS_NT-`, or `CYGWIN_NT-`. The pasted block is
+**unauthenticated**. Anyone can forge it. The checker catches claims with
+missing or contradictory evidence. If `uname -n` contains other characters,
+set `TOOLCHAIN_PROBE_HOST` to an identifying name in the accepted alphabet.
+The probe validates the override before printing its header.
+
+Probe rows count as evidence after a valid header in the same fence, or on
+consecutive nonblank lines after an unfenced header. A `found` row carries a
+percent-encoded path and optional free-form version text. An `absent` row
+ends with one `searched=` field. The producer percent-encodes ASCII whitespace
+and the percent sign, so `/tmp/oneAPI SDK%20` becomes `/tmp/oneAPI%20SDK%2520`.
+The non-Darwin Metal row counts only with `searched=none os=<kernel>` matching
+the header kernel.
+The oneAPI compiler fallback inspects up to 50 candidates. If more remain,
+its absence row ends in `,budget-exhausted`.
+MinGW runtime paths use the same percent encoding. MinGW detail rows
+(`dumpversion`, `thread-model`, `runtime`, `runtime-unresolved`, and `pairing*`)
+describe the cross compiler. The checker skips valid probe rows inside a block
+and checks claims in ordinary fenced text, blockquotes, same-line backtick
+spans such as
+`` ```nvcc``` `` (not a fence opener under CommonMark because the info string
+contains a backtick), and prose mixed into probe output.
+
+`scripts/ci/check-toolchain-claims.sh` splits each checked line into clauses at
+semicolons, sentence ends (`.`, `!`, or `?` followed by whitespace), and
+contrastive joins such as `, but`, `, while`, `, whereas`, or `, although`.
+It checks each predicate with its own subject, trailing tool list, and host
+qualifier. In `No SYCL here and the CI runner lacks icx`, the first predicate
+requires a local `icpx` absence and the second requires an `icx` result.
+Descriptions over 4096 lines or prose lines over 64 clauses produce a finding.
+
+The checker recognizes `no <tool>`,
+`(lacks|lacking) <tool>` (with an optional article), and
+`<tool> (is|are|was|were)? <status>`, where `<status>` can be `not installed`,
+`not found`, `not available`, `missing`, `unavailable`, or `absent`. It also
+recognizes `without <tool>` with a nearby host qualifier (`on this host`,
+`this host`, `on the host`, `here`, or `locally`), and compilation claims when
+the subject names a tool or backend directly before `not compiled`,
+`(was|were) not built`, or `compilation (was|were)? skipped`. Active forms
+such as `did not compile CUDA` and `did not build HIP` take a following object.
+One `toolchain_map` vocabulary in `scripts/ci/check-toolchain-claims.sh`
+covers both absence and compilation claims: every probe name below plus
+`cuda`, `cuda toolkit`, `sycl`, `oneapi`, `hip`, `hip cc`, `rocm`, and `vulkan`.
+A hyphen joined to a name is part of the
+word, so `tidy-metal` does not match `metal` while `x86_64-w64-mingw32-gcc`
+matches as one name.
+
+A `no <tool>` phrase counts as an absence claim unless it matches a change
+description. In `no <tool> [objects] changed`, the verb can be `change`,
+`changes`, `changed`, `edit`, `edits`, `edited`, `touched`, or `modified`.
+Zero to three change objects may intervene. The checker's `change_objects`
+list allows `build`, `flag`, `flags`, `option`, `options`, `code`, `source`,
+`sources`, `file`, `files`, `path`, `paths`, `kernel`, `kernels`, `backend`,
+`test`, `tests`, `config`, `setting`, `settings`, `dependency`, and
+`dependencies`. For example, `no CUDA build flag changes` describes a change.
+`Having no nvcc installed changed our build plan` still claims absence.
+A change verb immediately before `no <tool>` also qualifies (`touch`,
+`touches`, `touched`, `change`, `changes`, `changed`, `edit`, `edits`, `edited`,
+`modify`, `modifies`, or `modified`).
+
+The checker strips up to 32 change-scope matches per clause before checking
+the remaining text. A second, unscoped mention of the same tool still needs
+evidence. If a 33rd change-scope match remains, the checker uses the original
+clause for evidence checking.
+
+A runner, image, container, CI, or golden-build subject identifies a
+non-host claim. For example, `I verified locally that the CI runner has no
+nvcc` describes the runner. In `The runner on this host has no nvcc`, the
+qualifier identifies the local host. Other absence claims default to the host.
+A compilation claim needs host agreement when its own subject or qualifier
+identifies the host.
+
+Each segment needs **one probe block covering every tool it claims**. In
+`No nvcc on build-01`, only blocks whose `host=` matches `build-01` count.
+Use `host buildbox` or `on host buildbox` to name a host explicitly. After
+`on`, `at`, or `for`, a backticked hostname also names a host. An unquoted
+hostname in those positions needs a digit, dot, or hyphen. A trailing sentence
+period is punctuation, so `on Linux.` leaves the host unnamed. A hostname of
+the same shape directly before `has`, `have`, `lacks`, or `is` also identifies
+the host, as in `build-01 has no nvcc`. Tool names and aliases in subject
+position identify tools. The generic qualifiers `this host`, `the host`,
+`host` alone, `this machine`, `my machine`, `here`, and `locally` leave the
+host unnamed. A named host needs a header with the same name, compared
+case-insensitively. Any matching block reporting a claimed tool found
+contradicts that named-host claim. When a host claim leaves
+the host unnamed, one complete agreeing block suffices if all headers name the
+same host. If the headers name different hosts, name the probed host in the
+claim. For a CI claim, a found compiler can supply the required result.
+
+Missing-result diagnostics identify the closest eligible block (first in a
+tie). Contradictions identify the block that reported the compiler found.
+Both include its hostname and header line in the description.
+
+For absence claims, the checker resolves the predicate's object and its
+trailing tool list. In `I built with icx and this host lacks SYCL`, the object
+`SYCL` requires an `icpx` result. In `no SYCL compiler icx` and
+`no SYCL (icx)`, the explicit compiler requires an `icx` result. These
+overrides apply within each family (`icpx`/`icx` for `sycl`/`oneapi`,
+`nvcc` for `cuda`/`cuda toolkit`, `hipcc`/`hip cc` for `hip`/`rocm`,
+and `glslc`/`glslangValidator` for `vulkan`).
+
+| Probe result name | Claim words mapped to it |
+| --- | --- |
+| `icpx` | `icpx`, `sycl`, `oneapi` |
+| `icx` | `icx` |
+| `nvcc` | `nvcc`, `cuda`, `cuda toolkit` |
+| `hipcc` | `hipcc`, `hip cc`, `hip`, `rocm` |
+| `glslc` | `glslc`, `vulkan` |
+| `glslangValidator` | `glslangValidator` |
+| `metal` | `metal` |
+| `x86_64-w64-mingw32-gcc` | `x86_64-w64-mingw32-gcc` |
+
+`scripts/ci/deliverables-check.sh` runs the checker after body validation and
+before deliverables sections that can exit early, including the render-only
+route. `scripts/ci/validate-pr-body.sh` delegates to the same deliverables
+script.
 
 ## History
 

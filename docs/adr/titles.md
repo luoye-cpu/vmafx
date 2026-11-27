@@ -10,7 +10,7 @@ hide:
 <!-- markdownlint-disable MD013 MD024 MD025 MD038 -->
 # ADR titles
 
-Every ADR, one heading each (1465), so the site search finds an ADR by its title; ADR bodies are not in the search index ([ADR-1512](1512-docs-search-user-pages-only.md)).
+Every ADR, one heading each (1470), so the site search finds an ADR by its title; ADR bodies are not in the search index ([ADR-1512](1512-docs-search-user-pages-only.md)).
 
 ## ADR-0001: Treat uncommitted benchmark result JSON as noise
 
@@ -5844,6 +5844,10 @@ Every ADR, one heading each (1465), so the site search finds an ADR by its title
 
 [3556-merge-queue-merge-group](3556-merge-queue-merge-group.md)
 
+## ADR-3557: Queue same-head pull-request runs on merge-gate workflows
+
+[3557-aggregator-same-head-queue](3557-aggregator-same-head-queue.md)
+
 ## ADR-3558: Opt-in node sidecar feedback client, HTTP /readyz readiness probe, and soft per-node affinity
 
 [3558-node-sidecar-readiness-gpu-affinity](3558-node-sidecar-readiness-gpu-affinity.md)
@@ -5871,3 +5875,19 @@ Every ADR, one heading each (1465), so the site search finds an ADR by its title
 ## ADR-3609: Keep the apt archive cache script instead of cache-apt-pkgs-action
 
 [3609-keep-apt-cache-sweep](3609-keep-apt-cache-sweep.md)
+
+## ADR-3610: Admit fork pull requests to the merge queue at the reviewed head
+
+[3610-queue-fork-admission-reviewed-head](3610-queue-fork-admission-reviewed-head.md)
+
+## ADR-3611: Report measurement cells and wrapper runs that were not compared as non-success
+
+[3611-measurement-non-success-states](3611-measurement-non-success-states.md)
+
+## ADR-3624: Strip the release bot's own co-author line on landed commits
+
+[3624-landed-release-bot-self-coauthor](3624-landed-release-bot-self-coauthor.md)
+
+## ADR-3625: Heavy CI job link profiles
+
+[3625-heavy-job-link-profile](3625-heavy-job-link-profile.md)
