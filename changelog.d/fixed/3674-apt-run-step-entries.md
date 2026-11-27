@@ -1,0 +1,1 @@
+- **CI:** the apt `--no-install-recommends` checker now treats only `jobs.<id>.steps[*].run` and composite `runs.steps[*].run` as step commands, and its `.github` walk stops at a 1,024-entry cap (issue 3674).

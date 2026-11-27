@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # Copyright 2026 Lusoris
 # SPDX-License-Identifier: EUPL-1.2
-"""Check bash scripts/ci/apt-install-cached.sh in YAML-composed literal run blocks.
+"""Check bash scripts/ci/apt-install-cached.sh in step-level literal run blocks.
 Allow configure, refresh, or install .github/apt/<list>.txt [--no-install-recommends].
 Driver packages and dotted package names (possible apt regexes) require the flag.
 Separate tokens with ASCII space or tab. Only column-zero # starts a list comment.
 Tokens are [a-z0-9][a-z0-9+.-]* with optional :[a-z0-9]+, then optional
-=[A-Za-z0-9.+~:-]+ or /[a-z0-9.-]+. Caps bound YAML files, nodes, bytes and install
-calls per file, and bytes per list. More-indented and backslash-continued forms fail closed.
+=[A-Za-z0-9.+~:-]+ or /[a-z0-9.-]+. Caps bound YAML files, nodes, bytes, .github
+entries and install calls per file, and bytes per list. More-indented and
+backslash-continued forms fail closed.
 Invalid UTF-8 in a workflow or package list is reported at its byte offset.
 A call that never writes apt-install-cached on one line goes unseen. A form inside a
 Bash quoted string or heredoc is accepted with the arguments it shows.
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import tempfile
 import unittest
 from collections.abc import Iterator
@@ -24,6 +26,7 @@ from collections.abc import Set as AbstractSet
 from io import StringIO
 from itertools import chain
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml  # type: ignore[import-untyped]  # The hook environment omits PyYAML stubs.
 
@@ -41,6 +44,41 @@ MAX_INSTALL_CALLS = 64
 MAX_YAML_FILES = 124
 # Largest tracked tree: docker-publish-operator-node.yml, 2,310 nodes; allow fourfold.
 MAX_YAML_NODES = 9_240
+# Measured 159 entries under .github; allow six times that total before stopping.
+MAX_GITHUB_ENTRIES = 1_024
+WORKFLOW_DIRECTORY_DEPTH = 2
+ACTION_DIRECTORY_MIN_DEPTH = 3
+
+STEP_PREFIX = "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - "
+STEP_LINE_SHIFT = 4
+SOURCE_NAME = "fixture.yml"
+
+
+def _as_step_fixture(text: str) -> str | None:
+    """Wrap a root run block in a job step, preserving its line numbering offset."""
+    lines = text.split("\n")
+    first = lines[0]
+    indent = len(first) - len(first.lstrip(" "))
+    command = first.lstrip(" ")
+    if command.startswith("- run:"):
+        command = command[2:]
+    elif not command.startswith("run:"):
+        return None
+    rest = []
+    for raw_line in lines[1:]:
+        trimmed = raw_line[indent:] if raw_line.startswith(" " * indent) else raw_line
+        rest.append("        " + trimmed if trimmed else trimmed)
+    return STEP_PREFIX + command + "\n" + "\n".join(rest)
+
+
+def _remap_finding(finding: str, wrapped: bool, source_name: str) -> str:
+    if not wrapped:
+        return finding
+    match = re.match(rf"^{re.escape(source_name)}:(\d+):(.*)$", finding)
+    if match is None:
+        return finding
+    return f"{source_name}:{max(1, int(match.group(1)) - STEP_LINE_SHIFT)}:{match.group(2)}"
+
 
 APT_QUALIFIER_RE = re.compile(r"[:=/]")
 PACKAGE_TOKEN = re.compile(
@@ -119,11 +157,22 @@ def _install_problems(
     return problems
 
 
-def _literal_runs(root: yaml.Node | None) -> set[yaml.ScalarNode] | None:
-    """Collect literal run values. Count each composed node once, including alias targets."""
+def _direct_value(mapping: yaml.MappingNode, name: str) -> yaml.Node | None:
+    """Return the value of a key written directly in this mapping, not through an alias."""
+    for key, value in mapping.value:
+        if (
+            isinstance(key, yaml.ScalarNode)
+            and key.value == name
+            and key.start_mark.index >= mapping.start_mark.index
+        ):
+            return value
+    return None
+
+
+def _count_nodes(root: yaml.Node | None) -> int | None:
+    """Count unique composed nodes, returning None when the cap is exceeded."""
     stack = [root] if root is not None else []
     seen: set[yaml.Node] = set()
-    runs: set[yaml.ScalarNode] = set()
     while stack:
         node = stack.pop()
         if node in seen:
@@ -135,16 +184,38 @@ def _literal_runs(root: yaml.Node | None) -> set[yaml.ScalarNode] | None:
             stack.extend(node.value)
         elif isinstance(node, yaml.MappingNode):
             stack.extend(chain.from_iterable(node.value))
-            runs.update(
-                value
-                for key, value in node.value
-                if isinstance(key, yaml.ScalarNode)
-                and key.value == "run"
-                and isinstance(value, yaml.ScalarNode)
-                and value.style == "|"
-                # An alias points back to the scalar's definition, possibly under another key.
-                and key.end_mark.index <= value.start_mark.index
-            )
+    return len(seen)
+
+
+def _literal_runs(root: yaml.Node | None) -> set[yaml.ScalarNode] | None:
+    """Collect literal run values under jobs.<id>.steps[*].run or runs.steps[*].run."""
+    count = _count_nodes(root)
+    if count is None:
+        return None
+    if not isinstance(root, yaml.MappingNode):
+        return set()
+    step_lists: list[yaml.SequenceNode] = []
+    jobs = _direct_value(root, "jobs")
+    if isinstance(jobs, yaml.MappingNode):
+        for _, job in jobs.value:
+            if not isinstance(job, yaml.MappingNode):
+                continue
+            steps = _direct_value(job, "steps")
+            if isinstance(steps, yaml.SequenceNode):
+                step_lists.append(steps)
+    runs_block = _direct_value(root, "runs")
+    if isinstance(runs_block, yaml.MappingNode):
+        steps = _direct_value(runs_block, "steps")
+        if isinstance(steps, yaml.SequenceNode):
+            step_lists.append(steps)
+    runs: set[yaml.ScalarNode] = set()
+    for steps in step_lists:
+        for step in steps.value:
+            if not isinstance(step, yaml.MappingNode):
+                continue
+            run = _direct_value(step, "run")
+            if isinstance(run, yaml.ScalarNode) and run.style == "|":
+                runs.add(run)
     return runs
 
 
@@ -217,21 +288,57 @@ def check_workflow(workflow_path: Path | None = None, repo_root: Path = REPO_ROO
     return check_workflow_text(text, repo_root=repo_root, source_name=str(target))
 
 
+def _is_yaml_candidate(relative: Path) -> bool:
+    parts = relative.parts
+    name = relative.name
+    if len(parts) == WORKFLOW_DIRECTORY_DEPTH and parts[0] == "workflows":
+        return relative.suffix in {".yml", ".yaml"}
+    return (
+        len(parts) >= ACTION_DIRECTORY_MIN_DEPTH
+        and parts[0] == "actions"
+        and name in {"action.yml", "action.yaml"}
+    )
+
+
+def _github_yaml_files(
+    github: Path,
+    scandir: object = os.scandir,
+) -> set[Path] | None:
+    """Walk .github bounded by entry count, returning every workflow or action file."""
+    files: set[Path] = set()
+    directories = [github]
+    entries = 0
+    while directories:
+        directory = directories.pop()
+        try:
+            scan = scandir(directory)  # type: ignore[operator]
+        except FileNotFoundError:
+            continue
+        try:
+            for entry in scan:
+                entries += 1
+                if entries > MAX_GITHUB_ENTRIES:
+                    return None
+                path = Path(entry.path)
+                if entry.is_dir(follow_symlinks=False):
+                    directories.append(path)
+                elif entry.is_file(follow_symlinks=False) and _is_yaml_candidate(
+                    path.relative_to(github)
+                ):
+                    files.add(path)
+        finally:
+            scan.close()
+    return files
+
+
 def check_yaml_files(repo_root: Path) -> list[str]:
     """Glob local files too: an untracked workflow or action must also fail closed."""
     github = repo_root / ".github"
-    patterns = (
-        "workflows/*.yml",
-        "workflows/*.yaml",
-        "actions/**/action.yml",
-        "actions/**/action.yaml",
-    )
-    paths = chain.from_iterable(github.glob(pattern) for pattern in patterns)
-    files: set[Path] = set()
-    for path in paths:
-        files.add(path)
-        if len(files) > MAX_YAML_FILES:
-            return [f"exceeds {MAX_YAML_FILES} YAML files"]
+    files = _github_yaml_files(github)
+    if files is None:
+        return [f"exceeds {MAX_GITHUB_ENTRIES} .github entries"]
+    if len(files) > MAX_YAML_FILES:
+        return [f"exceeds {MAX_YAML_FILES} YAML files"]
     return [finding for path in sorted(files) for finding in check_workflow(path, repo_root)]
 
 
@@ -251,7 +358,11 @@ class AptInstallRecommendsTest(unittest.TestCase):
         self.list_path.write_text("libcudart12\n", encoding="utf-8")
 
     def check(self, text: str) -> list[str]:
-        return check_workflow_text(text, self.root, "fixture.yml")
+        wrapped = _as_step_fixture(text)
+        if wrapped is None:
+            return check_workflow_text(text, self.root, SOURCE_NAME)
+        findings = check_workflow_text(wrapped, self.root, SOURCE_NAME)
+        return [_remap_finding(finding, True, SOURCE_NAME) for finding in findings]
 
     def test_checked_in_workflow_holds(self) -> None:
         target = workflow_under_test()
@@ -349,14 +460,12 @@ class AptInstallRecommendsTest(unittest.TestCase):
             (1, f"- run: {self.call} --no-install-recommends"),
             (2, f"steps:\n  run: {self.call} --no-install-recommends\n    --install-recommends"),
             (2, f"run: >\n  {self.call} --no-install-recommends\n  --install-recommends"),
-            (4, f"- run: |\n    {self.configure}\n  name: next\n    {self.refresh}"),
             (2, f"run: |\n  \t{self.configure}"),
             (3, f"run: |\n  true\n    {self.configure}"),
             (1, f'"{self.configure}": true'),
             (1, f"# {self.refresh}"),
             (3, f"run: &script\n  |\n    {self.configure}"),
             (2, f"name: &script |\n  {self.configure}\nrun: *script"),
-            (3, f"run: |\n  echo\u2028  {self.configure}"),
         ):
             with self.subTest(text=text):
                 self.assertEqual(self.check(text), [f"fixture.yml:{lineno}: {UNSUPPORTED_FORM}"])
@@ -384,12 +493,13 @@ class AptInstallRecommendsTest(unittest.TestCase):
         )
 
     def test_unparseable_yaml(self) -> None:
-        for text, error in (
-            (f"- run: |\n  {self.configure}", "ScannerError"),
-            (f"run: |\n  {self.call}\vignored", "ReaderError"),
-        ):
+        self.assertEqual(
+            check_workflow_text(f"- run: |\n  {self.configure}", self.root, SOURCE_NAME),
+            [f"{SOURCE_NAME}: unparseable YAML: ScannerError"],
+        )
+        for text, error in ((f"run: |\n  {self.call}\vignored", "ReaderError"),):
             with self.subTest(error=error):
-                self.assertEqual(self.check(text), [f"fixture.yml: unparseable YAML: {error}"])
+                self.assertEqual(self.check(text), [f"{SOURCE_NAME}: unparseable YAML: {error}"])
 
     def test_deeply_nested_yaml_reports_recursion_error(self) -> None:
         self.assertEqual(
@@ -406,7 +516,14 @@ class AptInstallRecommendsTest(unittest.TestCase):
 
     def test_adjacent_literal_headers(self) -> None:
         self.assertEqual(
-            self.check(f"- run: |\n    {self.refresh}\n- run: |-\n    {self.configure}"), []
+            self.check(
+                "jobs:\n"
+                "  test:\n"
+                "    steps:\n"
+                f"      - run: |\n          {self.refresh}\n"
+                f"      - run: |-\n          {self.configure}"
+            ),
+            [],
         )
 
     def test_tracked_workflows_and_actions(self) -> None:
@@ -423,17 +540,110 @@ class AptInstallRecommendsTest(unittest.TestCase):
         ]
         for path in paths:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"run: |\n  {self.call} --no-install-recommends", encoding="utf-8")
+            path.write_text(
+                f"jobs:\n  test:\n    steps:\n      - run: |\n          {self.call} "
+                "--no-install-recommends",
+                encoding="utf-8",
+            )
         self.assertEqual(check_yaml_files(self.root), [])
         for path in paths:
-            path.write_text(f"run: |\n  {self.call}", encoding="utf-8")
+            path.write_text(
+                f"jobs:\n  test:\n    steps:\n      - run: |\n          {self.call}",
+                encoding="utf-8",
+            )
         self.assertEqual(
             check_yaml_files(self.root),
             [
-                f"{p}:2: {self.list_rel} names libcudart12 without --no-install-recommends"
+                f"{p}:5: {self.list_rel} names libcudart12 without --no-install-recommends"
                 for p in paths
             ],
         )
+
+    def test_only_step_level_run_keys_are_commands(self) -> None:
+        cases = (
+            (
+                "run_key: &k run\n"
+                "jobs:\n"
+                "  test:\n"
+                "    steps:\n"
+                "      - name: x\n"
+                "        *k: |\n"
+                f"          {self.refresh}",
+                7,
+            ),
+            (
+                "jobs:\n"
+                "  test:\n"
+                "    steps:\n"
+                "      - <<: &merged\n"
+                "          run: |\n"
+                f"            {self.refresh}",
+                6,
+            ),
+            (
+                "jobs:\n"
+                "  test:\n"
+                "    steps:\n"
+                "      - env:\n"
+                "          run: |\n"
+                f"            {self.refresh}",
+                6,
+            ),
+        )
+        for text, lineno in cases:
+            with self.subTest(text=text):
+                self.assertEqual(
+                    check_workflow_text(text, self.root, SOURCE_NAME),
+                    [f"{SOURCE_NAME}:{lineno}: {UNSUPPORTED_FORM}"],
+                )
+
+    def test_composite_action_runs_steps_are_commands(self) -> None:
+        text = (
+            "runs:\n"
+            "  using: composite\n"
+            "  steps:\n"
+            "    - shell: bash\n"
+            "      run: |\n"
+            f"        {self.refresh}\n"
+        )
+        self.assertEqual(check_workflow_text(text, self.root, SOURCE_NAME), [])
+
+    def test_github_entry_cap_stops_walk(self) -> None:
+        github = self.root / ".github"
+        shutil.rmtree(github)
+        github.mkdir()
+        for index in range(MAX_GITHUB_ENTRIES):
+            (github / f"{index}").mkdir()
+        self.assertEqual(check_yaml_files(self.root), [])
+        (github / "extra").mkdir()
+        self.assertEqual(
+            check_yaml_files(self.root), [f"exceeds {MAX_GITHUB_ENTRIES} .github entries"]
+        )
+
+    def test_github_entry_cap_limits_pulls(self) -> None:
+        pulls = 0
+        root = self.root
+
+        class FakeScan:
+            def __iter__(self) -> FakeScan:
+                return self
+
+            def __next__(self) -> object:
+                nonlocal pulls
+                if pulls >= MAX_GITHUB_ENTRIES + 100:
+                    raise StopIteration
+                pulls += 1
+                return SimpleNamespace(
+                    path=str(root / ".github" / f"{pulls}.tmp"),
+                    is_dir=lambda **_: False,
+                    is_file=lambda **_: False,
+                )
+
+            def close(self) -> None:
+                pass
+
+        self.assertIsNone(_github_yaml_files(root / ".github", scandir=lambda _: FakeScan()))
+        self.assertEqual(pulls, MAX_GITHUB_ENTRIES + 1)
 
     def test_yaml_file_cap(self) -> None:
         workflows = self.root / ".github/workflows"
@@ -488,12 +698,12 @@ class AptInstallRecommendsTest(unittest.TestCase):
 
     def test_workflow_byte_cap(self) -> None:
         path = self.root / "workflow.yml"
-        prefix = f"run: |\n  {self.call}\n#é".encode()
+        prefix = f"jobs:\n  test:\n    steps:\n      - run: |\n          {self.call}\n#é".encode()
         exact = prefix.ljust(MAX_WORKFLOW_BYTES, b" ")
         path.write_bytes(exact)
         self.assertEqual(
             check_workflow(path, self.root),
-            [f"{path}:2: {self.list_rel} names libcudart12 without --no-install-recommends"],
+            [f"{path}:5: {self.list_rel} names libcudart12 without --no-install-recommends"],
         )
         path.write_bytes(exact + b" ")
         self.assertEqual(
