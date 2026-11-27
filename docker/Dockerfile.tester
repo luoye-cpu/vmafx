@@ -100,6 +100,7 @@ COPY tools/rc1-tester/image tools/rc1-tester/image
 COPY tools/rc1-tester/src tools/rc1-tester/src
 # hadolint ignore=SC2046
 RUN meson setup /build core --buildtype=release --strip -Db_lto=false \
+        --native-file core/native/release-hardening.ini \
         -Denable_float=true -Denable_cuda=false -Denable_sycl=false -Denable_hip=false \
         -Denable_dnn=disabled -Denable_docs=false -Denable_tests=true \
     && ninja -C /build -j"${VMAF_BUILD_JOBS}" tools/vmaf \
@@ -239,6 +240,7 @@ COPY tools/rc1-tester/src tools/rc1-tester/src
 # The default sycl_icpx_aot_targets list (19 Intel targets) plus portable SPIR-V.
 # hadolint ignore=SC2046
 RUN CC=icx CXX=icpx meson setup build core --buildtype=release --strip -Db_lto=false \
+        --native-file core/native/release-hardening.ini \
         -Denable_float=true -Denable_cuda=false -Denable_sycl=true -Denable_hip=false \
         -Denable_dnn=disabled -Denable_docs=false -Denable_tests=true \
     && nice -n 10 ninja -C build -j"${VMAF_BUILD_JOBS}" tools/vmaf \
@@ -495,6 +497,7 @@ COPY tools/rc1-tester/image tools/rc1-tester/image
 COPY tools/rc1-tester/src tools/rc1-tester/src
 # hadolint ignore=SC2046
 RUN meson setup build core --buildtype=release --strip -Db_lto=false \
+        --native-file core/native/release-hardening.ini \
         -Denable_float=true -Denable_cuda=true -Denable_nvcc=true -Dnvcc_threads=1 \
         -Denable_sycl=false -Denable_hip=false \
         -Denable_dnn=disabled -Denable_docs=false -Denable_tests=true \
@@ -734,6 +737,7 @@ RUN python3 -c 'import json, sys; dist = json.load(open(sys.argv[1]))["dist_amdg
             sys.exit(f"HIP_GFX_TARGETS differs from ROCm dist targets: {sorted(missing)}" if missing else 0)' \
         /opt/rocm/share/therock/dist_info.json "${HIP_GFX_TARGETS}" \
     && meson setup build core --buildtype=release --strip -Db_lto=false \
+        --native-file core/native/release-hardening.ini \
         -Denable_float=true -Denable_cuda=false -Denable_sycl=false \
         -Denable_hip=true -Denable_hipcc=true -Dhip_gfx_targets="${HIP_GFX_TARGETS}" \
         -Denable_dnn=disabled -Denable_docs=false -Denable_tests=true \

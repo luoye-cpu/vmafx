@@ -21,12 +21,18 @@ jobs="${VMAF_BUILD_JOBS:-4}"
 export ONEAPI_ROOT="${oneapi_root}"
 export PATH="${oneapi_root}/compiler/latest/bin:${PATH}"
 
-# The SYCL runtime files libvmaf loads, from this compiler's installation and
-# its credist.txt (the Redistributables of the Intel EULA for Developer Tools,
-# 2.1.D), go to the image with their licence texts; the compiler stays in the builder.
+if ! command -v patchelf >/dev/null; then
+  echo "ERROR: patchelf is required to clear the staged CLI's build-tree RUNPATH; the builder stages install it" >&2
+  exit 1
+fi
+
+# --native-file carries the shared release hardening profile
+# (docs/principles.md section 2.2, issue 2748), the same file every release
+# build passes to meson.
 CC=icx CXX=icpx meson setup "${build_dir}" core \
   --buildtype=release \
   --strip \
+  --native-file core/native/release-hardening.ini \
   -Db_lto=false \
   -Denable_cuda=false \
   -Denable_sycl=true \
@@ -41,6 +47,10 @@ mkdir -p "${dist_dir}/lib" "${dist_dir}/bin" "${dist_dir}/model" "${licence_inpu
 find "${build_dir}/src" -maxdepth 1 \( -name 'libvmaf.so*' -o -name 'libvmafx.so*' \) -not -type d -exec cp -a {} "${dist_dir}/lib/" \;
 cp -d /usr/lib/*-linux-gnu*/libzimg.so* "${dist_dir}/lib/"
 cp "${build_dir}/tools/vmaf" "${dist_dir}/bin/"
+# Drop the CLI's build-tree RUNPATH $ORIGIN/../src, which resolves nothing
+# under /usr/local/bin; the image resolves the library chain through
+# LD_LIBRARY_PATH (issue 2748).
+patchelf --remove-rpath "${dist_dir}/bin/vmaf"
 cp -r model/. "${dist_dir}/model/"
 
 python3 tools/rc1-tester/image/prepare_build.py intel-runtime \

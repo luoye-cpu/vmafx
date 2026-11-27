@@ -201,6 +201,14 @@ jobs:
           python3 scripts/release/check_glibc_floor.py "$floor" \
             --cxx-floor "$cxx_floor" --cxxabi-floor "$cxxabi_floor" \
             artifacts/vmaf artifacts/lib*.so*
+      - name: Enforce the documented hardening properties on the CLI and every staged library
+        run: |
+          # The build passed core/native/release-hardening.ini (issue 2748);
+          # this fails the release if the artifacts do not carry the resulting
+          # properties: PIE, full RELRO, stack protector, fortified calls, no
+          # build-tree run path.
+          python3 scripts/release/check_release_hardening.py \
+            artifacts/vmaf artifacts/lib*.so*
       - if: ${{ env.GITEA_ACTIONS != 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:

@@ -58,11 +58,19 @@ usage() {
 #     the setting keeps any stage that does from breaking the release build.
 # The subshell scopes both exports to the build, as the former separate
 # workflow step did: the provenance stamp keeps its wall-clock stamped_at.
+#
+# The hardening profile (issue 2748, docs/principles.md section 2.2) is the
+# shared release flag source: the same native file every release path passes.
+# The verifier scripts/release/check_release_hardening.py refuses a bundle
+# whose staged files do not carry the resulting properties, so dropping the
+# --native-file here fails the release at verify time.
 build_release() (
   SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
   export SOURCE_DATE_EPOCH
   export CCACHE_DISABLE=1
-  meson setup build core --buildtype=release -Denable_avx512=true \
+  meson setup build core --buildtype=release \
+    --native-file core/native/release-hardening.ini \
+    -Denable_avx512=true \
     -Denable_cuda=false -Denable_sycl=false -Denable_dnn=disabled \
     -Denable_tests=false
   meson compile -C build

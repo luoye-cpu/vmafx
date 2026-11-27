@@ -47,7 +47,8 @@ LABEL org.opencontainers.image.title="vmafx-builder"
 LABEL org.opencontainers.image.description="Build stage: libvmaf + vmaf CLI (release/stripped)"
 LABEL org.opencontainers.image.source="https://github.com/vidiko/vmafx"
 
-# Install only build-time deps; nothing carried into the runtime stage
+# Install only build-time deps; nothing carried into the runtime stage.
+# patchelf strips the staged CLI's build-tree RUNPATH (issue 2748).
 # hadolint ignore=DL3008
 RUN apt-get --error-on=any -o Acquire::Retries=3 update \
     && apt-get install -y --no-install-recommends \
@@ -56,6 +57,7 @@ RUN apt-get --error-on=any -o Acquire::Retries=3 update \
         meson \
         ninja-build \
         nasm \
+        patchelf \
         pkg-config \
         ca-certificates \
         xxd \
@@ -69,9 +71,13 @@ COPY . .
 # default image). ONNX Runtime DNN is disabled to remove the onnxruntime.so
 # dependency from the runtime image — users who need tiny-AI scoring should
 # run the server variant where the Python venv carries onnxruntime.
+# --native-file carries the shared release hardening profile
+# (docs/principles.md section 2.2, issue 2748), the same file every release
+# build passes to meson.
 RUN meson setup /build core \
         --buildtype=release \
         --strip \
+        --native-file core/native/release-hardening.ini \
         -Denable_cuda=false \
         -Denable_sycl=false \
         -Denable_dnn=disabled \
@@ -79,12 +85,16 @@ RUN meson setup /build core \
         -Denable_tests=false \
     && ninja -C /build -j"${VMAF_BUILD_JOBS}"
 
-# Collect outputs under /dist so the COPY step in the runtime stage is simple
+# Collect outputs under /dist so the COPY step in the runtime stage is simple.
+# patchelf --remove-rpath drops the CLI's build-tree RUNPATH $ORIGIN/../src,
+# which resolves nothing under /usr/local/bin; the runtime stage resolves the
+# library chain through LD_LIBRARY_PATH=/usr/local/lib (issue 2748).
 RUN mkdir -p /dist/lib /dist/bin /dist/model \
     && find /build/src -maxdepth 1 \( -name 'libvmaf.so*' -o -name 'libvmafx.so*' \) -not -type d \
         -exec cp {} /dist/lib/ \; \
     && cp -d /usr/lib/*-linux-gnu*/libzimg.so* /dist/lib/ \
     && cp /build/tools/vmaf /dist/bin/ \
+    && patchelf --remove-rpath /dist/bin/vmaf \
     && cp -r model/. /dist/model/
 
 # The licence and copyright of every repository file the build compiled, read

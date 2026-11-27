@@ -238,16 +238,25 @@ Enforced today (`.github/workflows/sanitizers.yml`):
 - **TSan** (`Sanitizers (thread)`) on pushes to `master`.
 - **libFuzzer + ASan** nightly at 04:30 UTC.
 
-Target hardening flags. These are the intended release-build settings; none of
-them is
-defined in `core/meson.build`, `core/src/meson.build` or the container build
-files yet:
+Enforced hardening flags. Every Linux release build (the native bundle, the
+release container images and the Linux binary wheels) configures Meson with
+`--native-file core/native/release-hardening.ini`, the one place the flags are
+defined (issue 2748):
 
-- `_FORTIFY_SOURCE=3` in release builds.
+- `_FORTIFY_SOURCE=3` in release builds. The effective level is the builder's
+  glibc headers': Debian 13 applies level 3, the manylinux_2.28 bundle
+  builder (glibc 2.28) maps 3 to the level-2 wrappers, which still fortify.
 - Stack protector `-fstack-protector-strong`.
 - PIE (`-fPIE`, `-pie`) for all binaries.
 - RELRO + BIND_NOW: `-Wl,-z,relro,-z,now`.
-- valgrind memcheck on release-candidate audit.
+
+**Guard.** `scripts/release/check_release_hardening.py` reads the built
+artifacts and fails a release whose staged binaries lack the resulting
+properties (PIE flag, PT_GNU_RELRO with BIND_NOW, `__stack_chk_fail` and
+`__*_chk` imports, no build-tree run path); the supply-chain release job runs
+it on every staged file. Windows (MSVC) and macOS are out of scope.
+
+Target. valgrind memcheck on release-candidate audit.
 
 ### 2.3 Banned functions
 

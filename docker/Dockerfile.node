@@ -151,6 +151,7 @@ RUN apt-get --error-on=any -o Acquire::Retries=3 update \
         meson \
         ninja-build \
         nasm \
+        patchelf \
         pkg-config \
         xxd \
         ca-certificates \
@@ -166,9 +167,13 @@ COPY model/ model/
 # closed over every configure-time input rather than disabling the test.
 COPY scripts/ci/check-msvc-clz-shim.sh scripts/ci/check-msvc-clz-shim.sh
 
+# --native-file carries the shared release hardening profile
+# (docs/principles.md section 2.2, issue 2748); core/ carries the file, so the
+# partial build context needs no extra COPY line.
 RUN meson setup /build core \
         --buildtype=release \
         --strip \
+        --native-file core/native/release-hardening.ini \
         -Denable_cuda=false \
         -Denable_sycl=false \
         -Denable_dnn=disabled \
@@ -177,7 +182,8 @@ RUN meson setup /build core \
     && ninja -C /build -j"${VMAF_BUILD_JOBS}"
 
 # The SONAME chain only: the glob would also take Meson's object directory
-# libvmaf.so.3.0.0.p/.
+# libvmaf.so.3.0.0.p/. patchelf --remove-rpath drops the CLI's build-tree
+# RUNPATH $ORIGIN/../src, which resolves nothing under /usr/local/bin (issue 2748).
 RUN mkdir -p /dist/lib/pkgconfig /dist/bin /dist/model \
     && find /build/src -maxdepth 1 \( -name 'libvmaf.so*' -o -name 'libvmafx.so*' \) \
         \( -type f -o -type l \) -exec cp -a {} /dist/lib/ \; \
@@ -185,6 +191,7 @@ RUN mkdir -p /dist/lib/pkgconfig /dist/bin /dist/model \
     && cp /build/meson-private/libvmaf.pc /dist/lib/pkgconfig/libvmaf.pc \
     && cp /build/meson-private/libvmafx.pc /dist/lib/pkgconfig/libvmafx.pc \
     && cp /build/tools/vmaf /dist/bin/ \
+    && patchelf --remove-rpath /dist/bin/vmaf \
     && cp -r model/. /dist/model/ \
     && test -f /dist/model/vmaf_v0.6.1.json
 
@@ -699,6 +706,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         gpg \
         nasm \
         ninja-build \
+        patchelf \
         pkg-config \
         python3-pip \
         xxd \

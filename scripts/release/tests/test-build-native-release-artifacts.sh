@@ -255,8 +255,10 @@ check 'the models and the release files are noticed, then checked, in order' cmp
     'notices release-native' 'check release-native') "$good/licensing.log"
 # ADR-1354: unit tests stay out of the release build; GCC 14.2 on the Debian 13
 # release track crashed at random while LTO-linking them.
-check 'meson setup keeps the release flags and pins DNN and unit tests off' grep -q \
-  '^setup build core --buildtype=release -Denable_avx512=true -Denable_cuda=false -Denable_sycl=false -Denable_dnn=disabled -Denable_tests=false|' \
+# Issue 2748: the setup names the shared hardening profile (the stub does not
+# read it; the artifacts it would produce are the checker's business).
+check 'meson setup keeps the release flags, the hardening profile, DNN and tests off' grep -q \
+  '^setup build core --buildtype=release --native-file core/native/release-hardening.ini -Denable_avx512=true -Denable_cuda=false -Denable_sycl=false -Denable_dnn=disabled -Denable_tests=false|' \
   "$good/meson.log"
 check 'meson runs with ccache disabled' grep -q '^compile -C build|CCACHE_DISABLE=1|' "$good/meson.log"
 check 'meson sees SOURCE_DATE_EPOCH from the commit' grep -q \

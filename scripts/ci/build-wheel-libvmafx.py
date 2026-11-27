@@ -95,6 +95,13 @@ def setup_meson(root: Path, meson_bin: str) -> None:
         "-Denable_tools=false",
         "-Denable_zimg=false",
     ]
+    if sys.platform == "linux":
+        # The shared release hardening profile (docs/principles.md section 2.2,
+        # issue 2748), the same native file every Linux release build passes.
+        # Windows (MSVC) and macOS wheels are out of the issue's scope: the
+        # profile's flags are Linux toolchain flags.
+        cmd.append("--native-file")
+        cmd.append(str(root / "core" / "native" / "release-hardening.ini"))
     if sys.platform == "darwin":
         cmd.append("-Denable_metal=disabled")
     if not shutil.which("nasm"):
