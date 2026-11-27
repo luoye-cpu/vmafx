@@ -49,9 +49,11 @@ PRAETOR_RULES = ("HISS-10", "HISS-11", "job-timeout", "release-token", "test-tim
 # Praetor counts these suffixes as translation units (internal/tidycoverage); `.metal` is not one.
 PRAETOR_UNITS = (".c", ".cc", ".cpp", ".cxx", ".c++", ".cppm", ".cu", ".hip", ".mm")
 # Praetor expiry cap for Category A and uncategorized rows: min(source, PRAETOR_EXPIRY_CAP).
+# Renewed 2026-11-28 (issue #2944) from 2027-01-04 with the entries it caps: praetor refuses a
+# category-A exception more than 90 days out, and 90 days from the renewal date is 2027-02-26.
 # B/C/D rows render entered + interval (D can pass PRAETOR_EXPIRY_CAP, e.g. 2027-03-02 for
 # entered 2026-11-02), bounded below by the source expiry.
-PRAETOR_EXPIRY_CAP = datetime.date(2027, 1, 4)
+PRAETOR_EXPIRY_CAP = datetime.date(2027, 2, 26)
 # Rectification intervals for praetor exception categories (B=3, C=10, D=120 days).
 CATEGORY_INTERVALS: dict[str, datetime.timedelta] = {
     "B": datetime.timedelta(days=3),

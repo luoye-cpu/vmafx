@@ -88,7 +88,7 @@ class PraetorTidyCoverageTests(unittest.TestCase):
         self.assertNotIn('path: "src/a.c"', manifest)
         # the declared date is past praetor's 90-day window, so it is cut to the cap
         self.assertNotIn("2027-06-30", manifest)
-        self.assertIn('expires: "2027-01-04"', manifest)
+        self.assertIn('expires: "2027-02-26"', manifest)
         self.assertIn('category: "A"', manifest)
 
     def test_a_hand_edited_block_is_refused(self) -> None:
@@ -130,7 +130,7 @@ class PraetorTidyCoverageTests(unittest.TestCase):
                 self.assertIn(
                     f'  - rule: {rule}\n    path: ".github/workflows/publish.yml"\n'
                     f'    category: "A"\n    entered: "2026-11-02"\n'
-                    f'    reason: "{reason}"\n    expires: "2027-01-04"\n',
+                    f'    reason: "{reason}"\n    expires: "2027-02-26"\n',
                     manifest,
                 )
 
@@ -219,7 +219,7 @@ class PraetorTidyCoverageTests(unittest.TestCase):
         )
         self.assertEqual(self.repo.run("--write").returncode, 0)
         manifest = (self.repo.root / ".standards.yaml").read_text()
-        self.assertIn('expires: "2027-01-04"', manifest)
+        self.assertIn('expires: "2027-02-26"', manifest)
         self.assertIn('category: "A"', manifest)
 
         (self.repo.root / ".config/lint-exceptions.d/clang-tidy-coverage.toml").write_text(

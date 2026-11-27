@@ -245,23 +245,23 @@ expires = 2027-02-12
 [[exception]]
 path = "core/test/test_xxd_extern_types.c"
 category = "A"
-entered = 2026-11-14
-reason = "Category A, interval to the stated expiry. New unit test that compiles the xxd-generated model definitions against their hand-written extern declarations (core/test/meson.build target xxd_extern_definitions); the lanes' measured_sources change only when a tidy baseline is re-measured, and that re-measure adds this file."
-expires = 2027-01-14
+entered = 2026-11-28
+reason = "Category A, interval to the stated expiry. New unit test that compiles the xxd-generated model definitions against their hand-written extern declarations (core/test/meson.build target xxd_extern_definitions); the lanes' measured_sources change only when a tidy baseline is re-measured, and that re-measure adds this file. Renewed 2026-11-28 (issue #2944) from category A (entered 2026-11-14, expiry was 2027-01-14): the file is still in no lane's measured_sources on master, and the re-measure needs the lane compile databases this ledger PR does not run."
+expires = 2027-03-31
 
 [[exception]]
 path = "core/test/test_xxd_hsaco_extern_types.c"
 category = "A"
-entered = 2026-11-14
-reason = "Category A, interval to the stated expiry. New unit test that compiles the xxd-generated HIP HSACO definitions against their hand-written extern declarations (core/test/meson.build target xxd_hsaco_extern_definitions); the lanes' measured_sources change only when a tidy baseline is re-measured, and that re-measure adds this file."
-expires = 2027-01-14
+entered = 2026-11-28
+reason = "Category A, interval to the stated expiry. New unit test that compiles the xxd-generated HIP HSACO definitions against their hand-written extern declarations (core/test/meson.build target xxd_hsaco_extern_definitions); the lanes' measured_sources change only when a tidy baseline is re-measured, and that re-measure adds this file. Renewed 2026-11-28 (issue #2944) from category A (entered 2026-11-14, expiry was 2027-01-14): the file is still in no lane's measured_sources on master, and the re-measure needs the lane compile databases this ledger PR does not run."
+expires = 2027-03-31
 
 [[exception]]
 path = "core/test/test_integer_adm_buffer_alloc.c"
 category = "A"
-entered = 2026-11-02
-reason = "Category A, interval to the stated expiry. New unit test for the integer ADM slab offsets; the lanes' measured_sources change only when a tidy baseline is re-measured, and that re-measure adds this file."
-expires = 2027-01-04
+entered = 2026-11-28
+reason = "Category A, interval to the stated expiry. New unit test for the integer ADM slab offsets; the lanes' measured_sources change only when a tidy baseline is re-measured, and that re-measure adds this file. Renewed 2026-11-28 (issue #2944) from category A (entered 2026-11-02, expiry was 2027-01-04): the file is still in no lane's measured_sources on master, and the re-measure needs the lane compile databases this ledger PR does not run."
+expires = 2027-03-31
 
 [[exception]]
 path = "pkg/libvmaf/testdata/c_api_pooled_mean.c"
