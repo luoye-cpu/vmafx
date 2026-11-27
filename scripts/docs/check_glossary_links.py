@@ -112,8 +112,34 @@ def glossary_anchors(text: str) -> set[str]:
 
 
 def term_pattern(term: str) -> re.Pattern[str]:
-    """Whole-word, case-insensitive pattern; a hyphen stays part of the word."""
-    return re.compile(rf"(?<![A-Za-z0-9-]){re.escape(term)}(?![A-Za-z0-9-])", re.IGNORECASE)
+    """Whole-word, case-insensitive pattern; spaces may wrap across lines."""
+    body = r"\s+".join(re.escape(part) for part in term.split())
+    return re.compile(rf"(?<![A-Za-z0-9-]){body}(?![A-Za-z0-9-])", re.IGNORECASE)
+
+
+_REF_DEF_RE = re.compile(r"^[ ]{0,3}\[([^\]]+)\]:\s*(?:<([^>]+)>|([^\s>]+))(?:\s+.*)?$")
+
+
+def _reference_label(text: str, lineno: int) -> str | None:
+    """Return the label when ``lineno`` is a reference definition line."""
+    lines = text.splitlines()
+    if not 1 <= lineno <= len(lines):
+        return None
+    match = _REF_DEF_RE.match(lines[lineno - 1])
+    return match.group(1) if match else None
+
+
+def _reference_is_used(text: str, label: str, lineno: int) -> bool:
+    """True when a non-definition line uses the reference label as a link."""
+    body = "\n".join(line for i, line in enumerate(text.splitlines(), 1) if i != lineno)
+    label_re = r"\s+".join(re.escape(part) for part in label.strip().split())
+    pattern = re.compile(
+        rf"\[[^\]\n]*\]\[\s*{label_re}\s*\]"  # full reference link
+        rf"|\[{label_re}\]\[\]"  # collapsed reference link
+        rf"|\[{label_re}\](?![(:\[])",  # shortcut reference link
+        re.IGNORECASE,
+    )
+    return pattern.search(body) is not None
 
 
 def _has_glossary_link(
@@ -121,10 +147,14 @@ def _has_glossary_link(
     links: list[tuple[int, str]],
     anchor: str | None,
     anchor_cache: dict[Path, set[str]],
+    text: str,
 ) -> bool:
     """True when a parsed link resolves to the glossary (and optionally the anchor)."""
     glossary = GLOSSARY.resolve()
     for lineno, target in links:
+        label = _reference_label(text, lineno)
+        if label is not None and not _reference_is_used(text, label, lineno):
+            continue
         if target.startswith(("http:", "https:", "mailto:")):
             continue
         file_part, sep, fragment = target.partition("#")
@@ -156,11 +186,11 @@ def _check_page(
     for term, anchor in terms.items():
         if not term_pattern(term).search(masked):
             continue
-        if not _has_glossary_link(page, links, anchor, anchor_cache):
+        if not _has_glossary_link(page, links, anchor, anchor_cache, masked):
             failures.append(
                 f"{rel}: uses '{term}' but never links the glossary entry ({glossary_rel}#{anchor})"
             )
-    if not _has_glossary_link(page, links, None, anchor_cache):
+    if not _has_glossary_link(page, links, None, anchor_cache, masked):
         failures.append(
             f"{rel}: no link to the glossary ({glossary_rel}) — every metric page links it"
         )

@@ -23,13 +23,17 @@ model, its generation, the viewing condition and the pooling method.
 
 The classic training setup rescaled every clip to 1080 and showed it from
 three times the screen height (3H) — the distance at which a 1080p display
-resolves about 60 pixels per degree. Every model inherits that assumption:
+resolves about 60 pixels per degree. The classic/default 1080p models inherit
+that assumption; the 4K and phone models use their own viewing conditions, so
+check the selected model's page before rescaling.
 
-- a **1080 video displayed from 3H** is what the score means;
+- a **1080 video displayed from 3H** is what a classic model's score means;
 - a **native 480-height pair** scored at its own size implies 3H = 6.75 ×
   its height, so artifacts hide and the score inflates — do not compare it
   with a 1080 run ([FAQ: the arithmetic](faq.md#q-when-computing-vmaf-on-low-resolution-videos-480-pixel-height-for-example-why-do-the-scores-look-so-high-even-when-there-are-visible-artifacts));
-- the fix is [scaling](glossary.md#scaling): upsample to 1080 before scoring.
+- for the classic 1080p models the fix is [scaling](glossary.md#scaling):
+  upsample to 1080 before scoring. For 4K or phone models, use the condition
+  on that model's page instead.
 
 ## Pitfalls {#pitfalls}
 
@@ -73,8 +77,10 @@ defaults ([HDR](glossary.md#hdr), [ΔE-ITP options](../metrics/delta_e_itp.md)).
 The fixture row below is a PQ→BT.709 round trip, not tone mapping; the adapter
 commands above are the recommended HDR route.
 
-Runnable on the fixture pair (SDR, so the numbers are meaningful) and on any
-HDR pair you have — the fixture pair exercises the command shape:
+The fixture pair is SDR. Running the adapters on it only exercises the command
+shape: `pu21` and `delta_e_itp` interpret their input as PQ, so the resulting
+numbers are not meaningful HDR measurements. Use a compatible PQ pair for real
+scores:
 
 ```bash
 vmaf -r testdata/ref_576x324_48f.yuv -d testdata/dis_576x324_48f.yuv \
@@ -102,8 +108,8 @@ frame with the wrong reference. The stock `libvmaf` filter scores the tail of
 a longer main stream against the last reference frame; the fork's `vmafx`
 filter warns and passes unpaired mains instead
 ([pairing](../usage/ffmpeg.md#pairing-the-two-inputs)). Cut both inputs to
-the same frames (`trim` / `-frames:v`) before the filter
-([score exactly N frames](../usage/ffmpeg.md#score-exactly-n-frames)).
+the same frames (`trim` on both inputs, not an output `-frames:v`) before the
+filter ([score exactly N frames](../usage/ffmpeg.md#score-exactly-n-frames)).
 
 ### Interlaced input {#interlaced-input}
 

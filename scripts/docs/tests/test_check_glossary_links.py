@@ -155,6 +155,29 @@ def test_term_pattern_is_whole_word() -> None:
     assert term_pattern("pooling").search("pooled") is None
     assert term_pattern("full range").search("a full range stream")
     assert term_pattern("full range").search("full-range") is None
+    assert term_pattern("Feature extractor").search("a feature\nextractor runs")
+
+
+def test_unused_reference_definition_does_not_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A definition that no page text references is not a reader-accessible link."""
+    page = _make_tree(
+        tmp_path,
+        monkeypatch,
+        "metrics/widget.md",
+        "# Widget\n\n[NEG]: ../reference/glossary.md#neg\n\n"
+        "The NEG variant penalises sharpening.\n",
+    )
+    assert main([]) == EXIT_FAILURE
+
+    page.write_text(
+        "# Widget\n\n[NEG]: ../reference/glossary.md#neg\n\n"
+        "The [NEG] variant penalises sharpening. See the "
+        "[glossary](../reference/glossary.md).\n",
+        encoding="utf-8",
+    )
+    assert main([]) == EXIT_SUCCESS
 
 
 def test_subdirectory_page_needs_two_levels(
