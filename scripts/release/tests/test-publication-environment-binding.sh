@@ -673,6 +673,8 @@ while second_end < len(production_lines) and production_lines[
     second_end - 1
 ].rstrip().endswith("\\"):
     second_end += 1
+if production_lines[second_end - 1].rstrip().endswith("\\"):
+    raise AssertionError(f"{production_path}: truncated cosign verifier")
 second_block = "".join(production_lines[second_start:second_end])
 identity_clause = re.search(
     r'(?m)^[ \t]+--certificate-identity \\\n'
