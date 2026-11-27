@@ -21,7 +21,7 @@ import tempfile
 import unittest
 from collections.abc import Callable, Iterator
 from itertools import islice
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from unittest import mock
 
@@ -710,8 +710,28 @@ def tracked_python_files() -> list[str]:
     return [os.fsdecode(entry) for entry in tracked.stdout.split(b"\0") if entry]
 
 
+def _reject_linked_source_path(root: Path, name: str) -> None:
+    """Refuse a tracked source whose path escapes or traverses a link."""
+    relative = PurePosixPath(name)
+    parts = relative.parts
+    if not parts or relative.is_absolute() or ".." in parts:
+        raise ValueError(f"{name}: source path escapes the repository")
+    path = root
+    for index, part in enumerate(parts):
+        path = path / part
+        try:
+            mode = path.lstat().st_mode
+        except OSError as exc:
+            raise ValueError(f"{name}: cannot inspect source: {exc}") from exc
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"{name}: source path traverses a symlink")
+        if index < len(parts) - 1 and not stat.S_ISDIR(mode):
+            raise ValueError(f"{name}: source path component is not a directory")
+
+
 def read_tracked_source(root: Path, name: str) -> bytes:
     """Read one source file without following a link or blocking on a FIFO."""
+    _reject_linked_source_path(root, name)
     path = root / name
     if not hasattr(os, "O_NOFOLLOW"):
         try:
@@ -763,8 +783,33 @@ class GitDirectoryRemovalScan(unittest.TestCase):
             root = Path(tmp)
             os.mkfifo(root / "pipe")
             (root / "tracked.py").symlink_to(root / "pipe")
-            with self.assertRaisesRegex(ValueError, "refusing to open source|not a regular file"):
+            with self.assertRaisesRegex(
+                ValueError, "traverses a symlink|refusing to open source|not a regular file"
+            ):
                 read_tracked_source(root, "tracked.py")
+
+    @unittest.skipUnless(
+        hasattr(os, "symlink") and os.name != "nt",
+        "planted directory symlinks need POSIX",
+    )
+    def test_tracked_source_rejects_a_symlinked_parent_directory(self) -> None:
+        """A link in a parent component cannot redirect the tracked source."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "tracked.py").write_bytes(b"pass\n")
+            (root / "pkg").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "traverses a symlink"):
+                read_tracked_source(root, "pkg/tracked.py")
+
+    def test_tracked_source_reads_an_ordinary_nested_path(self) -> None:
+        """Ordinary directories below the root remain readable."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pkg").mkdir()
+            (root / "pkg" / "tracked.py").write_bytes(b"pass\n")
+            self.assertEqual(read_tracked_source(root, "pkg/tracked.py"), b"pass\n")
 
     def test_scan_refuses_oversized_source(self) -> None:
         with self.assertRaisesRegex(ValueError, "bytes"):
