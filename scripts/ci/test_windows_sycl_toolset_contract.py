@@ -1,0 +1,842 @@
+#!/usr/bin/env python3
+# Copyright 2026 Lusoris
+# SPDX-License-Identifier: EUPL-1.2
+"""Contract tests for the shared oneAPI toolchain pin in both Windows SYCL workflows."""
+
+from __future__ import annotations
+
+import ast
+import re
+import shlex
+import sys
+import unittest
+from collections.abc import Iterable, Iterator
+from copy import deepcopy
+from itertools import chain, islice
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any
+from unittest.mock import patch
+
+import yaml  # type: ignore[import-untyped]
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+from scripts.ci.tests.test_pr_time_verify_workflows import SHA_PIN  # noqa: E402
+
+WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "libvmaf-build-matrix.yml"
+TESTER_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "windows-tester-bundle.yml"
+BUILD_CONFIG_PATH = REPO_ROOT / "build-config.env"
+AOT_PROBE_PATH = REPO_ROOT / "scripts" / "ci" / "ocloc_aot_targets.py"
+
+WINDOWS_GPU_JOB_ID = "windows-gpu-build"
+ONEAPI_STEP_NAME = "Install Intel oneAPI (windows)"
+TESTER_ONEAPI_STEP = "Install Intel oneAPI (pinned offline installer)"
+TESTER_BUILD_STEP = "Build the SYCL zip"
+TESTER_SYCL_IF = "matrix.gpu == 'sycl'"
+LOAD_CONFIG = 'scripts/ci/load-build-config.sh >> "$GITHUB_ENV"'
+SKIP_VS2026 = "-p=NEED_VS2026_INTEGRATION=0"
+MSVC_STEP_NAME = "Setup MSVC dev environment"
+MSVC_ACTION = "TheMrMilchmann/setup-msvc-dev"
+EXPECTED_WINDOWS_BASEKIT_URL = (
+    "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/"
+    "728c4418-1b40-47a9-ad51-31530fb27c94/"
+    "intel-oneapi-toolkit-2026.2.0.661_offline.exe"
+)
+OLD_WINDOWS_BASEKIT_URL = (
+    "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/"
+    "1f18901e-877d-469d-a41a-a10f11b39336/"
+    "intel-oneapi-base-toolkit-2025.3.0.372_offline.exe"
+)
+EXPECTED_DPCPP_COMPONENT = "intel.oneapi.win.cpp-dpcpp-common"
+EXPECTED_AOT_REFUSED = "tgllp,adl-s,adl-p,adl-n,rpl-s,rpl-p"
+EXPECTED_SYCL_STEP_IF = "steps.leg.outputs.run == 'true' && matrix.backend == 'sycl'"
+APPROVED_STEP_CONDITIONS = {
+    "steps.leg.outputs.run == 'true'",
+    EXPECTED_SYCL_STEP_IF,
+    "steps.leg.outputs.run == 'true' && matrix.backend == 'cuda'",
+    "steps.leg.outputs.run == 'true' && runner.os == 'Windows'",
+}
+EXPECTED_INSTALLER_SIZE = "2402678488"
+EXPECTED_INSTALLER_SHA256 = "e5774d5435835b66b16c4369a6c9704720fe2df9d67cdc48922c93782c152ee0"
+EXPECTED_ONEAPI_VERSION = "2026.2.0.661"
+WINDOWS_PINS = {
+    "ONEAPI_WINDOWS_VERSION": EXPECTED_ONEAPI_VERSION,
+    "INTEL_BASEKIT_WINDOWS_URL": EXPECTED_WINDOWS_BASEKIT_URL,
+    "INTEL_BASEKIT_WINDOWS_SIZE": EXPECTED_INSTALLER_SIZE,
+    "INTEL_BASEKIT_WINDOWS_SHA256": EXPECTED_INSTALLER_SHA256,
+    "ONEAPI_WINDOWS_AOT_EXPECT_REFUSED": EXPECTED_AOT_REFUSED,
+}
+WINDOWS_INLINE_PIN_RE = re.compile(
+    r'(?m)^[ \t]*(?:set "?)?(?:INTEL_BASEKIT_WINDOWS_(?:URL|SIZE|SHA256)'
+    r"|ONEAPI_WINDOWS_(?:VERSION|AOT_EXPECT_REFUSED)|WINDOWS_BASEKIT_(?:URL|SIZE|SHA256))"
+    r"[ \t]*[:=]"
+)
+AOT_OUTPUT = "${{ steps.aot_targets.outputs.targets }}"
+SETVARS = r'call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"'
+BANNED_STL_MISMATCH_MACRO = "_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"
+MIN_ONEAPI_MAJOR = 2026
+
+MAX_WORKFLOW_FILES = 512
+MAX_WORKFLOW_LINES = 4096
+MAX_WORKFLOW_JOBS = 256
+MAX_MATRIX_ROWS = 16
+MAX_JOB_STEPS = 64
+MAX_SCRIPT_LINES = 128
+MAX_PROBE_AST_NODES = 2048
+ONEAPI_URL_VERSION_RE = re.compile(
+    r"intel-oneapi-(?:base-)?toolkit-(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)\.(?P<build>\d+)_offline\.exe$"
+)
+
+
+def _load_job(workflow_text: str, job_id: str = WINDOWS_GPU_JOB_ID) -> dict[str, Any]:
+    """Parse workflow YAML and return the requested job mapping."""
+    if BANNED_STL_MISMATCH_MACRO in workflow_text:
+        raise AssertionError(f"workflow must not use unsupported {BANNED_STL_MISMATCH_MACRO} macro")
+    parsed = yaml.safe_load(workflow_text)
+    if not isinstance(parsed, dict):
+        raise AssertionError("workflow YAML must parse to a mapping")
+    jobs = parsed.get("jobs")
+    if not isinstance(jobs, dict) or job_id not in jobs:
+        raise AssertionError(f"workflow missing job '{job_id}'")
+    job = jobs[job_id]
+    if not isinstance(job, dict):
+        raise AssertionError(f"job '{job_id}' must be a mapping")
+    return job
+
+
+def _job_steps(job: dict[str, Any]) -> list[dict[str, Any]]:
+    steps = job.get("steps")
+    if not isinstance(steps, list) or not steps:
+        raise AssertionError("job has no steps")
+    if len(steps) > MAX_JOB_STEPS:
+        raise AssertionError("job exceeds step limit")
+    return [step for step in steps if isinstance(step, dict)]
+
+
+def _step_index(steps: list[dict[str, Any]], value: str, key: str = "name") -> int:
+    matches = [i for i, step in enumerate(steps[:MAX_JOB_STEPS]) if step.get(key) == value]
+    if len(matches) != 1:
+        raise AssertionError(f"expected exactly one step with {key}={value!r}")
+    return matches[0]
+
+
+def _validate_build_config(text: str) -> None:
+    for key, expected in WINDOWS_PINS.items():
+        assignments = re.findall(rf"(?m)^{key}=([^\n]*)$", text)
+        if not assignments:
+            raise AssertionError(f"missing {key} pin")
+        if key == "INTEL_BASEKIT_WINDOWS_URL":
+            match = ONEAPI_URL_VERSION_RE.search(assignments[0].strip('"'))
+            if match is None or int(match.group("major")) < MIN_ONEAPI_MAJOR:
+                raise AssertionError(f"{key} must pin oneAPI >= {MIN_ONEAPI_MAJOR} (ADR-3568)")
+        if assignments != [f'"{expected}"']:
+            raise AssertionError(f"{key} must be pinned once to {expected!r}")
+
+
+def _validate_shared_pin_documentation(text: str) -> None:
+    prose = " ".join(re.sub(r"(?m)^# *", "", text).split())
+    if not re.search(
+        r"Windows MSVC\+SYCL CI leg and (?:the )?Windows SYCL tester zip share", prose
+    ):
+        raise AssertionError("shared Windows pin documentation must name both Windows SYCL legs")
+    if EXPECTED_ONEAPI_VERSION not in prose or "ADR-3568" not in prose:
+        raise AssertionError("shared Windows pin documentation must name the release and ADR-3568")
+
+
+def _validate_matrix_backends(job: dict[str, Any]) -> None:
+    """Verify windows-gpu-build matrix declares both cuda and sycl legs without a cuda-only pin."""
+    include = job.get("strategy", {}).get("matrix", {}).get("include")
+    if not isinstance(include, list) or not include:
+        raise AssertionError(f"job '{WINDOWS_GPU_JOB_ID}' missing strategy.matrix.include")
+    if len(include) > MAX_MATRIX_ROWS:
+        raise AssertionError("matrix exceeds row limit")
+    backends: set[str] = set()
+    for row in include[:MAX_MATRIX_ROWS]:
+        if not isinstance(row, dict):
+            continue
+        backend = str(row.get("backend", ""))
+        backends.add(backend)
+        if backend == "cuda":
+            _validate_cuda_matrix_row(row)
+    if backends != {"cuda", "sycl"}:
+        raise AssertionError(f"expected matrix backends {{'cuda', 'sycl'}}, found {backends}")
+
+
+def _validate_cuda_matrix_row(row: dict[str, Any]) -> None:
+    if (
+        WINDOWS_INLINE_PIN_RE.search("\n".join(f"{key}:" for key in row))
+        or "oneapi" in str(row).lower()
+        or "toolset" in row
+    ):
+        raise AssertionError("CUDA matrix row must not carry the SYCL toolchain pin")
+
+
+def _validate_step_if_conditions(steps: list[dict[str, Any]]) -> None:
+    """Ensure every post-checkout step in windows-gpu-build keeps its explicit if: guard."""
+    for idx, step in enumerate(steps[:MAX_JOB_STEPS]):
+        uses = str(step.get("uses", ""))
+        name = str(step.get("name", f"step[{idx}]"))
+        if idx == 0 and step.get("id") == "leg":
+            continue
+        if uses.startswith("actions/checkout@"):
+            continue
+        condition = step.get("if")
+        if not isinstance(condition, str) or condition not in APPROVED_STEP_CONDITIONS:
+            raise AssertionError(f"step '{name}' must keep its steps.leg.outputs.run if: guard")
+
+
+def _msvc_pin(uses: str) -> str:
+    action, _, ref = uses.partition("@")
+    if action != MSVC_ACTION:
+        raise AssertionError(f"expected action {MSVC_ACTION}, found {action!r}")
+    if not SHA_PIN.fullmatch(uses):
+        raise AssertionError(f"{uses!r} must pin a full lowercase commit SHA")
+    return ref
+
+
+def _validate_msvc_step(steps: list[dict[str, Any]], installer: int, arch: str) -> None:
+    """Require one SHA-pinned MSVC setup with the job's architecture before oneAPI."""
+    index = _step_index(steps, MSVC_STEP_NAME)
+    step = steps[index]
+    _msvc_pin(str(step.get("uses", "")))
+    if index >= installer:
+        raise AssertionError("MSVC setup must precede oneAPI install")
+    with_map = step.get("with")
+    if not isinstance(with_map, dict) or with_map.get("arch") != arch:
+        raise AssertionError(f"'{MSVC_STEP_NAME}' must specify with.arch: {arch}")
+
+
+def _bounded[T](items: Iterable[T], limit: int, description: str) -> list[T]:
+    batch = list(islice(items, limit + 1))
+    if len(batch) > limit:
+        raise AssertionError(f"{description} exceeds limit {limit}")
+    return batch
+
+
+def _workflow_msvc_pins(path: Path) -> Iterator[str]:
+    with path.open(encoding="utf-8") as stream:
+        lines = _bounded(stream, MAX_WORKFLOW_LINES, f"{path.name} lines")
+    jobs = yaml.safe_load("".join(lines))["jobs"]
+    for job_id, job in _bounded(jobs.items(), MAX_WORKFLOW_JOBS, f"{path.name} jobs"):
+        if "steps" not in job:  # Reusable workflow call.
+            continue
+        pins = [
+            _msvc_pin(uses)
+            for step in _job_steps(job)
+            if (uses := str(step.get("uses", ""))).partition("@")[0] == MSVC_ACTION
+            or str(step.get("name", "")).partition(" (")[0] == MSVC_STEP_NAME
+        ]
+        if len(pins) > 1:
+            raise AssertionError(f"{path.name}/{job_id} has multiple {MSVC_ACTION} steps")
+        yield from pins
+
+
+def _shared_msvc_pin(directory: Path) -> str:
+    refs: dict[str, str] = {}
+    workflows = chain(directory.glob("*.yml"), directory.glob("*.yaml"))
+    for path in sorted(_bounded(workflows, MAX_WORKFLOW_FILES, "workflow files")):
+        for ref in _workflow_msvc_pins(path):
+            refs.setdefault(ref, path.name)
+    if len(refs) != 1:
+        raise AssertionError(f"workflows must share one {MSVC_ACTION} SHA, found {refs}")
+    return next(iter(refs))
+
+
+def _validate_oneapi_step(steps: list[dict[str, Any]]) -> None:
+    """Verify the SYCL installer consumes and verifies the shared pins."""
+    index = _step_index(steps, ONEAPI_STEP_NAME)
+    step = steps[index]
+    if step.get("if") != EXPECTED_SYCL_STEP_IF:
+        raise AssertionError(
+            f"'{ONEAPI_STEP_NAME}' must run on the SYCL leg ({EXPECTED_SYCL_STEP_IF!r}), "
+            f"found {step.get('if')!r}"
+        )
+    _validate_config_loader(steps, index, EXPECTED_SYCL_STEP_IF)
+    if step.get("env", {}).get("WINDOWS_DPCPP_COMPONENTS") != EXPECTED_DPCPP_COMPONENT:
+        raise AssertionError(f"WINDOWS_DPCPP_COMPONENTS must equal {EXPECTED_DPCPP_COMPONENT!r}")
+    _validate_oneapi_script(str(step.get("run", "")))
+
+
+def _validate_config_loader(steps: list[dict[str, Any]], installer: int, condition: str) -> None:
+    index = _step_index(steps, "Load build config")
+    step = steps[index]
+    if index >= installer or step.get("if") != condition:
+        raise AssertionError("Load build config must precede oneAPI install on the SYCL leg")
+    if step.get("shell") != "bash" or str(step.get("run", "")).strip() != LOAD_CONFIG:
+        raise AssertionError("Load build config must export the shared pins to GITHUB_ENV")
+
+
+def _validate_oneapi_script(run_script: str) -> None:
+    lines = run_script.splitlines()
+    if len(lines) > MAX_SCRIPT_LINES:
+        raise AssertionError("installer script exceeds line limit")
+    bootstrap = [
+        line.strip()
+        for line in lines[:MAX_SCRIPT_LINES]
+        if line.strip().startswith("webimage_extracted\\bootstrapper.exe ")
+    ]
+    if len(bootstrap) != 1 or SKIP_VS2026 not in bootstrap[0].split():
+        raise AssertionError(
+            f"'{ONEAPI_STEP_NAME}' must pass -p=NEED_VS2026_INTEGRATION=0 on VS 2026 runners"
+        )
+    if "exit /b %installer_exit_code%" not in run_script:
+        raise AssertionError(f"'{ONEAPI_STEP_NAME}' must propagate %installer_exit_code%")
+    if 'echo expected_refused=%ONEAPI_WINDOWS_AOT_EXPECT_REFUSED%>>"%GITHUB_OUTPUT%"' not in [
+        line.strip() for line in lines
+    ]:
+        raise AssertionError("oneAPI install must export the shared refused AOT targets")
+    _validate_installer_integrity(run_script)
+
+
+def _validate_installer_integrity(script: str) -> None:
+    lines = [line.strip() for line in script.splitlines()[:MAX_SCRIPT_LINES] if line.strip()]
+    checks = (
+        "curl.exe --fail --output %TEMP%\\webimage.exe --url %INTEL_BASEKIT_WINDOWS_URL%",
+        "powershell.exe -NoProfile -Command \"$ErrorActionPreference='Stop'; if ((Get-Item (Join-Path $env:TEMP 'webimage.exe')).Length -ne [int64]$env:INTEL_BASEKIT_WINDOWS_SIZE) { exit 1 }\"",
+        "powershell.exe -NoProfile -Command \"$ErrorActionPreference='Stop'; if ((Get-FileHash -Algorithm SHA256 (Join-Path $env:TEMP 'webimage.exe')).Hash -ne $env:INTEL_BASEKIT_WINDOWS_SHA256) { exit 1 }\"",
+        "start /b /wait %TEMP%\\webimage.exe -s -x",
+    )
+    positions = [
+        next((i for i, line in enumerate(lines) if line.startswith(check)), -1) for check in checks
+    ]
+    if -1 in positions or positions != sorted(set(positions)):
+        raise AssertionError("installer download, size and hash checks must precede extraction")
+    if any(lines[i + 1] != "if errorlevel 1 exit /b 1" for i in positions[:3]):
+        raise AssertionError("installer download and checks must fail closed")
+
+
+def validate_windows_sycl_toolset_contract(workflow_text: str) -> None:
+    """Validate the Windows MSVC+SYCL toolchain pin and step guards in libvmaf-build-matrix.yml."""
+    job = _load_job(workflow_text)
+    _validate_matrix_backends(job)
+    _validate_no_inline_pin(workflow_text)
+    steps = _job_steps(job)
+    _validate_step_if_conditions(steps)
+    _validate_msvc_step(steps, _step_index(steps, ONEAPI_STEP_NAME), "x64")
+    _validate_oneapi_step(steps)
+    _validate_aot_probe(steps)
+
+
+def _validate_no_inline_pin(workflow_text: str) -> None:
+    if WINDOWS_INLINE_PIN_RE.search(workflow_text) or any(
+        value in workflow_text for value in WINDOWS_PINS.values()
+    ):
+        raise AssertionError("Windows oneAPI pin must come from build-config.env")
+
+
+def _validate_aot_probe(steps: list[dict[str, Any]]) -> None:
+    probes = [(i, s) for i, s in enumerate(steps) if s.get("id") == "aot_targets"]
+    configs = [(i, s) for i, s in enumerate(steps) if s.get("name") == "Configure libvmaf (SYCL)"]
+    if len(probes) != 1 or len(configs) != 1 or probes[0][0] >= configs[0][0]:
+        raise AssertionError("AOT probe must precede SYCL configure")
+    probe, config = probes[0][1], configs[0][1]
+    if probe.get("if") != EXPECTED_SYCL_STEP_IF or config.get("if") != EXPECTED_SYCL_STEP_IF:
+        raise AssertionError("AOT probe and configure must run on the SYCL leg")
+    if (
+        'python scripts\\ci\\ocloc_aot_targets.py ocloc --expect-refused "%WINDOWS_AOT_EXPECT_REFUSED%"'
+        ' --github-output "%GITHUB_OUTPUT%"'
+    ) not in str(probe.get("run", "")):
+        raise AssertionError("AOT probe script missing")
+    if probe.get("env", {}).get("WINDOWS_AOT_EXPECT_REFUSED") != (
+        "${{ steps.windows_oneapi.outputs.expected_refused }}"
+    ):
+        raise AssertionError("AOT probe must use the installed oneAPI refused targets")
+    if f"-Dsycl_icpx_aot_targets={AOT_OUTPUT}" not in str(config.get("run", "")):
+        raise AssertionError("SYCL configure must use AOT probe output")
+
+
+def _validate_tester_workflow(workflow_text: str) -> None:
+    steps = _job_steps(_load_job(workflow_text, "build"))
+    installer = _step_index(steps, TESTER_ONEAPI_STEP)
+    _validate_msvc_step(steps, installer, "${{ matrix.arch }}")
+    _validate_no_inline_pin(workflow_text)
+    _validate_config_loader(steps, installer, TESTER_SYCL_IF)
+    run = str(steps[installer].get("run", ""))
+    arguments = run.partition(
+        "Start-Process -FilePath $boot -Wait -PassThru -NoNewWindow -ArgumentList @(\n"
+    )[2].partition('"--log-dir=$env:RUNNER_TEMP")')[0]
+    if not any(
+        f"'{SKIP_VS2026}'" in line and not line.lstrip().startswith("#")
+        for line in arguments.splitlines()[:MAX_SCRIPT_LINES]
+    ):
+        raise AssertionError(f"tester bootstrapper must pass {SKIP_VS2026}")
+    _validate_tester_aot_probe(steps, installer)
+
+
+def _validate_tester_aot_probe(steps: list[dict[str, Any]], installer: int) -> None:
+    probe_index = _step_index(steps, "aot_targets", key="id")
+    build_index = _step_index(steps, TESTER_BUILD_STEP)
+    if not installer < probe_index < build_index:
+        raise AssertionError("tester AOT probe must run after install and before the SYCL build")
+    probe, build = steps[probe_index], steps[build_index]
+    if probe.get("if") != TESTER_SYCL_IF or probe.get("shell") != "cmd":
+        raise AssertionError("tester AOT probe must run in cmd on the SYCL leg")
+    command = (
+        r"python scripts\ci\ocloc_aot_targets.py ocloc --expect-refused "
+        '"%ONEAPI_WINDOWS_AOT_EXPECT_REFUSED%" --github-output "%GITHUB_OUTPUT%"'
+    )
+    lines = str(probe.get("run", "")).splitlines()
+    if lines != [f"{SETVARS} || exit /b 1", f"{command} || exit /b 1"]:
+        raise AssertionError(
+            "tester AOT probe must initialize oneAPI and use the shared refused set"
+        )
+    if build.get("env", {}).get("VMAFX_SYCL_AOT_TARGETS") != AOT_OUTPUT:
+        raise AssertionError("tester build must use AOT probe output")
+
+
+def _probe_path(expression: ast.expr) -> Path:
+    parts: list[str] = []
+    for _ in range(MAX_SCRIPT_LINES):
+        match expression:
+            case ast.Name(id="ROOT"):
+                path = REPO_ROOT.joinpath(*reversed(parts)).resolve()
+                if path.is_relative_to(REPO_ROOT):
+                    return path
+                break
+            case ast.BinOp(left=parent, op=ast.Div(), right=ast.Constant(value=str() as part)):
+                parts.append(part)
+                expression = parent
+            case _:
+                break
+    raise AssertionError("probe sys.path entry must be rooted at the repository")
+
+
+def _probe_import_bases(tree: ast.Module) -> list[Path]:
+    bases = [AOT_PROBE_PATH.parent]
+    for statement in tree.body:
+        match statement:
+            case ast.Expr(value=ast.Call(func=func) as call) if ast.unparse(func).startswith(
+                "sys.path."
+            ):
+                match call:
+                    case ast.Call(
+                        func=ast.Attribute(attr="insert"),
+                        args=[
+                            ast.Constant(value=0),
+                            ast.Call(func=ast.Name(id="str"), args=[path], keywords=[]),
+                        ],
+                        keywords=[],
+                    ):
+                        bases.insert(0, _probe_path(path))
+                    case _:
+                        raise AssertionError("unsupported probe sys.path change")
+    return bases
+
+
+def _probe_import_names(nodes: list[ast.AST]) -> set[str]:
+    modules: set[str] = set()
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            modules.add(node.module)
+            modules.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return modules
+
+
+def _probe_import_path(module: str, bases: list[Path]) -> Path | None:
+    parts = module.split(".")
+    for base in bases:
+        stem = base.joinpath(*parts)
+        for path in (stem / "__init__.py", stem.with_suffix(".py")):
+            if path.is_file():
+                return path.relative_to(REPO_ROOT)
+    return None
+
+
+def _probe_local_imports() -> set[Path]:
+    tree = ast.parse(AOT_PROBE_PATH.read_text(encoding="utf-8"))
+    nodes = list(islice(ast.walk(tree), MAX_PROBE_AST_NODES + 1))
+    if len(nodes) > MAX_PROBE_AST_NODES:
+        raise AssertionError("probe exceeds AST node limit")
+    bases = _probe_import_bases(tree)
+    return {
+        path
+        for module in _probe_import_names(nodes)
+        if (path := _probe_import_path(module, bases)) is not None
+    }
+
+
+def _validate_tester_recipe_imports(workflow_text: str) -> None:
+    steps = _job_steps(_load_job(workflow_text, "build"))
+    run = str(steps[_step_index(steps, "Use this ref's build recipe")]["run"])
+    if len(run.splitlines()) > MAX_SCRIPT_LINES:
+        raise AssertionError("tester recipe overlay exceeds script line limit")
+    run = re.sub(r"\\\n[ \t]*", " ", run)
+    common, guard, remaining = run.partition("\nif [[ '${{ matrix.gpu }}' == sycl ]]; then\n")
+    sycl, end, _ = remaining.partition("\nfi\n")
+    if not guard or not end:
+        raise AssertionError("tester recipe overlay must have a SYCL branch")
+    checkout = r"git checkout FETCH_HEAD -- (.+)$"
+    commands = re.findall(rf"(?m)^{checkout}", common)
+    commands.extend(re.findall(rf"(?m)^  {checkout}", sycl))
+    overlay = {Path(word) for command in commands for word in shlex.split(command, comments=True)}
+    missing = sorted(
+        path for path in _probe_local_imports() if overlay.isdisjoint((path, *path.parents))
+    )
+    if missing:
+        raise AssertionError(
+            "tester recipe overlay lacks probe imports: " + ", ".join(p.as_posix() for p in missing)
+        )
+
+
+def _move_installer_check_last(run: str, marker: str) -> str:
+    lines = run.splitlines()[:MAX_SCRIPT_LINES]
+    line = next(line for line in lines if marker in line)
+    lines.remove(line)
+    return "\n".join([*lines, line])
+
+
+class WindowsSyclToolsetContractTest(unittest.TestCase):
+    """Positive, negative, and boundary contract tests for Windows MSVC+SYCL toolchain pin."""
+
+    def test_planted_bounds_and_guard_rejected(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+        for kind in ("rows", "steps", "guard"):
+            planted = deepcopy(workflow)
+            job = planted["jobs"][WINDOWS_GPU_JOB_ID]
+            if kind == "rows":
+                job["strategy"]["matrix"]["include"].extend([{"backend": "sycl"}] * MAX_MATRIX_ROWS)
+            elif kind == "steps":
+                job["steps"].extend(
+                    [{"name": "extra", "if": "steps.leg.outputs.run == 'true'"}] * MAX_JOB_STEPS
+                )
+            else:
+                guarded = next(s for s in job["steps"] if isinstance(s.get("if"), str))
+                guarded["if"] += " || always()"
+            with self.subTest(kind=kind), self.assertRaises(AssertionError):
+                validate_windows_sycl_toolset_contract(yaml.safe_dump(planted))
+
+    def test_planted_switch_only_in_comment_rejected(self) -> None:
+        text = WORKFLOW_PATH.read_text(encoding="utf-8")
+        planted = text.replace(SKIP_VS2026, "", 1).replace(
+            "          webimage_extracted\\bootstrapper.exe",
+            f"          rem {SKIP_VS2026}\n" "          webimage_extracted\\bootstrapper.exe",
+            1,
+        )
+        with self.assertRaises(AssertionError):
+            validate_windows_sycl_toolset_contract(planted)
+
+    def test_planted_installer_integrity_failures(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+        steps = _job_steps(workflow["jobs"][WINDOWS_GPU_JOB_ID])
+        installer = _step_index(steps, ONEAPI_STEP_NAME)
+        run = steps[installer]["run"]
+        mutations = {
+            "size": run.replace("INTEL_BASEKIT_WINDOWS_SIZE", ""),
+            "sha256": run.replace("INTEL_BASEKIT_WINDOWS_SHA256", ""),
+            "late_size": _move_installer_check_last(run, "INTEL_BASEKIT_WINDOWS_SIZE"),
+            "late_sha256": _move_installer_check_last(run, "Get-FileHash"),
+            "curl": run.replace("--fail", "", 1),
+            "exit": run.replace("if errorlevel 1 exit /b 1", "rem ignored", 1),
+            "length": run + "\nrem extra" * MAX_SCRIPT_LINES,
+            "refused": run.replace("%ONEAPI_WINDOWS_AOT_EXPECT_REFUSED%", ""),
+        }
+        for kind, replacement in mutations.items():
+            planted = deepcopy(workflow)
+            _job_steps(planted["jobs"][WINDOWS_GPU_JOB_ID])[installer]["run"] = replacement
+            with self.subTest(kind=kind), self.assertRaises(AssertionError):
+                validate_windows_sycl_toolset_contract(yaml.safe_dump(planted))
+
+    def test_live_workflow_satisfies_windows_sycl_toolset_contract(self) -> None:
+        workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+        validate_windows_sycl_toolset_contract(workflow_text)
+        _shared_msvc_pin(WORKFLOW_PATH.parent)
+
+    def test_msvc_action_rejects_invalid_pins_and_owner(self) -> None:
+        cases = (
+            (f"{MSVC_ACTION}@v4", "full lowercase commit SHA"),
+            (f"{MSVC_ACTION}@b014284", "full lowercase commit SHA"),
+            (f"{MSVC_ACTION}@{'A' * 40}", "full lowercase commit SHA"),
+            (f"other/setup-msvc-dev@{'a' * 40}", f"expected action {MSVC_ACTION}"),
+        )
+        for uses, message in cases:
+            step = {"name": MSVC_STEP_NAME, "uses": uses, "with": {"arch": "x64"}}
+            with self.subTest(uses=uses), self.assertRaisesRegex(AssertionError, message):
+                _validate_msvc_step([step], 1, "x64")
+
+    def test_msvc_setup_after_oneapi_rejected(self) -> None:
+        steps = _job_steps(_load_job(WORKFLOW_PATH.read_text(encoding="utf-8")))
+        steps.append(steps.pop(_step_index(steps, MSVC_STEP_NAME)))
+        with self.assertRaisesRegex(AssertionError, "MSVC setup must precede oneAPI"):
+            _validate_msvc_step(steps, _step_index(steps, ONEAPI_STEP_NAME), "x64")
+
+    def test_msvc_renovate_bump_must_cover_every_workflow(self) -> None:
+        updated = "b01428496a7be6ea8716337c299ffccc9fadc0c8"
+        workflow = (
+            f"jobs:\n  build:\n    steps:\n      - name: {MSVC_STEP_NAME} (x64)\n"
+            f"        uses: '{MSVC_ACTION}@{updated}'\n"
+        )
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            first, second = directory / "first.yml", directory / "second.yml"
+            first.write_text(workflow, encoding="utf-8")
+            second.write_text(workflow, encoding="utf-8")
+            self.assertEqual(_shared_msvc_pin(directory), updated)
+            second.write_text(workflow.replace(updated, "a" * 40), encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "workflows must share one"):
+                _shared_msvc_pin(directory)
+            wrong_owner = workflow.replace(MSVC_ACTION, "other/setup-msvc-dev")
+            second.write_text(wrong_owner, encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, f"expected action {MSVC_ACTION}"):
+                _shared_msvc_pin(directory)
+
+    def _mixed_msvc_workflows(self, first_pin: str, second_pin: str) -> Path:
+        directory = Path(self.enterContext(TemporaryDirectory()))
+        for name, pin in (("first.yml", first_pin), ("second.yaml", second_pin)):
+            (directory / name).write_text(
+                f"jobs:\n  build:\n    steps:\n      - uses: {MSVC_ACTION}@{pin}\n",
+                encoding="utf-8",
+            )
+        return directory
+
+    def test_mixed_workflows_share_msvc_pin(self) -> None:
+        pin = "a" * 40
+        self.assertEqual(_shared_msvc_pin(self._mixed_msvc_workflows(pin, pin)), pin)
+
+    def test_mixed_workflows_reject_different_msvc_pins(self) -> None:
+        directory = self._mixed_msvc_workflows("a" * 40, "b" * 40)
+        with self.assertRaisesRegex(AssertionError, "workflows must share one"):
+            _shared_msvc_pin(directory)
+
+    def test_mixed_workflows_exceed_combined_file_limit(self) -> None:
+        directory = self._mixed_msvc_workflows("a" * 40, "a" * 40)
+        with (
+            patch.object(sys.modules[__name__], "MAX_WORKFLOW_FILES", 1),
+            self.assertRaisesRegex(AssertionError, "workflow files exceeds limit 1"),
+        ):
+            _shared_msvc_pin(directory)
+
+    def test_duplicate_msvc_action_in_one_job_rejected(self) -> None:
+        step = f"      - uses: {MSVC_ACTION}@{'a' * 40}\n"
+        for name in ("build.yml", "build.yaml"):
+            with self.subTest(name=name), TemporaryDirectory() as tmp:
+                path = Path(tmp) / name
+                path.write_text("jobs:\n  build:\n    steps:\n" + step * 2, encoding="utf-8")
+                with self.assertRaisesRegex(AssertionError, f"multiple {MSVC_ACTION} steps"):
+                    _shared_msvc_pin(path.parent)
+
+    def test_workflow_scan_rejects_overflow(self) -> None:
+        self.assertEqual(_bounded(range(2), 2, "items"), [0, 1])
+        with self.assertRaisesRegex(AssertionError, "items exceeds limit 2"):
+            _bounded(range(3), 2, "items")
+
+    def test_planted_refused_targets_rejected(self) -> None:
+        text = BUILD_CONFIG_PATH.read_text(encoding="utf-8")
+        for planted in ("tgllp", EXPECTED_AOT_REFUSED + ",bmg-g31", ""):
+            with self.subTest(planted=planted), self.assertRaises(AssertionError):
+                _validate_build_config(text.replace(EXPECTED_AOT_REFUSED, planted))
+
+    def test_planted_probe_contract_failures(self) -> None:
+        job = _load_job(WORKFLOW_PATH.read_text(encoding="utf-8"))
+        steps = job["steps"]
+        probe_index = next(i for i, step in enumerate(steps) if step.get("id") == "aot_targets")
+        config_index = next(
+            i for i, step in enumerate(steps) if step.get("name") == "Configure libvmaf (SYCL)"
+        )
+        missing = steps[:probe_index] + steps[probe_index + 1 :]
+        late = list(steps)
+        late[probe_index], late[config_index] = late[config_index], late[probe_index]
+        no_output = [dict(step) for step in steps]
+        no_output[config_index]["run"] = no_output[config_index]["run"].replace(
+            f"-Dsycl_icpx_aot_targets={AOT_OUTPUT}", ""
+        )
+        for planted in (missing, late, no_output):
+            with self.assertRaises(AssertionError):
+                _validate_aot_probe(planted)
+
+    def test_windows_pin_documentation(self) -> None:
+        for path in ("build-config.env", "docs/development/tester-image.md"):
+            _validate_shared_pin_documentation((REPO_ROOT / path).read_text(encoding="utf-8"))
+
+    def test_planted_missing_shared_pin_documentation_rejected(self) -> None:
+        for path in ("build-config.env", "docs/development/tester-image.md"):
+            text = (REPO_ROOT / path).read_text(encoding="utf-8")
+            for marker in (
+                "Windows MSVC+SYCL",
+                "Windows SYCL tester zip",
+                EXPECTED_ONEAPI_VERSION,
+                "ADR-3568",
+            ):
+                with (
+                    self.subTest(path=path, marker=marker),
+                    self.assertRaisesRegex(AssertionError, "shared Windows pin documentation"),
+                ):
+                    _validate_shared_pin_documentation(text.replace(marker, ""))
+
+    def test_shared_windows_pin_values(self) -> None:
+        _validate_build_config(BUILD_CONFIG_PATH.read_text(encoding="utf-8"))
+
+    def test_planted_missing_build_config_pins_rejected(self) -> None:
+        text = BUILD_CONFIG_PATH.read_text(encoding="utf-8")
+        for key in WINDOWS_PINS:
+            with self.subTest(key=key):
+                planted, count = re.subn(rf"(?m)^{key}=[^\n]*\n", "", text)
+                self.assertEqual(count, 1)
+                with self.assertRaisesRegex(AssertionError, f"missing {key} pin"):
+                    _validate_build_config(planted)
+
+    def test_planted_changed_build_config_pins_rejected(self) -> None:
+        text = BUILD_CONFIG_PATH.read_text(encoding="utf-8")
+        for key, changed in {
+            "INTEL_BASEKIT_WINDOWS_SIZE": "1" + EXPECTED_INSTALLER_SIZE[1:],
+            "INTEL_BASEKIT_WINDOWS_SHA256": "0" + EXPECTED_INSTALLER_SHA256[1:],
+            "INTEL_BASEKIT_WINDOWS_URL": EXPECTED_WINDOWS_BASEKIT_URL.replace("728c", "828c", 1),
+        }.items():
+            with self.subTest(key=key):
+                expected = WINDOWS_PINS[key]
+                self.assertEqual(len(expected), len(changed))
+                self.assertEqual(sum(a != b for a, b in zip(expected, changed, strict=True)), 1)
+                planted = text.replace(f'{key}="{expected}"', f'{key}="{changed}"', 1)
+                self.assertNotEqual(planted, text)
+                with self.assertRaisesRegex(AssertionError, f"{key} must be pinned once"):
+                    _validate_build_config(planted)
+
+    def test_planted_second_build_config_pin_rejected(self) -> None:
+        text = BUILD_CONFIG_PATH.read_text(encoding="utf-8")
+        planted = f"{text}\nONEAPI_WINDOWS_VERSION=2025.3.0.372\n"
+        with self.assertRaisesRegex(AssertionError, "ONEAPI_WINDOWS_VERSION must be pinned once"):
+            _validate_build_config(planted)
+
+    def test_planted_second_inline_pin_rejected(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+        steps = workflow["jobs"][WINDOWS_GPU_JOB_ID]["steps"]
+        installer = steps[_step_index(steps, ONEAPI_STEP_NAME)]
+        for key, value in WINDOWS_PINS.items():
+            with (
+                self.subTest(key=key),
+                self.assertRaisesRegex(AssertionError, "must come from build-config.env"),
+            ):
+                installer["env"][key] = value
+                try:
+                    validate_windows_sycl_toolset_contract(yaml.safe_dump(workflow))
+                finally:
+                    del installer["env"][key]
+
+    def test_planted_late_config_loader_rejected(self) -> None:
+        workflow = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+        steps = workflow["jobs"][WINDOWS_GPU_JOB_ID]["steps"]
+        loader = steps.pop(_step_index(steps, "Load build config"))
+        steps.insert(_step_index(steps, ONEAPI_STEP_NAME) + 1, loader)
+        with self.assertRaisesRegex(AssertionError, "must precede oneAPI install"):
+            validate_windows_sycl_toolset_contract(yaml.safe_dump(workflow))
+
+    def test_tester_workflow_uses_the_shared_pin_and_aot_probe(self) -> None:
+        _validate_tester_workflow(TESTER_WORKFLOW_PATH.read_text(encoding="utf-8"))
+
+    def test_tester_recipe_overlays_the_probe_imports(self) -> None:
+        _validate_tester_recipe_imports(TESTER_WORKFLOW_PATH.read_text(encoding="utf-8"))
+
+    def test_planted_missing_probe_parser_overlay_rejected(self) -> None:
+        text = TESTER_WORKFLOW_PATH.read_text(encoding="utf-8")
+        parser = "core/src/sycl/check_aot_image.py"
+        self.assertEqual(text.count(parser), 1)
+        planted = text.replace(parser, "", 1)
+        with self.assertRaisesRegex(
+            AssertionError, rf"overlay lacks probe imports: {re.escape(parser)}"
+        ):
+            _validate_tester_recipe_imports(planted)
+
+    def test_planted_tester_switch_only_in_comment_rejected(self) -> None:
+        text = TESTER_WORKFLOW_PATH.read_text(encoding="utf-8")
+        planted = text.replace(f"'{SKIP_VS2026}',", "").replace(
+            '            "--log-dir=$env:RUNNER_TEMP")',
+            f"            # '{SKIP_VS2026}',\n" '            "--log-dir=$env:RUNNER_TEMP")',
+        )
+        with self.assertRaisesRegex(AssertionError, "tester bootstrapper must pass"):
+            _validate_tester_workflow(planted)
+
+    def test_planted_tester_aot_contract_failures(self) -> None:
+        workflow = yaml.safe_load(TESTER_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        for kind in ("late", "missing_refused_set", "missing_output"):
+            planted = deepcopy(workflow)
+            steps = planted["jobs"]["build"]["steps"]
+            probe = _step_index(steps, "aot_targets", key="id")
+            build = _step_index(steps, TESTER_BUILD_STEP)
+            if kind == "late":
+                steps[probe], steps[build] = steps[build], steps[probe]
+            elif kind == "missing_refused_set":
+                steps[probe]["run"] = steps[probe]["run"].replace(
+                    "%ONEAPI_WINDOWS_AOT_EXPECT_REFUSED%", ""
+                )
+            else:
+                del steps[build]["env"]["VMAFX_SYCL_AOT_TARGETS"]
+            with self.subTest(kind=kind), self.assertRaisesRegex(AssertionError, "tester"):
+                _validate_tester_workflow(yaml.safe_dump(planted))
+
+    def test_contract_registered_in_tooling_suite(self) -> None:
+        from scripts.ci.suite_registry import load_registry, suite_files  # noqa: PLC0415
+
+        rel_path = Path(__file__).resolve().relative_to(REPO_ROOT).as_posix()
+        registry = load_registry(REPO_ROOT)
+        self.assertEqual(suite_files(registry, [rel_path], "tooling"), [rel_path])
+
+    def test_negative_planted_old_2025_3_0_pin_rejected(self) -> None:
+        config_text = BUILD_CONFIG_PATH.read_text(encoding="utf-8")
+        planted = config_text.replace(EXPECTED_WINDOWS_BASEKIT_URL, OLD_WINDOWS_BASEKIT_URL)
+        with self.assertRaises(AssertionError) as ctx:
+            _validate_build_config(planted)
+        self.assertIn("oneAPI >= 2026", str(ctx.exception))
+
+    def test_negative_planted_missing_url_pin_rejected(self) -> None:
+        config_text = BUILD_CONFIG_PATH.read_text(encoding="utf-8")
+        planted = re.sub(r"(?m)^INTEL_BASEKIT_WINDOWS_URL=.*\n", "", config_text)
+        with self.assertRaises(AssertionError) as ctx:
+            _validate_build_config(planted)
+        self.assertIn("missing INTEL_BASEKIT_WINDOWS_URL pin", str(ctx.exception))
+
+    def test_negative_planted_missing_vs2026_integration_skip_rejected(self) -> None:
+        workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+        planted = workflow_text.replace(" -p=NEED_VS2026_INTEGRATION=0", "", 1)
+        self.assertNotEqual(workflow_text, planted)
+        with self.assertRaises(AssertionError) as ctx:
+            validate_windows_sycl_toolset_contract(planted)
+        self.assertIn("-p=NEED_VS2026_INTEGRATION=0", str(ctx.exception))
+
+    def test_negative_planted_stl_mismatch_macro_rejected(self) -> None:
+        workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+        planted = workflow_text.replace(
+            "-Dcpp_std=c++latest",
+            f"-Dcpp_std=c++latest -D{BANNED_STL_MISMATCH_MACRO}",
+            1,
+        )
+        with self.assertRaises(AssertionError) as ctx:
+            validate_windows_sycl_toolset_contract(planted)
+        self.assertIn(BANNED_STL_MISMATCH_MACRO, str(ctx.exception))
+
+    def test_negative_planted_missing_step_if_guard_rejected(self) -> None:
+        workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+        target = f"      - name: {ONEAPI_STEP_NAME}\n" f"        if: {EXPECTED_SYCL_STEP_IF}\n"
+        replacement = f"      - name: {ONEAPI_STEP_NAME}\n"
+        planted = workflow_text.replace(target, replacement, 1)
+        self.assertNotEqual(workflow_text, planted)
+        with self.assertRaises(AssertionError) as ctx:
+            validate_windows_sycl_toolset_contract(planted)
+        self.assertIn("if: guard", str(ctx.exception))
+
+    def test_boundary_pin_present_on_cuda_leg_only_rejected(self) -> None:
+        workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+        target = f"      - name: {ONEAPI_STEP_NAME}\n" f"        if: {EXPECTED_SYCL_STEP_IF}\n"
+        cuda_only_step = (
+            f"      - name: {ONEAPI_STEP_NAME}\n"
+            "        if: steps.leg.outputs.run == 'true' && matrix.backend == 'cuda'\n"
+        )
+        planted_step = workflow_text.replace(target, cuda_only_step, 1)
+        self.assertNotEqual(workflow_text, planted_step)
+        with self.assertRaises(AssertionError) as ctx:
+            validate_windows_sycl_toolset_contract(planted_step)
+        self.assertIn("must run on the SYCL leg", str(ctx.exception))
+
+        cuda_matrix_pin = workflow_text.replace(
+            "          - backend: cuda\n",
+            f"          - backend: cuda\n            INTEL_BASEKIT_WINDOWS_URL: {EXPECTED_WINDOWS_BASEKIT_URL}\n",
+            1,
+        ).replace(EXPECTED_WINDOWS_BASEKIT_URL, OLD_WINDOWS_BASEKIT_URL)
+        with self.assertRaises(AssertionError) as ctx2:
+            validate_windows_sycl_toolset_contract(cuda_matrix_pin)
+        self.assertIn("CUDA matrix row", str(ctx2.exception))
+
+
+if __name__ == "__main__":
+    unittest.main()

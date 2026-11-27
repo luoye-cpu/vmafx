@@ -21,6 +21,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from scripts.ci.tests import symlink_test_support as links
 from scripts.lib.safe_subprocess import CommandFailed, CommandResult
 from scripts.lib.safe_subprocess import run as run_command
 
@@ -36,7 +37,7 @@ assert spec and spec.loader
 gate = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = gate
 spec.loader.exec_module(gate)
-REPO = "VMAFx/vmafx"
+REPO = "vidiko/vmafx"
 SHA = "a" * 40
 
 
@@ -84,12 +85,12 @@ class ScorecardReportTests(unittest.TestCase):
                     gate.assess(data, "master", REPO, SHA)
 
     def test_previous_reviewed_tool_is_refused(self) -> None:
-        # The identity reviewed before the v5.6.0 move; a report from it must
+        # The identity reviewed before the v5.7.0 move; a report from it must
         # not pass once the pins have moved on.
         data = report()
         data["scorecard"] = {
-            "version": "v5.5.0",
-            "commit": "c395761df6afe1a69e476bc60a013a94bcbc153f",
+            "version": "v5.6.0",
+            "commit": "61e84743356275f6ffca23b1b2f2cb945e19eb96",
         }
         with self.assertRaisesRegex(gate.InvalidReport, "differs from reviewed tool"):
             gate.assess(data, "master", REPO, SHA)
@@ -409,7 +410,7 @@ class ComparisonReadTests(GhStubCase):
 
     def test_refuses_bad_input_before_any_request(self) -> None:
         with self.patched():
-            for repository, newer in [("VMAFx/vmafx/x", NEWER), ("VMAFx", NEWER), (REPO, "HEAD")]:
+            for repository, newer in [("vidiko/vmafx/x", NEWER), ("VMAFx", NEWER), (REPO, "HEAD")]:
                 with self.subTest(repository=repository, newer=newer):
                     with self.assertRaises(gate.InvalidReport):
                         gate.fetch_comparison(repository, BASE, newer, None)
@@ -536,6 +537,7 @@ class SourceBindingTests(unittest.TestCase):
             gate.source_identity(self.root, self.sha)
 
     def test_literal_symlink_target_is_not_path_normalized(self) -> None:
+        links.skip_without_symlinks(self.root)
         (self.root / "link").symlink_to("./input")
         self.command("add", "link")
         self.command("commit", "-qm", "literal symlink")
@@ -543,6 +545,7 @@ class SourceBindingTests(unittest.TestCase):
         self.assertEqual(gate.source_identity(self.root, sha)["files"], 3)
 
     def test_metadata_untracked_escaping_and_cyclic_symlink_targets_rejected(self) -> None:
+        links.skip_without_symlinks(self.root)
         for target in [
             ".git/hidden-input",
             "ignored",
@@ -566,6 +569,7 @@ class SourceBindingTests(unittest.TestCase):
                 self.command("commit", "-qm", "remove links")
 
     def test_tracked_directory_and_file_link_chains_remain_supported(self) -> None:
+        links.skip_without_symlinks(self.root)
         (self.root / "nested").mkdir()
         (self.root / "nested/file").write_text("tracked\n")
         (self.root / "dir-link").symlink_to("nested")
@@ -587,6 +591,7 @@ class SourceBindingTests(unittest.TestCase):
         (self.root / "ignored").write_text("unmeasured")
         with self.assertRaises(gate.InvalidReport):
             gate.source_identity(self.root, self.sha)
+        links.skip_without_symlinks(self.root)
         (self.root / "ignored").unlink()
         (self.root / "input").unlink()
         (self.root / "input").symlink_to(".gitignore")

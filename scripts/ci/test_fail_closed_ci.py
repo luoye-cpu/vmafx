@@ -337,6 +337,28 @@ def _tokenise_shell_item(text: str) -> list[str]:
     return list(lexer)
 
 
+def coverage_shard_argv_problem(step: str, index: int) -> str | None:
+    """Report any deviation from the coverage shard runner's expected arguments."""
+    expected = [
+        "timeout",
+        "--kill-after=30s",
+        "30m",
+        "python3",
+        "scripts/ci/run_pytest_shard.py",
+        "--shard",
+        f"{index}/4",
+        "--",
+        "@scripts/ci/pytest-coverage-shard.args",
+    ]
+    try:
+        actual = _tokenise_shell_item(step_script(step))
+    except (AssertionError, ValueError) as exc:
+        return f"coverage shard {index}/4 command cannot be parsed: {exc}"
+    if actual != expected:
+        return f"coverage shard {index}/4 command has argv {actual!r}, expected {expected!r}"
+    return None
+
+
 def _shell_clauses_with_operators(tokens: list[str]) -> list[tuple[list[str], str]]:
     """Pair each non-empty command clause with the operator token that ends it ("" at the end)."""
     pairs: list[tuple[list[str], str]] = []
@@ -2182,6 +2204,7 @@ class FailClosedCIContract(unittest.TestCase):
         self.assertNotRegex(workflow, r"(?m)^    if: false\s*$")
         assertion = workflow_step(workflow, "Assert every Python coverage shard passed")
         self.assertIn('!= "success"', assertion)
+        # The workflow declares four coverage shards.
         for index in range(1, 5):
             with self.subTest(shard=index):
                 pytest_step = workflow_step(workflow, f"Run Python test suite, shard {index}/4")
@@ -2195,6 +2218,8 @@ class FailClosedCIContract(unittest.TestCase):
                     pytest_step, r"(?m)^          PYTHONPATH: \$\{\{ github\.workspace \}\}/python$"
                 )
                 self.assertNotRegex(pytest_step, r"PYTHO\dPATH")
+                problem = coverage_shard_argv_problem(pytest_step, index)
+                self.assertIsNone(problem, problem)
 
         gpu_coverage = workflow_job(workflow, "coverage-gpu")
         self.assertIn("name: Coverage GPU", gpu_coverage)
@@ -2202,6 +2227,58 @@ class FailClosedCIContract(unittest.TestCase):
         self.assertNotIn("continue-on-error", gpu_coverage)
         aggregator = (WORKFLOWS / "required-aggregator.yml").read_text(encoding="utf-8")
         self.assertIn("'Coverage GPU',", aggregator)
+
+    def test_coverage_shard_argv_accepts_workflow_steps(self) -> None:
+        workflow = (WORKFLOWS / "tests-and-quality-gates.yml").read_text(encoding="utf-8")
+        # The workflow declares four coverage shards.
+        for index in range(1, 5):
+            with self.subTest(shard=index):
+                step = workflow_step(workflow, f"Run Python test suite, shard {index}/4")
+                problem = coverage_shard_argv_problem(step, index)
+                self.assertIsNone(problem, problem)
+
+    def _assert_coverage_shard_argv_rejects(self, pytest_args: str) -> None:
+        workflow = (WORKFLOWS / "tests-and-quality-gates.yml").read_text(encoding="utf-8")
+        step = workflow_step(workflow, "Run Python test suite, shard 1/4")
+        run_line = f"          {step_script(step)}"
+        prefix, separator, _ = run_line.rpartition(" -- ")
+        self.assertTrue(separator, run_line)
+        mutated = step.replace(run_line, f"{prefix}{separator}{pytest_args}\n", 1)
+        self.assertIsNotNone(coverage_shard_argv_problem(mutated, 1), mutated)
+
+    def test_coverage_shard_argv_rejects_commented_argfile(self) -> None:
+        self._assert_coverage_shard_argv_rejects(
+            "python/test/ # -- @scripts/ci/pytest-coverage-shard.args"
+        )
+
+    def test_coverage_shard_argv_rejects_renamed_argfile(self) -> None:
+        self._assert_coverage_shard_argv_rejects("@scripts/ci/pytest-coverage-shard.args.bak")
+
+    def test_coverage_shard_argv_rejects_extra_option(self) -> None:
+        self._assert_coverage_shard_argv_rejects("@scripts/ci/pytest-coverage-shard.args -m main")
+
+    def test_coverage_shard_argv_rejects_quoted_inline_deselect(self) -> None:
+        self._assert_coverage_shard_argv_rejects(
+            '@scripts/ci/pytest-coverage-shard.args --"deselect" python/test/command_line_test.py'
+        )
+
+    def test_pytest_coverage_shard_argfile_lists_shared_runner_arguments(self) -> None:
+        """Assert coverage shards read pytest arguments from one argfile, not inline copies."""
+        argfile = ROOT / "scripts" / "ci" / "pytest-coverage-shard.args"
+        lines = argfile.read_text(encoding="utf-8").splitlines()
+        expected = [
+            "python/test/",
+            "-v",
+            "-m",
+            "not slow",
+            "--tb=short",
+            "--timeout=600",
+            "--timeout-method=thread",
+            "--ignore=python/test/resource",
+            "--deselect",
+            "python/test/command_line_test.py::CommandLineTest",
+        ]
+        self.assertEqual(lines, expected)
 
     def test_coverage_shard_assertion_names_why_a_shard_was_skipped(self) -> None:
         """Assert that the coverage workflow identifies why a skipped shard was skipped."""
@@ -2446,14 +2523,24 @@ class InstallStepContract(unittest.TestCase):
 
     def write_installer_stubs(self, stubs: Path, bash: str, checksum: str) -> Path:
         calls = stubs / "calls"
+        check_sources = (
+            'for file in "$APT_SOURCES_DIR"/*microsoft* "$APT_SOURCES_DIR"/*azure*; do\n'
+            '  if [[ -e $file ]]; then echo "refusing refresh: Microsoft/Azure sources remain" >&2; exit 91; fi\n'
+            "done\n"
+            "[[ -f $APT_SOURCES_DIR/oneAPI.list && -f $APT_SOURCES_DIR/ubuntu.sources ]] || exit 92\n"
+        )
         bodies = {
-            "apt-get": "if [[ $1 == install && ! -e $STUBS/archive-attempt ]]; then\n"
+            "apt-get": 'if [[ " $* " == *" update "* ]]; then\n'
+            + check_sources
+            + "fi\n"
+            + "if [[ $1 == install && ! -e $STUBS/archive-attempt ]]; then\n"
             '  : > "$STUBS/archive-attempt"\n  exit "$FAKE_ARCHIVE_INSTALL"\nfi\n',
             "apt-cache": '[[ $2 != "$FAKE_MISSING" ]] || exit 100\nexit "$FAKE_APT_CACHE"\n',
             "wget": '[[ -z $FAKE_SIGNAL ]] || kill -s "$FAKE_SIGNAL" "$PPID"\n'
             'printf "%s" "$FAKE_PAYLOAD" > "$2"\nexit "$FAKE_WGET"\n',
-            "bash": "exit 0\n",
-            "rm": "exit 0\n",
+            "bash": "apt-get --error-on=any -o Acquire::Retries=3 update -q\n",
+            "sudo": 'exec "$@"\n',
+            "rm": f'exec {shlex.quote(shutil.which("rm") or "/bin/rm")} "$@"\n',
             "sha256sum": f'exec {shlex.quote(checksum)} "$@"\n',
         }
         for tool, body in bodies.items():
@@ -2465,7 +2552,20 @@ class InstallStepContract(unittest.TestCase):
             stub.chmod(0o755)
         (stubs / "mktemp").write_text(f'#!{bash}\necho "$STUBS/installer"\n', encoding="utf-8")
         (stubs / "mktemp").chmod(0o755)
+        (stubs / "dirname").symlink_to(shutil.which("dirname") or "/usr/bin/dirname")
+        shutil.copy(ROOT / "scripts/ci/apt-install-cached.sh", stubs)
         return calls
+
+    def write_source_stubs(self, stubs: Path, source_files: bool) -> Path:
+        """Create the controlled APT source files."""
+        sources = stubs / "sources"
+        sources.mkdir()
+        for name in ("oneAPI.list", "ubuntu.sources"):
+            (sources / name).touch()
+        if source_files:
+            for name in ("microsoft-prod.list", "azure-cli.sources"):
+                (sources / name).touch()
+        return sources
 
     def run_installer(
         self,
@@ -2478,6 +2578,7 @@ class InstallStepContract(unittest.TestCase):
         source: str | None = None,
         corrupt: bool = False,
         signal: str = "",
+        source_files: bool = True,
     ) -> tuple[int, str, list[str]]:
         """Execute only controlled stub tools and the real checksum utility."""
         bash = shutil.which("bash")
@@ -2494,7 +2595,10 @@ class InstallStepContract(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             stubs = Path(directory)
             calls = self.write_installer_stubs(stubs, bash, checksum)
-            argv = [bash, "-c", script, "install-llvm.sh", major]
+            sources = self.write_source_stubs(stubs, source_files)
+            installer = stubs / "install-llvm.sh"
+            installer.write_text(script, encoding="utf-8", newline="\n")
+            argv = [bash, str(installer), major]
             if source is not None:
                 argv.append(source)
             # Tracked installer, isolated PATH, controlled stubs; no network or package changes.
@@ -2504,6 +2608,7 @@ class InstallStepContract(unittest.TestCase):
                     "PATH": directory,
                     "CALLS": str(calls),
                     "STUBS": directory,
+                    "APT_SOURCES_DIR": str(sources),
                     "FAKE_APT_CACHE": str(apt_cache),
                     "FAKE_WGET": str(wget),
                     "FAKE_MISSING": missing,
@@ -2522,6 +2627,17 @@ class InstallStepContract(unittest.TestCase):
 
     def installer(self) -> str:
         return (ROOT / "scripts/ci/install-llvm.sh").read_text(encoding="utf-8")
+
+    def test_runner_sources_removed_before_refresh_in_both_modes(self) -> None:
+        for source in ("--source=archive-first", "--source=apt.llvm.org"):
+            for source_files in (True, False):
+                with self.subTest(source=source, source_files=source_files):
+                    status, output, calls = self.run_installer(
+                        self.installer(), source=source, source_files=source_files
+                    )
+                    self.assertEqual(status, 0, output)
+                    self.assertTrue(any(call.startswith("rm -f ") for call in calls))
+                    self.assertIn("apt-get --error-on=any -o Acquire::Retries=3 update -q", calls)
 
     def test_distribution_archive_needs_no_llvm_org(self) -> None:
         status, stdout, calls = self.run_installer(self.installer())
