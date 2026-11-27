@@ -48,7 +48,9 @@ def tarball(
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    (directory / "SHA256SUMS").write_text(f"{digest}  {path.name}\n")
+    # LF bytes on every platform: the sha256sums check matches the member name
+    # field, which a Windows text-mode write would suffix with CR (issue #3675).
+    (directory / "SHA256SUMS").write_bytes(f"{digest}  {path.name}\n".encode())
     return path, digest
 
 

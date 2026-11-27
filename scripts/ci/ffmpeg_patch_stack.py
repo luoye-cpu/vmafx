@@ -848,7 +848,9 @@ def keep_patched_tree(checkout: Path, destination: Path) -> None:
 def settle_updates(repo: Path, updates: dict[Path, bytes], refresh: bool, receipt: Receipt) -> None:
     """Write the rendered patch and configuration mirrors, or fail on drift in check mode."""
     changed = [
-        str(path.relative_to(repo))
+        # POSIX separators: the receipt and its consumers are platform-stable
+        # (issue #3675 — a Windows run named `ffmpeg-patches\README.md`).
+        path.relative_to(repo).as_posix()
         for path, data in updates.items()
         if read_repo_text_bytes(path) != data.replace(b"\r\n", b"\n")
     ]

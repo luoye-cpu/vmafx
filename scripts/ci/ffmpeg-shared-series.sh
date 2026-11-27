@@ -143,12 +143,28 @@ load_config() {
 }
 
 sha256_of() { # sha256_of FILE
+  local digest
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
+    digest="$(sha256sum "$1" | cut -d' ' -f1)"
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | cut -d' ' -f1
+    digest="$(shasum -a 256 "$1" | cut -d' ' -f1)"
   else
     die 2 "sha256sum or shasum is required"
+  fi
+  # coreutils prefixes the digest with a backslash when the file name it
+  # echoes carries one (a Windows-style cache path); a digest is plain hex,
+  # so the escape marker is dropped and both path styles hash the same.
+  printf '%s\n' "${digest#\\}"
+}
+
+# Windows environments hand down backslash paths (XDG_CACHE_HOME, TMPDIR);
+# MSYS tools accept them but GNU tar reads a leading "C:" as a remote host.
+# cygpath exists exactly in the environments where this matters.
+posix_path() { # posix_path PATH
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -u "$1"
+  else
+    printf '%s\n' "$1"
   fi
 }
 
@@ -351,8 +367,10 @@ fetch_series() {
     cache="$cache/${FFMPEG_FIX_SERIES_TAG}-${FFMPEG_FIX_SERIES_SHA256:0:12}"
     mkdir -p "$cache" || die 2 "cannot create $cache"
   fi
+  cache="$(posix_path "$cache")"
   work_dir="$(mktemp -d "$cache/work.XXXXXX")"
   work="$work_dir"
+
   local tarball="$cache/$tarball_name" source_note="cache"
   if [ ! -f "$tarball" ] || [ "$(sha256_of "$tarball")" != "$FFMPEG_FIX_SERIES_SHA256" ]; then
     download "$tarball_url" "$work/$tarball_name"

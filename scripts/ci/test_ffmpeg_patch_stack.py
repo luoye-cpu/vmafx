@@ -23,6 +23,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.ci import ffmpeg_shared_series_fixture as shared_series
+from scripts.lib.safe_subprocess import CommandResult
 from scripts.lib.safe_subprocess import run as run_command
 from scripts.lib.scratch_program import remove_file, remove_tree, walk_tree
 from scripts.lib.test_scratch_program import windows_rmtree
@@ -323,6 +324,101 @@ class SourceCacheReset(unittest.TestCase):
                 self.replay.run_git.assert_not_called()
 
 
+class UpstreamBlobLineEndings(unittest.TestCase):
+    """`git am --3way` matches patch context against the replay blobs (issue #3675).
+
+    mailsplit strips the CR from every CRLF line of a patch before the apply
+    machinery sees it. Against blobs that themselves carry CRLF the stripped
+    context lines match nothing and the replay fails with "patch does not
+    apply"; against LF blobs the same patch applies. The fixture upstream must
+    therefore store LF blobs on every platform (RealReplay.write_lf), and no
+    core.autocrlf setting can help either side: the replay and the fixture Git
+    environments strip every configuration source.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def git(self, path: Path, *args: str, check: bool = True) -> CommandResult:
+        """Fixture Git with isolated configuration; text capture strips CR."""
+        environment = {
+            key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+        }
+        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        git = shutil.which("git")
+        self.assertIsNotNone(git)
+        assert git is not None
+        return run_command(
+            [
+                git,
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@localhost",
+                "-C",
+                str(path),
+                *args,
+            ],
+            allowed_executables=(git,),
+            capture_output=True,
+            env=environment,
+            check=check,
+            text=True,
+            timeout_seconds=60,
+        )
+
+    def replay_am(self, blob: bytes) -> tuple[bool, str]:
+        """Apply a CR-free patch to an upstream whose sample blob is *blob*."""
+        scenario = self.root / ("lf" if b"\r" not in blob else "crlf")
+        upstream = scenario / "upstream"
+        upstream.mkdir(parents=True)
+        self.git(upstream, "init", "-q")
+        (upstream / "sample").write_bytes(blob)
+        self.git(upstream, "add", "sample")
+        self.git(upstream, "commit", "-qm", "base")
+        self.git(upstream, "tag", "n9.0.1")
+        (upstream / "sample").write_bytes(blob.replace(b"before", b"patched"))
+        self.git(upstream, "commit", "-qam", "add integration")
+        # mailsplit hands the apply machinery CR-free lines; the patch file on
+        # disk mirrors that with LF bytes whatever the platform writes.
+        patch = self.git(upstream, "format-patch", "-1", "--stdout").stdout
+        patch_file = scenario / "0001-integration.patch"
+        patch_file.write_bytes(patch.replace("\r\n", "\n").encode("utf-8"))
+        base = self.git(upstream, "rev-parse", "n9.0.1^{commit}").stdout.strip()
+        checkout = scenario / "replay"
+        checkout.mkdir()
+        self.git(checkout, "init", "-q")
+        self.git(
+            checkout,
+            "fetch",
+            "--no-tags",
+            "--depth=1",
+            "--end-of-options",
+            str(upstream),
+            "refs/tags/n9.0.1",
+        )
+        rev = self.git(checkout, "rev-parse", "FETCH_HEAD^{commit}").stdout.strip()
+        self.assertEqual(rev, base)
+        self.git(checkout, "switch", "--quiet", "--detach", rev)
+        result = self.git(checkout, "am", "--3way", str(patch_file), check=False)
+        self.assertIsNotNone(result.stderr)
+        return result.returncode == 0, result.stderr
+
+    def test_crlf_blobs_conflict_and_lf_blobs_apply(self) -> None:
+        """The Windows replay failure is the CRLF fixture blob, not the patch file."""
+        applied, conflict = self.replay_am(b"before\r\n")
+        self.assertFalse(applied)
+        self.assertIn("patch does not apply", conflict)
+        applied, _ = self.replay_am(b"before\n")
+        self.assertTrue(applied)
+
+
 class RealReplay(unittest.TestCase):
     def git(self, path: Path, *args: str) -> str:
         # Fixed Git executable and fixture-owned arguments; no shell.
@@ -359,6 +455,50 @@ class RealReplay(unittest.TestCase):
         assert isinstance(result.stdout, str)
         return result.stdout
 
+    def write_lf(self, path: Path, content: str) -> None:
+        """Write fixture text with LF endings on every platform (issue #3675).
+
+        The fixture upstream stands in for the real FFmpeg remote, whose blobs
+        are LF. A Windows text-mode write would store CRLF in the fixture
+        blobs, and `git am --3way` then conflicts: mailsplit strips the CR from
+        the patch's context lines, which no longer match the CRLF bytes the
+        checkout records in its index ("patch does not apply").
+        """
+        path.write_text(content, newline="\n")
+
+    def git_bytes(self, path: Path, *args: str) -> bytes:
+        """Run fixture Git and capture raw bytes (text capture would strip CR)."""
+        environment = {
+            key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+        }
+        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        git = shutil.which("git")
+        self.assertIsNotNone(git)
+        assert git is not None
+        result = run_command(
+            [
+                git,
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@localhost",
+                "-C",
+                str(path),
+                *args,
+            ],
+            allowed_executables=(git,),
+            capture_output=True,
+            env=environment,
+            check=True,
+            timeout_seconds=60,
+        )
+        assert isinstance(result.stdout, bytes)
+        return result.stdout
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
@@ -366,11 +506,11 @@ class RealReplay(unittest.TestCase):
         self.upstream = self.root / "upstream"
         self.upstream.mkdir()
         self.git(self.upstream, "init", "-q")
-        (self.upstream / "sample").write_text("before\n")
+        self.write_lf(self.upstream / "sample", "before\n")
         self.git(self.upstream, "add", "sample")
         self.git(self.upstream, "commit", "-qm", "base")
         self.git(self.upstream, "tag", "n9.0.1")
-        (self.upstream / "sample").write_text("patched\n")
+        self.write_lf(self.upstream / "sample", "patched\n")
         self.git(self.upstream, "commit", "-qam", "add integration")
         series_patch = self.git(self.upstream, "format-patch", "-1", "--stdout")
         self.repo = self.root / "repo"
@@ -378,7 +518,8 @@ class RealReplay(unittest.TestCase):
         # The refresh lock and journal live in the checkout's Git directory.
         self.git(self.repo, "init", "-q")
         self.patch = self.repo / "ffmpeg-patches/0001-integration.patch"
-        self.patch.write_text(series_patch)
+        # The script's canonical patch files are LF bytes (issue #3675).
+        self.write_lf(self.patch, series_patch)
         (self.repo / "ffmpeg-patches/series.txt").write_text(
             "# Full stack\n0001-integration.patch\n"
         )
@@ -409,6 +550,14 @@ class RealReplay(unittest.TestCase):
 
     def cache_repos(self) -> list[Path]:
         return sorted(self.cache_home.glob("vmafx/ffmpeg-patch-stack/*/source.git"))
+
+    def test_fixture_upstream_blobs_and_patch_are_lf(self) -> None:
+        """The fixture must store LF blobs on Windows too, or `git am` conflicts (issue #3675)."""
+        self.assertNotIn(
+            b"\r", self.git_bytes(self.upstream, "cat-file", "blob", f"{self.pin}:sample")
+        )
+        self.assertNotIn(b"\r", self.git_bytes(self.upstream, "cat-file", "blob", "HEAD:sample"))
+        self.assertNotIn(b"\r", self.patch.read_bytes())
 
     def contents(self) -> dict[str, bytes]:
         return {
@@ -496,7 +645,7 @@ class RealReplay(unittest.TestCase):
 
     def test_latest_release_rebases_and_updates_all_mirrors(self) -> None:
         self.git(self.upstream, "switch", "--detach", "n9.0.1")
-        (self.upstream / "other").write_text("new release\n")
+        self.write_lf(self.upstream / "other", "new release\n")
         self.git(self.upstream, "add", "other")
         self.git(self.upstream, "commit", "-qm", "release")
         self.git(self.upstream, "tag", "n9.1")
@@ -515,7 +664,7 @@ class RealReplay(unittest.TestCase):
     def tag_conflicting_release(self) -> None:
         """Create a stable release that changes the same line as the integration patch."""
         self.git(self.upstream, "switch", "--detach", "n9.0.1")
-        (self.upstream / "sample").write_text("incompatible upstream\n")
+        self.write_lf(self.upstream / "sample", "incompatible upstream\n")
         self.git(self.upstream, "commit", "-qam", "release")
         self.git(self.upstream, "tag", "n9.1")
 
@@ -1147,7 +1296,7 @@ class SharedSeriesReplay(RealReplay):
     def setUp(self) -> None:
         super().setUp()
         self.git(self.upstream, "switch", "-q", "--detach", "n9.0.1")
-        (self.upstream / "shared-fix").write_text("fixed upstream of the series\n")
+        self.write_lf(self.upstream / "shared-fix", "fixed upstream of the series\n")
         self.git(self.upstream, "add", "shared-fix")
         self.git(self.upstream, "commit", "-qm", "shared fix")
         self.shared_patch = self.git(self.upstream, "format-patch", "-1", "--stdout")
@@ -1163,8 +1312,11 @@ class SharedSeriesReplay(RealReplay):
             {shared_series.PATCH_NAME: self.shared_patch},
             extra_members=members,
         )
-        (self.repo / "build-config.env").write_text(
-            self.base_config + shared_series.pins(archive, digest)
+        # ffmpeg-shared-series.sh sources this file, so a Windows text-mode
+        # write would put a CR inside every value and the pin checks would
+        # refuse it (issue #3675).
+        self.write_lf(
+            self.repo / "build-config.env", self.base_config + shared_series.pins(archive, digest)
         )
 
     def assert_refused(self, error: type[Exception], needle: str) -> None:
@@ -1248,7 +1400,7 @@ class SharedSeriesReplay(RealReplay):
 
     def test_new_ffmpeg_release_waits_for_a_series_release(self) -> None:
         self.git(self.upstream, "switch", "-q", "--detach", "n9.0.1")
-        (self.upstream / "other").write_text("new release\n")
+        self.write_lf(self.upstream / "other", "new release\n")
         self.git(self.upstream, "add", "other")
         self.git(self.upstream, "commit", "-qm", "release")
         self.git(self.upstream, "tag", "n9.1")
