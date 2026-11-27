@@ -312,7 +312,7 @@ def _github_yaml_files(
         directory = directories.pop()
         try:
             scan = scandir(directory)  # type: ignore[operator]
-        except FileNotFoundError:
+        except (FileNotFoundError, NotADirectoryError):
             continue
         try:
             for entry in scan:
