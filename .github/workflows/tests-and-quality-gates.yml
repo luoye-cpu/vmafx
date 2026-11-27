@@ -604,7 +604,10 @@ jobs:
     # required-aggregator
     name: Tooling Tests
     runs-on: ubuntu-26.04
-    timeout-minutes: 35
+    # docs/development/ci.md (ADR-3367) adds the step caps (20 min) to 1.25 x the
+    # longest healthy run of the uncapped steps (34.3 min in run 45516254253).
+    # 20 + 1.25 x 34.3 = 62.9 min, rounded up to 63. Pytest still limits each test to 300 s.
+    timeout-minutes: 63
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -1021,7 +1024,7 @@ jobs:
         if: steps.impact.outputs.golden_harness == 'true'
         timeout-minutes: 35
         run: |
-          bash scripts/ci/apt-install-cached.sh install .github/apt/coverage.txt
+          bash scripts/ci/apt-install-cached.sh install .github/apt/coverage.txt --no-install-recommends
           # ADR-0692 (design notes)
           sudo pip3 install --break-system-packages --ignore-installed --quiet --require-hashes \
             -r requirements/locks/build.txt

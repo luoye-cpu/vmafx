@@ -143,7 +143,7 @@ $(NINJA): $(VENV_PIP)
 # Provision the lint / format toolchain into the project venv. Versions are
 # kept identical to .pre-commit-config.yaml so the local gate and the CI hooks
 # cannot disagree about what counts as a violation.
-RUFF_VERSION  := 0.17.3
+RUFF_VERSION  := 0.17.6
 BLACK_VERSION := 26.10.1
 
 .PHONY: mini-retrain mini-retrain-test
@@ -627,6 +627,7 @@ lint-sh: ffmpeg-input-contract
 	@python3 scripts/ci/check-cuda-pin-lockstep.py
 	@python3 scripts/githooks/tests/test_install.py
 	@python3 scripts/githooks/tests/test_install_hooks_env.py
+	@bash scripts/ci/test-check-toolchain-claims.sh
 
 # Markdown lint (ADR-0866). Default scope is the touched-file delta vs
 # origin/master so the ~6.2k pre-existing-warning tail (ADR-0864) doesn't
