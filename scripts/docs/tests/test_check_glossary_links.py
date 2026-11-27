@@ -180,6 +180,24 @@ def test_unused_reference_definition_does_not_count(
     assert main([]) == EXIT_SUCCESS
 
 
+def test_bare_range_needs_the_anchor_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bare 'range' use needs #range, not just the glossary-file link."""
+    page = _make_tree(
+        tmp_path,
+        monkeypatch,
+        "metrics/widget.md",
+        "# Widget\n\nSignal range matters. See the " "[glossary](../reference/glossary.md).\n",
+    )
+    assert main([]) == EXIT_FAILURE
+
+    page.write_text(
+        "# Widget\n\nSignal [range](../reference/glossary.md#range) matters. "
+        "See the [glossary](../reference/glossary.md).\n",
+        encoding="utf-8",
+    )
+    assert main([]) == EXIT_SUCCESS
+
+
 def test_subdirectory_page_needs_two_levels(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -73,6 +73,7 @@ TERMS = {
     "BT.2020": "bt709-bt2020",
     "limited range": "range",
     "full range": "range",
+    "Range": "range",
     "Frame alignment": "frame-alignment",
     "Scaling": "scaling",
     "Interlacing": "interlacing",
