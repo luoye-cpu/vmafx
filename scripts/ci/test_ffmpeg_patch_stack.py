@@ -13,16 +13,19 @@ import shutil
 import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.ci import ffmpeg_shared_series_fixture as shared_series
 from scripts.lib.safe_subprocess import run as run_command
+from scripts.lib.scratch_program import remove_file, remove_tree, walk_tree
+from scripts.lib.test_scratch_program import windows_rmtree
 
 SPEC = importlib.util.spec_from_file_location(
     "patch_stack", Path(__file__).with_name("ffmpeg_patch_stack.py")
@@ -37,6 +40,70 @@ MAINTENANCE_SETTINGS = (
     "maintenance.auto=false",
     "maintenance.autoDetach=false",
 )
+_MAX_FIXTURE_ENTRIES = 128
+
+
+def remove_fixture_objects(objects: Path) -> None:
+    for entry in walk_tree(objects, _MAX_FIXTURE_ENTRIES):
+        if entry.is_symlink() or entry.is_junction() or entry.is_file(follow_symlinks=False):
+            remove_file(Path(entry.path))
+
+
+class FixtureObjectRemoval(unittest.TestCase):
+    def setUp(self) -> None:
+        self.objects = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.pack = self.objects / "pack"
+        self.pack.mkdir()
+        for index in range(_MAX_FIXTURE_ENTRIES - 1):
+            (self.pack / str(index)).touch()
+
+    def test_removes_files_at_entry_limit(self) -> None:
+        remove_fixture_objects(self.objects)
+        self.assertIsNone(next(self.pack.iterdir(), None))
+
+    def test_linked_objects_root_preserves_target(self) -> None:
+        link = Path(self.enterContext(tempfile.TemporaryDirectory())) / "objects"
+        try:
+            link.symlink_to(self.objects, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"cannot create a directory symlink: {error}")
+        with self.assertRaisesRegex(OSError, "refusing to walk linked root"):
+            remove_fixture_objects(link)
+        self.assertTrue((self.pack / "0").is_file())
+
+    def test_rejects_one_entry_over_limit(self) -> None:
+        (self.objects / "extra").touch()
+        with (
+            patch(f"{__name__}.remove_file") as remove,
+            self.assertRaisesRegex(OSError, rf"exceeds {_MAX_FIXTURE_ENTRIES} entries$"),
+        ):
+            remove_fixture_objects(self.objects)
+        remove.assert_not_called()
+
+    def test_bounds_scandir_consumption(self) -> None:
+        pulled = 0
+
+        def entries() -> Iterator[Mock]:
+            nonlocal pulled
+            for index in range(_MAX_FIXTURE_ENTRIES + 50):
+                entry = Mock(spec=os.DirEntry)
+                entry.name = str(index)
+                entry.path = str(self.objects / entry.name)
+                entry.is_symlink.return_value = False
+                entry.is_junction.return_value = False
+                entry.is_dir.return_value = False
+                entry.is_file.return_value = True
+                pulled += 1
+                yield entry
+
+        with (
+            patch.object(os, "scandir", side_effect=lambda path: nullcontext(entries())),
+            patch(f"{__name__}.remove_file") as remove,
+            self.assertRaisesRegex(OSError, rf"exceeds {_MAX_FIXTURE_ENTRIES} entries$"),
+        ):
+            remove_fixture_objects(self.objects)
+        self.assertLessEqual(pulled, _MAX_FIXTURE_ENTRIES + 1)
+        remove.assert_not_called()
 
 
 class ReleaseSelection(unittest.TestCase):
@@ -49,6 +116,65 @@ class ReleaseSelection(unittest.TestCase):
         for tag in ("master", "n9.1-dev", "n9.1rc1", "n9.1-rc1", "1234567", "n9.1.0^{}"):
             with self.subTest(tag=tag), self.assertRaises(ValueError):
                 STACK.stable_version(tag)
+
+
+class LiteralReplacements(unittest.TestCase):
+    def test_mirror_preserves_windows_remote(self) -> None:
+        remote = r"C:\Users\runner\1\ffmpeg.git"
+        original = "# build\nARG FFMPEG_TAG=n9.0\nARG FFMPEG_REMOTE=old.git\nFROM build\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            for name in STACK.MIRRORS:
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(original.encode())
+            expected = original.replace("old.git", remote).encode()
+            self.assertEqual(
+                STACK.mirrors(repo, remote, "n9.0"),
+                {repo / name: expected for name in STACK.MIRRORS},
+            )
+
+    def test_pinned_config_preserves_tag(self) -> None:
+        tag = r"n9.0\Users\1"
+        original = '# pins\nFFMPEG_TAG="old-tag"\nFFMPEG_COMMIT="abc"\n# end\n'
+        self.assertEqual(
+            STACK.pinned_config(original, tag, "abc"), original.replace("old-tag", tag)
+        )
+
+    def test_pinned_config_preserves_commit(self) -> None:
+        commit = r"abc\1\Users"
+        original = '# pins\nFFMPEG_TAG="n9.0"\nFFMPEG_COMMIT="old-commit"\n# end\n'
+        self.assertEqual(
+            STACK.pinned_config(original, "n9.0", commit), original.replace("old-commit", commit)
+        )
+
+    def test_readme_claim_preserves_shared_series(self) -> None:
+        series = r"fixes\Users\1"
+        receipt = {
+            "tag": "n9.0",
+            "patch_count": 2,
+            "shared_series": series,
+            "shared_patch_count": 1,
+            "upstream_commit": "a" * 40,
+            "patched_tree": "b" * 40,
+        }
+        original = (
+            "# Replay\n\n"
+            "> `n9.0` checkout (cumulative `git am --3way`), NOT a per-patch\n"
+            "> `git apply --check`. The latter rejects `0002+` because they\n"
+            "> reference cumulative-state hunks that don't exist in pristine `n9.0`.\n"
+            "> The 1 patches of the shared fix series `old-series` and the 2\n"
+            "> patches here replay cumulatively on upstream commit\n"
+            f"> `{receipt['upstream_commit']}`; the resulting tree is\n"
+            f"> `{receipt['patched_tree']}`\n\nEnd.\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            path = repo / "ffmpeg-patches/README.md"
+            path.parent.mkdir()
+            path.write_bytes(original.encode())
+            expected = original.replace("old-series", series).encode()
+            self.assertEqual(STACK.readme_claim(repo, receipt), {path: expected})
 
 
 class BashInputsLineEndings(unittest.TestCase):
@@ -118,6 +244,83 @@ class FailingCheckoutCleanup(tempfile.TemporaryDirectory[str]):
         """Raise the error observed when a background writer races the removal."""
         super().cleanup()
         raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), self.name)
+
+
+class SourceCacheReset(unittest.TestCase):
+    def setUp(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.replay = Mock(spec=STACK.Replay)
+        self.cache = STACK.SourceCache(self.replay, root, "local-fixture")
+
+    def test_reset_creates_a_missing_cache(self) -> None:
+        """Positive: first use creates the parent and initializes source.git."""
+        self.replay.run_git.side_effect = lambda *args: self.cache.repo.mkdir()
+        self.assertFalse(self.cache.repo.exists())
+        self.cache.reset()
+        self.replay.run_git.assert_called_once_with(
+            ["-C", str(self.cache.repo.parent)], "init", "--quiet", "--bare", "source.git"
+        )
+        self.assertTrue(self.cache.repo.is_dir())
+
+    def test_reset_propagates_child_refusal_after_failed_retry(self) -> None:
+        self.cache.repo.mkdir(parents=True)
+        child = self.cache.repo / "object"
+        child.touch()
+        child.chmod(0o444)
+        refused = PermissionError(errno.EACCES, "unlink refused", str(child))
+        with (
+            windows_rmtree(),
+            patch("scripts.lib.scratch_program._RETRY_READ_ONLY", True),
+            patch("os.unlink", side_effect=refused),
+            patch(
+                "scripts.lib.scratch_program._chmod",
+                side_effect=FileNotFoundError("missing object"),
+            ),
+            self.assertRaises(PermissionError) as exc,
+        ):
+            self.cache.reset()
+        self.assertIs(exc.exception, refused)
+        self.assertEqual(exc.exception.filename, str(child))
+        self.assertIn("missing object", refused.__notes__[0])
+        self.replay.run_git.assert_not_called()
+
+    def test_reset_rejects_missing_root_error_for_existing_cache(self) -> None:
+        self.cache.repo.mkdir(parents=True)
+        missing = FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(self.cache.repo))
+        with (
+            patch.object(STACK, "remove_tree", side_effect=missing),
+            self.assertRaises(FileNotFoundError) as exc,
+        ):
+            self.cache.reset()
+        self.assertIs(exc.exception, missing)
+        self.replay.run_git.assert_not_called()
+
+    def test_reset_propagates_missing_child_when_root_is_absent(self) -> None:
+        self.assertFalse(self.cache.repo.exists())
+        child = self.cache.repo / "obj"
+        missing = FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(child))
+        with (
+            patch.object(STACK, "remove_tree", side_effect=missing),
+            self.assertRaises(FileNotFoundError) as exc,
+        ):
+            self.cache.reset()
+        self.assertIs(exc.exception, missing)
+        self.replay.run_git.assert_not_called()
+
+    def test_reset_propagates_removal_errors_before_init(self) -> None:
+        """Negative: failed removal of an existing cache stops initialization."""
+        self.cache.repo.mkdir(parents=True)
+        for error in (
+            OSError(errno.EBUSY, os.strerror(errno.EBUSY), str(self.cache.repo)),
+            FileNotFoundError(
+                errno.ENOENT, os.strerror(errno.ENOENT), str(self.cache.repo / "obj")
+            ),
+        ):
+            with self.subTest(error=error), patch.object(STACK, "remove_tree", side_effect=error):
+                with self.assertRaises(OSError) as exc:
+                    self.cache.reset()
+                self.assertIs(exc.exception, error)
+                self.replay.run_git.assert_not_called()
 
 
 class RealReplay(unittest.TestCase):
@@ -396,10 +599,10 @@ class RealReplay(unittest.TestCase):
         """Recover a failure receipt when report deletion already removed the old one."""
 
         def fail_report_cleanup(path: Path, *, ignore_errors: bool = False) -> None:
-            if path.name.startswith("vmafx-ffmpeg-report-"):
-                (path / "receipt.json").unlink()
-                raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), str(path))
-            shutil.rmtree(path, ignore_errors=ignore_errors)
+            if not path.name.startswith("vmafx-ffmpeg-report-"):
+                self.fail(f"unexpected cleanup path: {path}")
+            (path / "receipt.json").unlink()
+            raise OSError(errno.ENOTEMPTY, os.strerror(errno.ENOTEMPTY), str(path))
 
         with (
             patch.object(STACK.tempfile, "tempdir", str(self.root)),
@@ -480,19 +683,17 @@ class RealReplay(unittest.TestCase):
     def test_empty_or_corrupt_cache_is_refetched(self) -> None:
         STACK.maintain(self.repo, self.output, True, False)
         (cache,) = self.cache_repos()
-        shutil.rmtree(cache)
+        remove_tree(cache)
         cache.mkdir()  # empty directory
         self.assertEqual(
             STACK.maintain(self.repo, self.output, False, False)["source"], "fetched into cache"
         )
         (cache / "HEAD").write_text("garbage\n")  # corrupt metadata
-        shutil.rmtree(cache / "objects")
+        remove_tree(cache / "objects")
         self.assertEqual(
             STACK.maintain(self.repo, self.output, False, False)["source"], "fetched into cache"
         )
-        for pack in (cache / "objects").rglob("*"):  # ref kept, objects gone
-            if pack.is_file():
-                pack.unlink()
+        remove_fixture_objects(cache / "objects")  # ref kept, objects gone
         result = STACK.maintain(self.repo, self.output, False, False)
         self.assertIn("fetched into cache", result["source"])
         self.assertEqual(
@@ -723,7 +924,7 @@ class RealReplay(unittest.TestCase):
             STACK.maintain(plain, self.root / "plain-report", True, False)
 
     def test_refresh_outside_a_git_checkout_fails(self) -> None:
-        shutil.rmtree(self.repo / ".git")
+        remove_tree(self.repo / ".git")
         with self.assertRaisesRegex(RuntimeError, "not a Git checkout"):
             STACK.maintain(self.repo, self.output, True, False)
 

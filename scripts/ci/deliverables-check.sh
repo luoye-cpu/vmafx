@@ -36,9 +36,8 @@
 #   make pr-check PR=260
 #       Wrapper target — see Makefile.
 #
-# Exits 0 on PASS, 1 on any deliverable miss or file-reference
-# mismatch. Prints `::error` lines in GitHub Actions format so the
-# workflow output stays unchanged when run from CI.
+# Exits 0 on PASS, 1 on a claim or deliverables violation, and 2 on a
+# usage error. Prints `::error` lines in GitHub Actions format.
 
 set -euo pipefail
 
@@ -66,7 +65,8 @@ else
   # scripts/ci/pr-body-input.sh — reading a closed fd 0 deadlocks.
   pr_body_classify_stdin
   if [ "${PR_BODY_STDIN_KIND}" = "stream" ]; then
-    PR_BODY="$(pr_body_read_stdin)"
+    PR_BODY="$(pr_body_read_stdin && printf .)"
+    PR_BODY="${PR_BODY%.}"
     pr_body_close_stdin
     body_src="stdin"
   else
@@ -94,6 +94,24 @@ if [ -z "$(printf '%s' "${PR_BODY}" | tr -d '[:space:]')" ]; then
     echo "  unset PR_BODY — a set variable wins over stdin." >&2
   fi
   exit 1
+fi
+
+# ---------- 1a. Toolchain claims ----------
+#
+# A claim that this host lacks a toolchain, or that code was not compiled
+# here, must carry scripts/dev/toolchain-probe.sh output. Check claims after
+# validating the body and before the deliverables sections that can exit early,
+# including the render-only track.
+toolchain_check_script="${_deliverables_dir}/check-toolchain-claims.sh"
+if [ ! -f "${toolchain_check_script}" ]; then
+  echo "::error title=Toolchain claims check missing::${toolchain_check_script} not found" >&2
+  exit 1
+fi
+toolchain_check_rc=0
+PR_BODY="${PR_BODY}" bash "${toolchain_check_script}" || toolchain_check_rc=$?
+if [ "${toolchain_check_rc}" -ne 0 ]; then
+  echo "deliverables-check: toolchain claims check failed; see scripts/dev/toolchain-probe.sh." >&2
+  exit "${toolchain_check_rc}"
 fi
 
 # Strip markdown emphasis/code characters (backticks, asterisks,
