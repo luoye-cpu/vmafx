@@ -1,0 +1,1 @@
+| [ADR-3610](3610-queue-fork-admission-reviewed-head.md) | Admit fork pull requests to the merge queue at the reviewed head through `merge_train_guard.py admit-fork` and `queue-audit` | Accepted | ci, fork-local |

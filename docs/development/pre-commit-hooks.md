@@ -269,8 +269,8 @@ therefore not reported.
 Two consequences worth knowing:
 
 - A file that already fails still fails for its own reasons, and you may edit
-  it. Adding a *different* finding to it is reported; the ones that were
-  already there are not.
+  it. A finding it did not have is reported, and so is one more copy of a
+  finding it already had; the copies that were already there are not.
 - A non-zero exit with nothing to attribute to a file is treated as mypy
   breaking, and blocks the push.
 
@@ -735,7 +735,8 @@ other than the caller's (a scratch repository, a clone into a temporary director
     refs or objects change. Planted scripts that write an identity, `core.bare` or
     `uploadpack.*`, or that clone, prove the sentinel sees each of them. A nonzero
     exit also fails unless `SENTINEL_EXPECTED_FAILURES` declares the script with a
-    reason and its exact failing tests. A declared script that exits zero, crashes
+    reason and its exact failing tests. For an unexpected nonzero exit, the report
+    lists up to ten failing test names from unittest. A declared script that exits zero, crashes
     before unittest runs, or fails different tests is reported. The commit hook runs
     in a pre-commit Python environment pinned to the tooling-tests lock versions of
     flawfinder, identify, PyYAML, pre-commit and pytest-timeout, plus every package
