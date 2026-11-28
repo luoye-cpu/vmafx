@@ -581,7 +581,8 @@ ports: `features` (shape `[N, 6]`) and `codec` (shape `[N, 14]`), as recorded
 in its sidecar's `"input_names"`. The only ONNX inference seam in the Go tree,
 `pkg/ai.Registry.Infer`, serialises a single flat `[]float64` to the
 `vmafx-ort-runner` subprocess and has no wire format for a second port.
-`Registry.InferDirect`, the CGO path, is an explicit Stage-2 stub.
+There is no direct-CGO stub in `pkg/ai`; Q-132 settled on the subprocess
+runner as the single ONNX integration.
 
 Flattening the two ports into one 20-D vector is not a workaround.
 `vmaftune/proxy.py` documents that exact mistake: the graph's first dense layer
@@ -596,9 +597,10 @@ Any one of these unblocks it:
    matching `pkg/ai.Registry.InferNamed`. The runner is in-tree since
    ADR-1134 ([vmafx-ort-runner.md](vmafx-ort-runner.md)), so this is a
    protocol extension rather than an external dependency.
-2. Promoting `pkg/ai.Registry.InferDirect` onto a CGO ONNX Runtime binding
-   (for example `github.com/yalue/onnxruntime_go`), which `pkg/ai` defers to
-   Stage 2 because it couples the build to `libonnxruntime`.
+2. Adding a CGO ONNX Runtime binding behind a new `Registry.InferNamed`
+   (for example `github.com/yalue/onnxruntime_go`). `pkg/ai` carries no
+   unimplemented method for this; the build-time `libonnxruntime` coupling
+   is the reason it needs its own ADR.
 3. A single-port re-export of `fr_regressor_v2` that concatenates the two
    inputs inside the graph, shipped alongside the current model.
 

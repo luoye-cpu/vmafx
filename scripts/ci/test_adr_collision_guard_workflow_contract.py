@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import re
 import unittest
 from pathlib import Path
 
+yaml = importlib.import_module("yaml")
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_WORKFLOW = ROOT / ".github" / "workflows" / "rule-enforcement.yml"
 
@@ -80,12 +82,57 @@ def verify_adr_collision_guard(job_text: str) -> None:
 
 
 class AdrCollisionGuardWorkflowContract(unittest.TestCase):
+    def workflow_text(self, path: Path) -> str:
+        limit = 128 * 1024
+        with path.open("rb") as stream:
+            content = stream.read(limit)
+        self.assertLess(len(content), limit)
+        return content.decode("utf-8")
+
     def test_workflow_contract(self) -> None:
         workflow_path = Path(os.environ.get("VMAFX_RULE_ENFORCEMENT_WORKFLOW", DEFAULT_WORKFLOW))
-        content = workflow_path.read_text(encoding="utf-8")
+        content = self.workflow_text(workflow_path)
         job = extract_job(content)
         self.assertIn("name: ADR Collision Guard", job)
         verify_adr_collision_guard(job)
+
+    def freeze_steps(self) -> list[dict[str, object]]:
+        content = self.workflow_text(DEFAULT_WORKFLOW)
+        steps: list[dict[str, object]] = yaml.safe_load(content)["jobs"]["adr-collision-check"][
+            "steps"
+        ]
+        return steps
+
+    def test_body_freeze_step(self) -> None:
+        self.assert_freeze_step(self.freeze_steps())
+
+    def test_planted_nonblocking_freeze_step(self) -> None:
+        steps = self.freeze_steps()
+        step = next(step for step in steps if step.get("name") == "Check frozen ADR bodies")
+        step["continue-on-error"] = True
+        with self.assertRaisesRegex(AssertionError, "continue-on-error"):
+            self.assert_freeze_step(steps)
+
+    def assert_freeze_step(self, steps: list[dict[str, object]]) -> None:
+        names = [step.get("name") for step in steps]
+        name = "Check frozen ADR bodies"
+        self.assertEqual(names.count(name), 1)
+        self.assertLess(
+            names.index("Check for ADR number collisions with origin/master"), names.index(name)
+        )
+        step = steps[names.index(name)]
+        self.assertNotIn("continue-on-error", step)
+        self.assertEqual(
+            step["env"],
+            {
+                "BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+                "HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+            },
+        )
+        self.assertEqual(
+            step["run"],
+            'python3 scripts/ci/check-adr-body-freeze.py --base "${BASE_SHA}" --head "${HEAD_SHA}"',
+        )
 
     def test_planted_depth_fetch_rejected(self) -> None:
         """Planted negative case: a shallow git fetch must fail the contract."""
