@@ -39,6 +39,12 @@ entry point.
 - Code write scan: `git` at word boundary or right after `_` -> `self._git("init")`,
   `run_git(["clone", url])` flagged; `self._git("status")`, `digit("init")` not.
   Planted cases replayed in same static test.
+- Caller fixtures (`exercise()`, linked-worktree hook): build via
+  `commit_caller_baseline()` -> sets `SENTINEL_CONFIG`
+  (`maintenance.auto=false`, `gc.auto=0`) before baseline commit + traces
+  commit via `traced_commit_starts_background_work()`, raising
+  `AssertionError` on background maintenance/gc; replayed in
+  `test_the_caller_baseline_starts_no_background_maintenance`.
 - Known gaps (`Known gap:` tests): Python separate-statement imperative mutation
   (including after copying `os.environ`), alias/interprocedural data flow, and
   Node/Go filter re-admission. Shell/Node/Go retain regex markers; sentinel run
