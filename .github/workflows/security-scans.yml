@@ -12,6 +12,9 @@ on:
     # ADR-0331 — `ready_for_review` lets the per-job draft gate fire
     # CI when a draft PR is promoted to ready-for-review.
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+    branches: [master]
   schedule:
     - cron: "0 6 * * 1"   # weekly Mon 06:00 UTC
   workflow_dispatch:
@@ -395,7 +398,7 @@ jobs:
             --receipt "$RUNNER_TEMP/scorecard-source.json"
 
       - name: Scan PR files (partial scope; never published)
-        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e  # v2.5.0
+        uses: ossf/scorecard-action@23f22cd43608bae7a1f1fa2603d7314dee9538a5  # v2.6.0
         with:
           results_file: scorecard-local.json
           results_format: json
