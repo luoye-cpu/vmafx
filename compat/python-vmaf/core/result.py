@@ -26,9 +26,13 @@ def _format_score_attr(value, *, full_precision=False):
     significant digits (``to_dict``/``to_json`` stay full precision;
     ``full_precision=True`` restores it here, mirroring the CLI's
     ``--precision=max`` shape, ADR-0119).  Non-float values (frame numbers,
-    method names, ...) keep ``str()`` either way.
+    method names, ...) keep ``str()`` either way, and so do ``np.float32``
+    scores: a float32 holds about 7 significant digits, so a 12-digit
+    rendering would print conversion noise (``np.float32(0.1)`` ->
+    ``0.10000000149``) instead of ``str()``'s ``0.1``.  ``np.float64`` is a
+    ``float`` subclass and keeps the recorded form.
     """
-    if isinstance(value, (float, np.floating)) and not full_precision:
+    if isinstance(value, float) and not full_precision:
         s = "%.12g" % value
         if not any(c in s for c in ".eEnN"):
             # Python 2 keeps the integral-float decimal point: str(100.0) == '100.0'.

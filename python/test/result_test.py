@@ -11,7 +11,7 @@ import numpy as np
 from vmaf.config import VmafConfig
 from vmaf.core.asset import Asset
 from vmaf.core.quality_runner import VmafQualityRunner
-from vmaf.core.result import Result
+from vmaf.core.result import Result, _format_score_attr
 from vmaf.core.result_store import FileSystemResultStore
 from vmaf.tools.misc import MyTestCase
 from vmaf.tools.stats import ListStats
@@ -75,6 +75,17 @@ class ResultFormattingTest(unittest.TestCase):
 </result>
         """.strip(),
         )
+
+    # Issue #2889 review: a float32 holds about 7 significant digits, so the
+    # 12-digit form would print conversion noise (np.float32(0.1) ->
+    # 0.10000000149).  np.float64 is a float subclass and keeps the 12-digit
+    # recorded form; plain float32 scores stay on str()'s shortest repr.
+    def test_to_xml_float32_scores_keep_str_precision(self):
+        self.assertEqual(_format_score_attr(np.float32(0.1)), "0.1")
+        self.assertEqual(_format_score_attr(np.float32(97.42804)), "97.42804")
+        self.assertEqual(_format_score_attr(np.float64(0.9358023333333333)), "0.935802333333")
+        self.assertEqual(_format_score_attr(100.0), "100.0")
+        self.assertEqual(_format_score_attr(100.0, full_precision=True), "100.0")
 
     def test_to_json(self):
         self.assertEqual(

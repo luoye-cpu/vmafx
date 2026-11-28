@@ -1,10 +1,10 @@
+<!-- markdownlint-disable MD013 -->
+
 # Research-2889: re-enabling the scaffold-audit skips without touching golden values
 
 - **Status**: Active
 - **Workstream**: ADR-0621 (scaffold audit P3-3), ADR-0024 / ADR-1828 (Netflix golden gate), ADR-0108
 - **Last updated**: 2026-11-28
-
-<!-- markdownlint-disable MD013 -->
 
 ## Question
 
@@ -156,12 +156,12 @@ python3 -m pytest -p no:anyio -q \
 # the golden-integrity check: only skips/comments may differ under python/test/
 git diff upstream/master -- python/test/result_test.py python/test/routine_test.py
 
-# the per-family probe: feed the recorded family-A/family-B prediction vectors
-# through _bootstrap_correlations and diff the four nanmeans against golden
-python3 -m pytest -p no:anyio -q scripts/ci/tests/test_golden_probe_fixture.py  # not in tree;
-# the probe was a local script (flat vector table -> _paired_prediction_frame ->
-# nanmeans vs golden); the family vectors and expected deltas are the two tables
-# above, and the skipped test's golden asserts are the reference values.
+# The per-family numbers in the two tables above come from a local probe that
+# is not kept in the tree: it fed the recorded family-A/family-B prediction
+# vectors through _bootstrap_correlations and diffed the four nanmeans against
+# the golden values.  The family vectors and expected deltas are exactly the
+# table cells above, and the skipped test's golden asserts are the reference
+# values, so the tables can be rebuilt from those two sources.
 ```
 
 ### CI evidence trail
