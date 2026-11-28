@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from collections.abc import Iterable
 from contextlib import redirect_stderr
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, cast
 from unittest import mock
 
@@ -160,6 +160,11 @@ class InstallCommandTests(unittest.TestCase):
             with redirect_stderr(decode_err):
                 self.assertEqual(self.checker.check(crlf_root), 1)
             self.assertIn("ERROR: scripts/setup/install.sh:", decode_err.getvalue())
+
+    def test_format_repo_path_uses_posix_separators(self) -> None:
+        windows_rel = PureWindowsPath("scripts", "setup", "install.sh")
+        self.assertIn("\\", str(windows_rel))
+        self.assertEqual(self.checker._format_repo_path(windows_rel), "scripts/setup/install.sh")
 
     def test_install_surface_line_limit(self) -> None:
         limit = self.checker.MAX_INSTALL_SURFACE_LINES
@@ -2513,7 +2518,7 @@ class UvBootstrapTests(unittest.TestCase):
     def compile(
         self, binary: str, args: list[str], *, cwd: Path
     ) -> subprocess.CompletedProcess[str]:
-        Path(args[args.index("-o") + 1]).write_text(self.compiled, encoding="utf-8")
+        Path(args[args.index("-o") + 1]).write_bytes(self.compiled.encode("utf-8"))
         return subprocess.CompletedProcess([binary, *args], 0, "", "")
 
     def bootstrap(self) -> int:

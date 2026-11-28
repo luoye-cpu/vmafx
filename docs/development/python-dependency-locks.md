@@ -118,6 +118,20 @@ uv from that file and runs `write` to regenerate every lock with it.
 `test_stale_tooling_lock_regenerates_after_bootstrap` exercises this recovery.
 `test_checked_in_workflow_has_the_required_shape` in
 `scripts/ci/tests/test_python_lock_refresh_workflow.py` checks the step order.
+The bootstrap install covers the whole generator entry (every package in the
+temporary hash-pinned lock that `bootstrap-uv` compiles, not only uv). Because
+that lock is compiled at run time and never committed, its packages enter the
+job environment before review, matching what `write` then commits for review.
+The job installs the old uv from the committed `tooling-tests.txt` hashes, so if
+those release files are deleted from PyPI, the hashes stop installing and the
+bump needs manual lock regeneration. A yanked release still installs from the
+exact `==` pin under pip (PEP 592, Installers, suggested approach 1), though
+PEP 592 lets an installer refuse it.
+
+In `renovate.json`, the `custom.regex` manager for `uv_version` matches only
+three-part `X.Y.Z` releases (`[0-9]+\.[0-9]+\.[0-9]+`), so a four-part or
+pre-release uv version is not extracted and splits the update group, while
+`check` still refuses a one-sided bump.
 
 ## How to add or update a dependency
 
