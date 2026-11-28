@@ -370,7 +370,6 @@ fetch_series() {
   cache="$(posix_path "$cache")"
   work_dir="$(mktemp -d "$cache/work.XXXXXX")"
   work="$work_dir"
-
   local tarball="$cache/$tarball_name" source_note="cache"
   if [ ! -f "$tarball" ] || [ "$(sha256_of "$tarball")" != "$FFMPEG_FIX_SERIES_SHA256" ]; then
     download "$tarball_url" "$work/$tarball_name"

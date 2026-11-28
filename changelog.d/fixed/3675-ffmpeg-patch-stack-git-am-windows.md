@@ -1,4 +1,4 @@
-- FFmpeg patch-stack replay and refresh no longer fail on Windows. The replay
+- **CI:** FFmpeg patch-stack replay and refresh no longer fail on Windows. The replay
   fixture wrote its upstream files with Python text mode, so on Windows the fixture
   upstream stored CRLF blobs while `git am --3way` normalises the patch's context
   lines, and the two no longer matched (`patch does not apply`); the fixture now

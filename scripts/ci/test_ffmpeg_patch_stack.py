@@ -324,6 +324,43 @@ class SourceCacheReset(unittest.TestCase):
                 self.replay.run_git.assert_not_called()
 
 
+FIXTURE_GIT_CONFIG = (
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "user.name=Test",
+    "-c",
+    "user.email=test@localhost",
+)
+
+
+def fixture_git(
+    path: Path,
+    *args: str,
+    check: bool = True,
+    text: bool = True,
+    assert_not_none: str,
+) -> CommandResult:
+    """Fixture Git in the replay's isolated environment (LC_ALL=C, no user config).
+
+    One runner for the three former copies (issue #3675 review): every fixture
+    Git call takes its environment from `isolated_git_environment()`, which
+    pins LC_ALL=C so Git's messages stay locale-independent, plus the four
+    fixture-owned -c pairs.
+    """
+    return run_command(
+        [assert_not_none, *FIXTURE_GIT_CONFIG, "-C", str(path), *args],
+        allowed_executables=(assert_not_none,),
+        capture_output=True,
+        text=text,
+        env=STACK.isolated_git_environment(),
+        check=check,
+        timeout_seconds=60,
+    )
+
+
 class UpstreamBlobLineEndings(unittest.TestCase):
     """`git am --3way` matches patch context against the replay blobs (issue #3675).
 
@@ -343,35 +380,10 @@ class UpstreamBlobLineEndings(unittest.TestCase):
 
     def git(self, path: Path, *args: str, check: bool = True) -> CommandResult:
         """Fixture Git with isolated configuration; text capture strips CR."""
-        environment = {
-            key: value for key, value in os.environ.items() if not key.startswith("GIT_")
-        }
-        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
         git = shutil.which("git")
         self.assertIsNotNone(git)
         assert git is not None
-        return run_command(
-            [
-                git,
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@localhost",
-                "-C",
-                str(path),
-                *args,
-            ],
-            allowed_executables=(git,),
-            capture_output=True,
-            env=environment,
-            check=check,
-            text=True,
-            timeout_seconds=60,
-        )
+        return fixture_git(path, *args, check=check, text=True, assert_not_none=git)
 
     def replay_am(self, blob: bytes) -> tuple[bool, str]:
         """Apply a CR-free patch to an upstream whose sample blob is *blob*."""
@@ -421,37 +433,11 @@ class UpstreamBlobLineEndings(unittest.TestCase):
 
 class RealReplay(unittest.TestCase):
     def git(self, path: Path, *args: str) -> str:
-        # Fixed Git executable and fixture-owned arguments; no shell.
-        # Fixture setup needs isolation too: -C does not override hook GIT_*.
-        environment = {
-            key: value for key, value in os.environ.items() if not key.startswith("GIT_")
-        }
-        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        """Fixture Git in the replay's isolated environment (LC_ALL=C)."""
         git = shutil.which("git")
         self.assertIsNotNone(git)
         assert git is not None
-        result = run_command(
-            [
-                git,
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@localhost",
-                "-C",
-                str(path),
-                *args,
-            ],
-            allowed_executables=(git,),
-            capture_output=True,
-            text=True,
-            env=environment,
-            check=True,
-            timeout_seconds=60,
-        )
+        result = fixture_git(path, *args, check=True, text=True, assert_not_none=git)
         assert isinstance(result.stdout, str)
         return result.stdout
 
@@ -468,34 +454,10 @@ class RealReplay(unittest.TestCase):
 
     def git_bytes(self, path: Path, *args: str) -> bytes:
         """Run fixture Git and capture raw bytes (text capture would strip CR)."""
-        environment = {
-            key: value for key, value in os.environ.items() if not key.startswith("GIT_")
-        }
-        environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
         git = shutil.which("git")
         self.assertIsNotNone(git)
         assert git is not None
-        result = run_command(
-            [
-                git,
-                "-c",
-                "core.hooksPath=/dev/null",
-                "-c",
-                "commit.gpgsign=false",
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@localhost",
-                "-C",
-                str(path),
-                *args,
-            ],
-            allowed_executables=(git,),
-            capture_output=True,
-            env=environment,
-            check=True,
-            timeout_seconds=60,
-        )
+        result = fixture_git(path, *args, check=True, text=False, assert_not_none=git)
         assert isinstance(result.stdout, bytes)
         return result.stdout
 
@@ -1354,6 +1316,19 @@ class SharedSeriesReplay(RealReplay):
         self.assertIn("add integration", rendered)
         self.assertNotIn("shared fix", rendered)
         self.assertEqual(STACK.maintain(self.repo, self.output, False, False)["changed"], [])
+
+    @unittest.skipIf(os.name == "nt", "a backslash separates path parts on Windows")
+    def test_cache_path_with_a_backslash_still_matches_the_pin(self) -> None:
+        """Negative: GNU sha256sum escapes such a name; the digest must still compare equal.
+
+        A cache directory whose name contains a backslash (legal on POSIX)
+        makes `sha256sum` print the escaped `\\<digest>` form; `sha256_of`'s
+        strip keeps the comparison equal (issue #3675 review, HISS-15).
+        """
+        cache_home = self.root / "cache" + chr(92) + "home"
+        with patch.dict(os.environ, {"XDG_CACHE_HOME": str(cache_home)}):
+            result = STACK.maintain(self.repo, self.output, True, False)
+        self.assertEqual(result["shared_patch_count"], 1)
 
     def test_another_sha256_is_refused(self) -> None:
         config = self.repo / "build-config.env"
