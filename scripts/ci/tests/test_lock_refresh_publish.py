@@ -15,8 +15,9 @@ Negative: a non-Renovate ref, a stray path outside the allowed list, an app slug
 the release-bot, and a remote that moved meanwhile each refuse, leave the remote untouched
 and (but for the moved remote) leave no commit behind; ``stage`` refuses a stray or a
 deleted lock, and ``restore`` refuses a listed path outside the allow-list, a listed path
-that is not a literal repository-relative file, a missing artifact copy and a branch that
-moved while the locks were regenerated.
+that is not a literal repository-relative file, a missing or linked artifact copy, a
+work-tree link in place of a restored path, a branch that moved while the locks were
+regenerated, and -- before copying anything -- any bad entry among the staged paths.
 Boundary: a path next to an allowed path (``.bak``, another directory), a directory, a
 pattern and a path with pathspec magic never widen the allowed set; an unchanged lock is rc 0
 with no commit; a missing environment variable is rc 2; ``stage`` and ``restore`` need no
@@ -35,6 +36,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
 from scripts.ci.tests import check_dco_fixture as fx  # noqa: E402
+from scripts.ci.tests import symlink_test_support as links  # noqa: E402
 from scripts.lib.safe_subprocess import TextCommandResult, run  # noqa: E402
 
 SCRIPT = ROOT / "scripts" / "ci" / "lock_refresh_publish.py"
@@ -584,6 +586,51 @@ class StageRestoreTest(PublishTestCase):
         self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
         self.assertIn("does not carry", res.stderr)
         self.assertEqual((self.repo.path / LOCK_A).read_text(encoding="utf-8"), "first\n")
+
+    def test_restore_refuses_a_staged_link(self) -> None:
+        """Negative: a link in the artifact is never dereferenced into the work tree."""
+        links.skip_without_symlinks(self.repo.path)
+        self.stage_changed()
+        staged_copy = self.artifact() / "repo" / LOCK_A
+        staged_copy.unlink()
+        staged_copy.symlink_to(LOCK_B)
+        res = self.restore()
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("as a regular file", res.stderr)
+        self.assertEqual((self.repo.path / LOCK_A).read_text(encoding="utf-8"), "first\n")
+        self.assertEqual((self.repo.path / LOCK_B).read_text(encoding="utf-8"), "first\n")
+
+    def test_restore_refuses_to_restore_over_a_link(self) -> None:
+        """Negative: a link in the work tree is not overwritten through dereference."""
+        links.skip_without_symlinks(self.repo.path)
+        self.stage_changed()
+        work_file = self.repo.path / LOCK_A
+        work_file.unlink()
+        work_file.symlink_to(LOCK_B)
+        res = self.restore()
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("refusing to restore over a link", res.stderr)
+        self.assertTrue((self.repo.path / LOCK_A).is_symlink())
+        self.assertEqual((self.repo.path / LOCK_B).read_text(encoding="utf-8"), "first\n")
+
+    def test_restore_refusal_leaves_the_work_tree_untouched(self) -> None:
+        """Negative: a bad second entry copies nothing, not even the first good entry."""
+        self.edit(LOCK_A)
+        self.edit(LOCK_B)
+        res = self.stage()
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.run_git_at(self.repo.path, ["checkout", "-q", "--", LOCK_A, LOCK_B])
+        listing = self.artifact() / "changed.txt"
+        listing.write_text(f"{LOCK_A}\n{LOCK_B}\n", encoding="utf-8")
+        planted = self.artifact() / "repo" / LOCK_B
+        planted.write_text("planted\n", encoding="utf-8")
+        evil = "requirements/locks/evil.txt"
+        listing.write_text(f"{LOCK_A}\n{evil}\n", encoding="utf-8")
+        res = self.restore()
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("not in the allow-list", res.stderr)
+        self.assertEqual((self.repo.path / LOCK_A).read_text(encoding="utf-8"), "first\n")
+        self.assertFalse((self.repo.path / evil).exists())
 
     def test_restore_refuses_when_the_branch_moved(self) -> None:
         """Negative: locks regenerated for an older head are not restored."""

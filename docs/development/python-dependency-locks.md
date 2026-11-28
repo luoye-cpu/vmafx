@@ -110,6 +110,20 @@ new operator grant. If the branch moves or is deleted, publication fails without
 overwriting it. The next input change runs refresh again; otherwise rerun it
 against the current tip.
 
+The workflow splits the refresh across two jobs so the release-bot token never
+meets the freshly compiled tool (#3702). The `regenerate` job runs with
+`contents: read`, references no secret, and installs the pinned uv, bootstraps
+the reviewed one, regenerates the locks with `check_python_dependency_locks.py
+write`, and hands the changed outputs to `lock_refresh_publish.py stage`, which
+stray-checks the refresh and stages them as a workflow artifact. The
+`publish-locks` job (which `needs: regenerate`) restores the staged files with
+`lock_refresh_publish.py restore` -- the restore accepts exactly the manifest
+outputs as the allow-list and refuses a branch that moved meanwhile -- then
+mints the release-bot installation token and runs `lock_refresh_publish.py
+publish` to commit and push the outputs when they changed. The token exists
+only in `publish-locks`; `regenerate` and the artifact between the jobs carry
+no secret.
+
 A uv bump changes `tooling-tests.in` and the manifest's `uv_version` while
 `tooling-tests.txt` still pins the old uv. The job installs that old uv, then
 `check_python_dependency_locks.py bootstrap-uv` uses it to compile the

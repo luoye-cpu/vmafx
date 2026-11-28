@@ -14,9 +14,11 @@ name: python-lock-refresh
 # manifest allow-list, mints an installation token for the release-bot App (so the
 # pushed commit triggers PR check runs, ADR-1151) and lets
 # scripts/ci/lock_refresh_publish.py commit and push the manifest outputs only when
-# they changed.  Keeping the token out of the job that runs the freshly compiled
-# tool keeps unreviewed code away from it (#3702).  The path filter below equals the
-# manifest inputs (scripts/ci/tests/test_python_lock_refresh_workflow.py).
+# they changed, minting the token with permission-contents: write so the grant
+# covers exactly the push.  Keeping the token out of the job that runs the
+# freshly compiled tool keeps unreviewed code away from it (#3702).  The path
+# filter below equals the manifest inputs
+# (scripts/ci/tests/test_python_lock_refresh_workflow.py).
 
 on:
   push:
@@ -190,6 +192,7 @@ jobs:
         with:
           app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          permission-contents: write
       - name: Push the refreshed locks when changed
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

@@ -6,12 +6,13 @@
 Positive: the path filter equals the manifest inputs read through the lock checker's loader;
 the workflow is Renovate-only, read-only by default, pinned by SHA, capped, serialised per ref,
 regenerates the locks in a secret-free job and publishes them from a second job that alone
-mints the release-bot token, restores the staged locks under the manifest allow-list and
-pushes through the shared script (#3702).
+mints the release-bot token with contents: write, restores the staged locks under the manifest
+allow-list and pushes through the shared script (#3702).
 Negative: planted copies lose a path, gain a pattern, carry an expression in ``run:``, use an
 unpinned action, push with a force flag, write a second generator, read a secret in the
-regeneration job, mint the token outside the publish job, restore outside the manifest
-allow-list or lose the guard step; each is reported.
+regeneration job (a step, its job ``env:`` or the workflow ``env:``), mint the token without
+the contents grant, restore outside the manifest allow-list or lose the guard step; each is
+reported.
 Boundary: both lock refresh workflows commit and push only through
 scripts/ci/lock_refresh_publish.py.
 """
@@ -45,6 +46,7 @@ RESTORE_COMMAND = "python3 scripts/ci/lock_refresh_publish.py restore"
 REGENERATE_JOB = "regenerate"
 PUBLISH_JOB = "publish-locks"
 
+PUBLISH_COMMAND = "python3 scripts/ci/lock_refresh_publish.py publish"
 ORDER_FINDING = (
     "guard, tooling install, bootstrap, bootstrap install, write, stage, restore "
     "and publish are missing or out of order"
@@ -52,6 +54,7 @@ ORDER_FINDING = (
 REQUIRED_STEP_FINDING = "bootstrap and write must run unconditionally and propagate failures"
 SHELL_FINDING = "bootstrap and write must set shell: bash"
 MINT_FINDING = "only the publish job may hold the app-token step"
+MINT_PERMISSION_FINDING = "the mint step must grant the token contents: write"
 SEALED_FINDING = "the regeneration job must not reference secrets"
 NEEDS_FINDING = "the publish job must need the regeneration job"
 ALLOW_LIST_FINDING = "the restore step must take its allow-list from the manifest outputs"
@@ -83,36 +86,37 @@ def run_texts(workflow: dict[str, Any]) -> list[str]:
     return [step["run"] for _, step in all_steps(workflow) if "run" in step]
 
 
-def references_secret(step: dict[str, Any]) -> bool:
-    """Whether any scalar value of the step reads ``secrets.``."""
+def references_secret(value: Any) -> bool:
+    """Whether any scalar of the value tree reads ``secrets.``.
 
-    def scan(value: Any) -> bool:
-        if isinstance(value, str):
-            return "secrets." in value
-        if isinstance(value, dict):
-            return any(scan(item) for item in value.values())
-        if isinstance(value, list):
-            return any(scan(item) for item in value)
-        return False
+    The walk uses an explicit bounded stack instead of a recursive scan, so a
+    deeply nested value cannot exhaust the interpreter stack (HISS-01).
+    """
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            if "secrets." in current:
+                return True
+        elif isinstance(current, dict):
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return False
 
-    return scan(step)
+
+def sealed_findings(job: dict[str, Any]) -> list[str]:
+    """The regeneration job stays sealed: no scalar of it may read ``secrets.``.
+
+    The whole job object is scanned, so a secret planted at the job's ``env:``
+    level is caught as well as one inside a step.
+    """
+    return [SEALED_FINDING] if references_secret(job) else []
 
 
-def shape_findings(workflow: dict[str, Any], inputs: list[str]) -> list[str]:
-    """Return what deviates from the required shape; an empty list is a pass."""
+def job_findings(jobs: dict[str, Any]) -> list[str]:
+    """The per-job shape: presence, timeout, permissions, sealing, needs and mint holder."""
     found: list[str] = []
-    push = workflow["on"]["push"]
-    if push.get("branches") != ["renovate/**"]:
-        found.append("branches must be exactly renovate/**")
-    paths = push.get("paths", [])
-    if sorted(paths) != sorted(inputs) or len(set(paths)) != len(paths):
-        found.append("path filter is not the manifest input set")
-    if workflow.get("permissions") != {"contents": "read"}:
-        found.append("top-level permissions must be contents: read")
-    group = workflow.get("concurrency", {}).get("group", "")
-    if "github.ref" not in group or workflow["concurrency"].get("cancel-in-progress") is not False:
-        found.append("concurrency must be per ref without cancel-in-progress")
-    jobs = workflow.get("jobs", {})
     for job in (REGENERATE_JOB, PUBLISH_JOB):
         body = jobs.get(job)
         if not isinstance(body, dict):
@@ -133,9 +137,41 @@ def shape_findings(workflow: dict[str, Any], inputs: list[str]) -> list[str]:
     if token_holders != [PUBLISH_JOB]:
         found.append(MINT_FINDING)
     regenerate = jobs.get(REGENERATE_JOB, {})
-    if isinstance(regenerate, dict) and any(
-        references_secret(step) for step in regenerate.get("steps", [])
-    ):
+    if isinstance(regenerate, dict):
+        found += sealed_findings(regenerate)
+    publish = jobs.get(PUBLISH_JOB, {})
+    if isinstance(publish, dict):
+        found += mint_findings(publish.get("steps", []))
+    return found
+
+
+def mint_findings(publish_steps: list[dict[str, Any]]) -> list[str]:
+    """The token mint must ask the App for exactly the permission the push needs."""
+    mint = next(
+        (step for step in publish_steps if str(step.get("uses", "")).startswith(MINT_ACTION)), None
+    )
+    if mint is not None and mint.get("with", {}).get("permission-contents") != "write":
+        return [MINT_PERMISSION_FINDING]
+    return []
+
+
+def shape_findings(workflow: dict[str, Any], inputs: list[str]) -> list[str]:
+    """Return what deviates from the required shape; an empty list is a pass."""
+    found: list[str] = []
+    push = workflow["on"]["push"]
+    if push.get("branches") != ["renovate/**"]:
+        found.append("branches must be exactly renovate/**")
+    paths = push.get("paths", [])
+    if sorted(paths) != sorted(inputs) or len(set(paths)) != len(paths):
+        found.append("path filter is not the manifest input set")
+    if workflow.get("permissions") != {"contents": "read"}:
+        found.append("top-level permissions must be contents: read")
+    group = workflow.get("concurrency", {}).get("group", "")
+    if "github.ref" not in group or workflow["concurrency"].get("cancel-in-progress") is not False:
+        found.append("concurrency must be per ref without cancel-in-progress")
+    jobs = workflow.get("jobs", {})
+    found += job_findings(jobs)
+    if references_secret(workflow.get("env")):
         found.append(SEALED_FINDING)
     found += [
         f"unpinned action {step['uses']}"
@@ -147,6 +183,7 @@ def shape_findings(workflow: dict[str, Any], inputs: list[str]) -> list[str]:
     found += ["force push" for text in texts if FORCE_RE.search(text)]
     found += ["second generator" for text in texts if GENERATOR_RE.search(text)]
     found += restore_findings(workflow)
+    found += publish_findings(workflow)
     found += guard_order_findings(workflow)
     return found
 
@@ -167,6 +204,30 @@ def restore_findings(workflow: dict[str, Any]) -> list[str]:
     if "check_python_dependency_locks.py outputs" not in text or '-- "${outputs[@]}"' not in text:
         return [ALLOW_LIST_FINDING]
     return []
+
+
+def publish_findings(workflow: dict[str, Any]) -> list[str]:
+    """The publish step must read the manifest outputs and name the bot commit."""
+    text = next(
+        (
+            step.get("run", "")
+            for step in steps_of(workflow, PUBLISH_JOB)
+            if PUBLISH_COMMAND in step.get("run", "")
+        ),
+        "",
+    )
+    if not text:
+        return ["the publish step is missing"]
+    problems: list[str] = []
+    if "check_python_dependency_locks.py outputs" not in text or '-- "${outputs[@]}"' not in text:
+        problems.append("the publish step must push the checker's manifest outputs")
+    if "--check-strays-when-unchanged" not in text:
+        problems.append("the publish step must check strays when unchanged")
+    dco = (ROOT / "scripts" / "ci" / "check-dco.py").read_text(encoding="utf-8")
+    subject = re.search(r'PYTHON_LOCK_SUBJECT = "([^"]+)"', dco)
+    if subject is None or f'--subject "{subject.group(1)}"' not in text:
+        problems.append("the publish step must use the DCO-check subject")
+    return problems
 
 
 def unconditional_refresh_command(
@@ -267,16 +328,27 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
         self.assertGreater(len(paths), 20)
 
     def test_publish_step_reads_outputs_from_the_manifest_and_names_the_bot_commit(self) -> None:
-        """Positive: outputs come from the checker, the subject is the DCO subject."""
-        text = "\n".join(run_texts(self.workflow))
-        self.assertIn("check_python_dependency_locks.py outputs", text)
-        self.assertIn("--check-strays-when-unchanged", text)
-        self.assertIn('-- "${outputs[@]}"', text)
-        self.assertNotIn("requirements/locks/*.txt", text)
-        dco = (ROOT / "scripts" / "ci" / "check-dco.py").read_text(encoding="utf-8")
-        subject = re.search(r'PYTHON_LOCK_SUBJECT = "([^"]+)"', dco)
-        assert subject is not None
-        self.assertIn(f'--subject "{subject.group(1)}"', text)
+        """Positive: the publish step alone reads the manifest outputs and names the subject."""
+        self.assertEqual(publish_findings(self.workflow), [])
+
+    def test_planted_publish_step_reading_the_restore_step_is_reported(self) -> None:
+        """Negative: a publish step that leans on other steps' texts is still checked alone."""
+        wf = self.planted()
+        publish = next(
+            step for step in steps_of(wf, PUBLISH_JOB) if PUBLISH_COMMAND in step.get("run", "")
+        )
+        publish["run"] = (
+            publish["run"]
+            .replace(
+                "python3 scripts/ci/check_python_dependency_locks.py outputs"
+                ' >"$outputs_file"\nmapfile -t outputs <"$outputs_file"\n',
+                "",
+            )
+            .replace('-- "${outputs[@]}"', "-- requirements/locks/*.txt")
+        )
+        problems = publish_findings(wf)
+        self.assertIn("the publish step must push the checker's manifest outputs", problems)
+        self.assertEqual(publish_findings(self.workflow), [])
 
     def test_checkout_keeps_no_credentials_and_the_token_stays_behind_the_publish_job(self) -> None:
         """Positive: both checkouts drop credentials; restore precedes mint precedes push."""
@@ -311,10 +383,29 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
                 str(step.get("uses", "")).startswith(MINT_ACTION), step.get("name", "")
             )
 
+    def test_the_mint_step_grants_the_token_contents_write(self) -> None:
+        """Positive: the mint step requests contents: write for the push it serves."""
+        mint = next(
+            step
+            for step in self.publish_steps()
+            if str(step.get("uses", "")).startswith(MINT_ACTION)
+        )
+        self.assertEqual(mint["with"]["permission-contents"], "write")
+
+    def test_planted_mint_step_without_the_permission_grant_is_reported(self) -> None:
+        """Negative: a mint step that drops permission-contents is reported."""
+        wf = self.planted()
+        mint = next(
+            step
+            for step in steps_of(wf, PUBLISH_JOB)
+            if str(step.get("uses", "")).startswith(MINT_ACTION)
+        )
+        self.assertTrue(mint["with"].pop("permission-contents"))
+        self.assertIn(MINT_PERMISSION_FINDING, shape_findings(wf, self.inputs))
+
     def test_the_regeneration_job_references_no_secret(self) -> None:
-        """Positive: no ``run:``, ``env:`` or ``with:`` of the regeneration job reads secrets."""
-        for step in self.regenerate_steps():
-            self.assertFalse(references_secret(step), step.get("name", ""))
+        """Positive: no scalar of the whole regeneration job, job ``env:`` included, reads secrets."""
+        self.assertFalse(references_secret(self.workflow["jobs"][REGENERATE_JOB]))
 
     def test_the_staged_locks_travel_through_a_named_artifact(self) -> None:
         """Positive: the regeneration job stages and uploads; the publish job downloads."""
@@ -555,6 +646,18 @@ class PythonLockRefreshWorkflowTest(unittest.TestCase):
             step for step in steps_of(wf, REGENERATE_JOB) if STAGE_COMMAND in step.get("run", "")
         )
         step["run"] += '\necho "${{ secrets.RELEASE_BOT_APP_ID }}"\n'
+        self.assertIn(SEALED_FINDING, shape_findings(wf, self.inputs))
+
+    def test_planted_secret_in_the_regeneration_job_env_is_reported(self) -> None:
+        """Negative: a job-level ``env:`` of the regeneration job cannot reference a secret."""
+        wf = self.planted()
+        wf["jobs"][REGENERATE_JOB]["env"] = {"KEY": "${{ secrets.RELEASE_BOT_PRIVATE_KEY }}"}
+        self.assertIn(SEALED_FINDING, shape_findings(wf, self.inputs))
+
+    def test_planted_secret_in_the_workflow_env_is_reported(self) -> None:
+        """Negative: a top-level ``env:`` cannot smuggle a secret into the regeneration job."""
+        wf = self.planted()
+        wf["env"] = {"TOKEN": "${{ secrets.RELEASE_BOT_PRIVATE_KEY }}"}
         self.assertIn(SEALED_FINDING, shape_findings(wf, self.inputs))
 
     def test_planted_restore_outside_the_manifest_allow_list_is_reported(self) -> None:

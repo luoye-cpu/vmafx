@@ -30,9 +30,11 @@ repository-relative path beside ``head.txt`` (the refreshed HEAD) and
 ``changed.txt`` (the changed paths, possibly empty).  ``restore`` runs in the
 repository root of the publish job and copies each listed staged path back into
 the work tree, refusing (exit 1) a listed path that is not one of the ``PATH``
-entries -- the allow-list -- or when the branch head moved while the locks were
-regenerated, and refusing (exit 2) a listed path that is not a literal
-repository-relative file or that the artifact does not carry.
+entries -- the allow-list --, when the branch head moved while the locks were
+regenerated, or when a listed work-tree target is itself a symbolic link, and
+refusing (exit 2) a listed path that is not a literal repository-relative file
+or that the artifact does not carry as a regular file.  Every staged entry is
+validated before the first copy, so a refusal leaves the work tree untouched.
 
 ``publish`` runs in the repository root after the refresh.  It refuses a non-Renovate
 ref, exits 0 without a commit when no ``PATH`` changed, refuses (exit 1) when anything
@@ -198,7 +200,12 @@ def stage(args: argparse.Namespace, cwd: Path) -> int:
 
 
 def restore(args: argparse.Namespace, cwd: Path) -> int:
-    """Copy the staged paths back under the allow-list; needs no secret."""
+    """Copy the staged paths back under the allow-list; needs no secret.
+
+    Every staged entry is validated before anything is copied, so a refusal
+    leaves the work tree untouched, and a link that survived the artifact
+    transfer is refused instead of dereferenced.
+    """
     label = args.label
     validate_paths(label, args.paths, cwd)
     staged_head = (args.artifact_dir / STAGED_HEAD).read_text(encoding="utf-8").strip()
@@ -211,9 +218,13 @@ def restore(args: argparse.Namespace, cwd: Path) -> int:
         if path not in args.paths:
             raise Refusal(f"{label}: staged path is not in the allow-list: {path!r}")
         source = args.artifact_dir / STAGED_REPO / path
-        if not source.is_file():
-            raise PublishError(f"{label}: the artifact does not carry {path!r}")
+        if not source.is_file() or source.is_symlink():
+            raise PublishError(f"{label}: the artifact does not carry {path!r} as a regular file")
+    for path in staged:
+        source = args.artifact_dir / STAGED_REPO / path
         target = cwd / path
+        if target.is_symlink():
+            raise Refusal(f"{label}: refusing to restore over a link: {path!r}")
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
     print(f"{label}: restored {len(staged)} staged path(s) under the allow-list")
