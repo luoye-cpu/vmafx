@@ -1,0 +1,1 @@
+- **CI:** the Coverage Gate installs its apt packages without recommended packages (`--no-install-recommends`), so a cache miss no longer downloads about 160 MB of NVIDIA driver packages and times out.
