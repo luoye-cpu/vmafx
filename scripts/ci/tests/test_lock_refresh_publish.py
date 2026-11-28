@@ -8,13 +8,19 @@ stands in for GitHub: no network, no real push, no ``gh``.
 
 Positive: a changed lock is committed with the release-bot identity and sign-off and pushed;
 only the changed paths are in the commit; the commit message equals the one the Intel NEO
-workflow wrote before the script existed.
+workflow wrote before the script existed; ``stage`` copies each changed lock below the
+artifact directory beside the changed-path list and the refreshed HEAD, and ``restore``
+puts the staged content back (#3702).
 Negative: a non-Renovate ref, a stray path outside the allowed list, an app slug that is not
 the release-bot, and a remote that moved meanwhile each refuse, leave the remote untouched
-and (but for the moved remote) leave no commit behind.
+and (but for the moved remote) leave no commit behind; ``stage`` refuses a stray or a
+deleted lock, and ``restore`` refuses a listed path outside the allow-list, a listed path
+that is not a literal repository-relative file, a missing artifact copy and a branch that
+moved while the locks were regenerated.
 Boundary: a path next to an allowed path (``.bak``, another directory), a directory, a
 pattern and a path with pathspec magic never widen the allowed set; an unchanged lock is rc 0
-with no commit; a missing environment variable is rc 2.
+with no commit; a missing environment variable is rc 2; ``stage`` and ``restore`` need no
+environment variable at all.
 """
 
 from __future__ import annotations
@@ -447,6 +453,154 @@ class PublishBoundaryTest(PublishTestCase):
         res = self.publish(remote=False, env=self.env(GITHUB_REPOSITORY=None))
         self.assert_dirty_usage_error(res)
         self.assertIn("GITHUB_REPOSITORY", res.stderr)
+
+
+class StageRestoreTest(PublishTestCase):
+    """The artifact carrier between the regeneration and the publish job (#3702)."""
+
+    def artifact(self) -> Path:
+        """The artifact directory a workflow would pass as ``--artifact-dir``."""
+        return self.base / "runner-temp" / "python-lock-artifact"
+
+    def stage(self, paths: tuple[str, ...] = (LOCK_A, LOCK_B)) -> TextCommandResult:
+        """Run ``stage`` for ``paths``; no environment variable is required."""
+        return self.call(
+            [
+                "stage",
+                "--label",
+                "python-lock-refresh",
+                "--artifact-dir",
+                str(self.artifact()),
+                "--",
+                *paths,
+            ],
+            fx.clean_env(),
+        )
+
+    def restore(self, paths: tuple[str, ...] = (LOCK_A, LOCK_B)) -> TextCommandResult:
+        """Run ``restore`` with ``paths`` as the allow-list; likewise needs no secret."""
+        return self.call(
+            [
+                "restore",
+                "--label",
+                "python-lock-refresh",
+                "--artifact-dir",
+                str(self.artifact()),
+                "--",
+                *paths,
+            ],
+            fx.clean_env(),
+        )
+
+    def stage_changed(self) -> TextCommandResult:
+        """Edit ``LOCK_A``, stage it and put the work tree back to the tip."""
+        self.edit(LOCK_A)
+        res = self.stage()
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.run_git_at(self.repo.path, ["checkout", "-q", "--", LOCK_A])
+        return res
+
+    def test_changed_lock_is_staged_with_its_repository_relative_path(self) -> None:
+        """Positive: changed.txt, head.txt and the copy below repo/ carry the change."""
+        res = self.stage_changed()
+        self.assertIn("staged 1 changed path(s)", res.stdout)
+        self.assertEqual(
+            (self.artifact() / "changed.txt").read_text(encoding="utf-8"), f"{LOCK_A}\n"
+        )
+        self.assertEqual(
+            (self.artifact() / "head.txt").read_text(encoding="utf-8"), f"{self.tip}\n"
+        )
+        copy = self.artifact() / "repo" / LOCK_A
+        self.assertEqual(copy.read_text(encoding="utf-8"), "second\n")
+
+    def test_unchanged_locks_stage_an_empty_list_and_restore_nothing(self) -> None:
+        """Boundary: no change stages an empty changed.txt and restores zero paths."""
+        res = self.stage()
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual((self.artifact() / "changed.txt").read_text(encoding="utf-8"), "")
+        self.assertEqual(
+            (self.artifact() / "head.txt").read_text(encoding="utf-8"), f"{self.tip}\n"
+        )
+        res = self.restore()
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn("restored 0 staged path(s)", res.stdout)
+
+    def test_restore_puts_the_staged_content_back(self) -> None:
+        """Positive: the publish job's work tree holds the regenerated content again."""
+        self.stage_changed()
+        self.assertEqual((self.repo.path / LOCK_A).read_text(encoding="utf-8"), "first\n")
+        res = self.restore()
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual((self.repo.path / LOCK_A).read_text(encoding="utf-8"), "second\n")
+
+    def test_stray_outside_the_allowed_paths_is_refused(self) -> None:
+        """Negative: stage is the regeneration job's stray refusal; nothing is staged."""
+        self.edit(LOCK_A)
+        self.edit(OTHER)
+        res = self.stage()
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("outside the allowed paths", res.stderr)
+        self.assertIn(OTHER, res.stderr)
+        self.assertFalse((self.artifact() / "changed.txt").exists())
+
+    def test_deleted_lock_is_a_usage_error(self) -> None:
+        """Negative: a lock the refresh removed cannot be staged as a copy."""
+        self.repo.git(["rm", "-q", LOCK_B])
+        res = self.stage()
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("not a regular file", res.stderr)
+        self.assertFalse((self.artifact() / "changed.txt").exists())
+
+    def test_restore_refuses_a_staged_path_outside_the_allow_list(self) -> None:
+        """Negative: a planted artifact path outside the manifest outputs never lands."""
+        self.stage_changed()
+        planted = "requirements/locks/evil.txt"
+        listing = self.artifact() / "changed.txt"
+        listing.write_text(f"{LOCK_A}\n{planted}\n", encoding="utf-8")
+        source = self.artifact() / "repo" / planted
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("evil\n", encoding="utf-8")
+        res = self.restore()
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("not in the allow-list", res.stderr)
+        self.assertFalse((self.repo.path / planted).exists())
+
+    def test_restore_refuses_a_staged_path_that_is_not_a_literal_file(self) -> None:
+        """Negative: a listed path with pathspec magic or an escape exits 2."""
+        for planted in ("requirements/locks/../evil.txt", ":(top)evil.txt"):
+            with self.subTest(planted=planted):
+                self.stage_changed()
+                listing = self.artifact() / "changed.txt"
+                listing.write_text(f"{LOCK_A}\n{planted}\n", encoding="utf-8")
+                res = self.restore()
+                self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+                self.run_git_at(self.repo.path, ["checkout", "-q", "--", LOCK_A])
+
+    def test_restore_refuses_a_missing_artifact_copy(self) -> None:
+        """Negative: a listed path the artifact does not carry exits 2, lands nothing."""
+        self.stage_changed()
+        (self.artifact() / "repo" / LOCK_A).unlink()
+        res = self.restore()
+        self.assertEqual(res.returncode, 2, res.stdout + res.stderr)
+        self.assertIn("does not carry", res.stderr)
+        self.assertEqual((self.repo.path / LOCK_A).read_text(encoding="utf-8"), "first\n")
+
+    def test_restore_refuses_when_the_branch_moved(self) -> None:
+        """Negative: locks regenerated for an older head are not restored."""
+        self.stage_changed()
+        self.repo.git(["commit", "--allow-empty", "-q", "-m", "moves the branch"])
+        res = self.restore()
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertIn("the branch moved", res.stderr)
+        self.assertEqual((self.repo.path / LOCK_A).read_text(encoding="utf-8"), "first\n")
+
+    def test_stage_and_restore_run_without_any_environment(self) -> None:
+        """Boundary: neither subcommand reads an environment variable, so job 1 stays secret-free."""
+        self.stage_changed()
+        res = self.restore()
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertNotIn("token", res.stdout.lower())
+        self.assertNotIn("token", res.stderr.lower())
 
 
 if __name__ == "__main__":

@@ -14,8 +14,25 @@ Subcommands::
     lock_refresh_publish.py refuse-non-renovate --label NAME
     lock_refresh_publish.py publish --label NAME --subject TEXT [--body-line TEXT]...
         [--current-message TEXT] [--remote-url URL] [--check-strays-when-unchanged] PATH...
+    lock_refresh_publish.py stage --label NAME --artifact-dir DIR PATH...
+    lock_refresh_publish.py restore --label NAME --artifact-dir DIR PATH...
 
 ``refuse-non-renovate`` exits 1 unless ``GITHUB_REF`` is ``refs/heads/renovate/*``.
+
+``stage`` and ``restore`` carry the lock files between the two jobs of a refresh
+workflow that keeps the release-bot token out of the job running the regenerated
+code (#3702).  Neither reads an environment variable, so the regeneration job
+needs no secret.  ``stage`` runs in the repository root after the refresh and
+refuses (exit 1) when anything outside ``PATH`` changed or is untracked -- the
+stray refusal the publish job cannot make, because it sees a fresh checkout --
+then copies each changed ``PATH`` below ``--artifact-dir`` under its
+repository-relative path beside ``head.txt`` (the refreshed HEAD) and
+``changed.txt`` (the changed paths, possibly empty).  ``restore`` runs in the
+repository root of the publish job and copies each listed staged path back into
+the work tree, refusing (exit 1) a listed path that is not one of the ``PATH``
+entries -- the allow-list -- or when the branch head moved while the locks were
+regenerated, and refusing (exit 2) a listed path that is not a literal
+repository-relative file or that the artifact does not carry.
 
 ``publish`` runs in the repository root after the refresh.  It refuses a non-Renovate
 ref, exits 0 without a commit when no ``PATH`` changed, refuses (exit 1) when anything
@@ -56,6 +73,9 @@ EXIT_REFUSED = 1
 EXIT_ERROR = 2
 GLOB_CHARS = frozenset("*?[]{}")
 REQUIRED_ENV = ("GH_TOKEN", "APP_SLUG", "GITHUB_REF", "RUNNER_TEMP")
+STAGED_LIST = "changed.txt"
+STAGED_HEAD = "head.txt"
+STAGED_REPO = "repo"
 
 
 class Refusal(Exception):
@@ -149,6 +169,57 @@ def stray_paths(cwd: Path, allowed: list[str]) -> list[str]:
     return status_paths(cwd, [".", *excludes])
 
 
+def stage(args: argparse.Namespace, cwd: Path) -> int:
+    """Stage the changed allowed paths for the publish job; needs no secret."""
+    label = args.label
+    validate_paths(label, args.paths, cwd)
+    changed = status_paths(cwd, [literal(path) for path in args.paths])
+    stray = stray_paths(cwd, args.paths)
+    if stray:
+        listing = "\n".join(stray)
+        raise Refusal(f"{label}: refresh wrote outside the allowed paths:\n{listing}")
+    repo_dir = args.artifact_dir / STAGED_REPO
+    for path in changed:
+        source = cwd / path
+        if not source.is_file():
+            raise PublishError(f"{label}: changed path is not a regular file: {path!r}")
+        target = repo_dir / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    args.artifact_dir.mkdir(parents=True, exist_ok=True)
+    (args.artifact_dir / STAGED_HEAD).write_text(
+        git(["rev-parse", "HEAD"], cwd).strip() + "\n", encoding="utf-8"
+    )
+    (args.artifact_dir / STAGED_LIST).write_text(
+        "".join(f"{path}\n" for path in changed), encoding="utf-8"
+    )
+    print(f"{label}: staged {len(changed)} changed path(s) for the publish job")
+    return EXIT_OK
+
+
+def restore(args: argparse.Namespace, cwd: Path) -> int:
+    """Copy the staged paths back under the allow-list; needs no secret."""
+    label = args.label
+    validate_paths(label, args.paths, cwd)
+    staged_head = (args.artifact_dir / STAGED_HEAD).read_text(encoding="utf-8").strip()
+    if staged_head != git(["rev-parse", "HEAD"], cwd).strip():
+        raise Refusal(f"{label}: the branch moved while the locks were regenerated; rerun")
+    listing = (args.artifact_dir / STAGED_LIST).read_text(encoding="utf-8")
+    staged = [line for line in listing.splitlines() if line]
+    for path in staged:
+        validate_paths(label, [path], cwd)
+        if path not in args.paths:
+            raise Refusal(f"{label}: staged path is not in the allow-list: {path!r}")
+        source = args.artifact_dir / STAGED_REPO / path
+        if not source.is_file():
+            raise PublishError(f"{label}: the artifact does not carry {path!r}")
+        target = cwd / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    print(f"{label}: restored {len(staged)} staged path(s) under the allow-list")
+    return EXIT_OK
+
+
 def commit_message(subject: str, body: list[str]) -> str:
     """The commit message: subject, body lines, and the release-bot sign-off."""
     parts = [subject, "", *body, "", f"Signed-off-by: {BOT_NAME} <{BOT_EMAIL}>"]
@@ -209,6 +280,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     sub = parser.add_subparsers(dest="command", required=True)
     guard = sub.add_parser("refuse-non-renovate")
     guard.add_argument("--label", required=True)
+    for name in ("stage", "restore"):
+        carrier = sub.add_parser(name)
+        carrier.add_argument("--label", required=True)
+        carrier.add_argument("--artifact-dir", type=Path, required=True)
+        carrier.add_argument("paths", nargs="+")
     pub = sub.add_parser("publish")
     pub.add_argument("--label", required=True)
     pub.add_argument("--subject", required=True)
@@ -227,6 +303,10 @@ def main(argv: list[str]) -> int:
         if args.command == "refuse-non-renovate":
             refuse_non_renovate(args.label, require_env_ref())
             return EXIT_OK
+        if args.command == "stage":
+            return stage(args, Path.cwd())
+        if args.command == "restore":
+            return restore(args, Path.cwd())
         return publish(args, Path.cwd())
     except Refusal as exc:
         print(f"::error::{exc}", file=sys.stderr)
