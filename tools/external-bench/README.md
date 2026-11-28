@@ -72,9 +72,20 @@ orchestrator reject the payload as an invalid wrapper schema.
 required keys, a `summary.competitor` that does not match the wrapper
 name, non-object frames, and non-numeric metric fields are reported as
 `wrapper <name> produced invalid schema: ...`; malformed JSON is
-reported as `wrapper <name> produced invalid JSON: ...`. A bad wrapper
-is skipped for that corpus item instead of crashing the whole run with
-an aggregation-time `KeyError`.
+reported as `wrapper <name> produced invalid JSON: ...`. A failed wrapper
+run is printed as `failed <competitor>/<item>: ...` and counted in the
+`failed` column of the table and the `n_failed` field of the JSON; the
+run continues with the next item and still writes both outputs.
+
+`normalise_output` in `lib/common.sh` runs `lib/normalise_output.py`,
+which refuses to invent values. It exits
+1 with `normalise_output: <competitor>: ...` and writes no output file
+when the raw output is empty or not a JSON object, has no frames, has a
+frame without a score or `runtime_ms`, or lacks `plcc`, `srocc`, `rmse`,
+`params` or `gflops`; every score, runtime and summary value must be a
+finite number (`params` an integer). `runtime_total_ms` may be absent;
+it is then the sum of the per-frame runtimes
+([ADR-3611](../../docs/adr/3611-measurement-non-success-states.md)).
 
 ## Operator install (external competitors only)
 
@@ -116,6 +127,12 @@ the fork ships neither corpus.
 If neither corpus root exists at runtime, `compare.py` exits with code
 4 and a message naming both expected paths so the operator can fix
 the layout or pass the override flags.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Every wrapper run produced a valid payload |
+| 4 | No corpus root found |
+| 5 | At least one wrapper run failed; stderr ends with `external-bench: <n> wrapper run(s) failed (<competitor>=<count>, ...); exit 5` |
 
 ## Running a comparison
 

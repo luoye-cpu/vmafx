@@ -60,6 +60,11 @@ pre-push:
       # fork's patterns. Reads the push-ref protocol on stdin; branch pushes pass.
       use_stdin: true
       run: python3 -B scripts/git-hooks/check-push-tags.py
+    adr-body-freeze:
+      # Lefthook replays the push protocol so the checker sees every outgoing ref.
+      # The pre-commit pre-push stage selects only one revision and can omit it on new branches.
+      use_stdin: true
+      run: python3 -B scripts/ci/check-adr-body-freeze.py --base origin/master --push-refs-stdin
     framework-hooks:
       # ADR-1241 wires the framework's pre-push stage (the MkDocs strict build,
       # the PR-body deliverables check, the push-range mypy scope). Lefthook owns

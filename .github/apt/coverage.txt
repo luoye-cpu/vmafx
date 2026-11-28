@@ -13,5 +13,5 @@ python3-pip
 
 # CUDA 12.x runtime — user-space libs only, no driver. Lets ORT
 # dlopen libonnxruntime_providers_cuda.so → libcudart.so.12.
+# The job installs with --no-install-recommends so apt does not fetch the ~160 MB NVIDIA driver packages libcudart12 recommends.
 libcudart12
-libzimg-dev
