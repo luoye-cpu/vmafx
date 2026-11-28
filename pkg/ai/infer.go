@@ -15,11 +15,9 @@
 //   - An Infer method that validates inputs and invokes the ORT subprocess
 //     (vmafx-ort-runner) for Stage 1.  The subprocess approach is identical
 //     to the libvmaf subprocess wrapper in pkg/libvmaf — it avoids CGO
-//     build-time coupling on the ORT shared library.  A direct CGO path via
-//     github.com/yalue/onnxruntime_go is the Stage 2 upgrade.
-//
-// The direct ORT CGO path is stubbed in InferDirect; it will be promoted
-// to the main code path once the container image pins ORT 1.18+.
+//     build-time coupling on the ORT shared library.  ADR-0713 and Q-132
+//     settled on this subprocess path as the single ONNX integration, so the
+//     former direct-CGO stub is not part of the API.
 //
 // ADR-0713: vmafx-node Go worker binary.
 
@@ -198,16 +196,6 @@ func explainRunnerFailure(ctx context.Context, runErr error) error {
 // from PATH.  Callers can test for this error to decide whether to skip AI
 // inference or return an unsupported error to the controller.
 var ErrORTRunnerNotFound = fmt.Errorf("ai: vmafx-ort-runner not found on PATH")
-
-// InferDirect is the Stage 2 direct CGO path via github.com/yalue/onnxruntime_go.
-// It is not yet implemented and always returns ErrDirectInferNotImplemented.
-// This stub exists to anchor the Stage 2 refactor.
-func (r *Registry) InferDirect(_ string, _ []float64) ([]float64, error) {
-	return nil, ErrDirectInferNotImplemented
-}
-
-// ErrDirectInferNotImplemented is returned by InferDirect until Stage 2.
-var ErrDirectInferNotImplemented = fmt.Errorf("ai: direct ORT CGO path not yet implemented (Stage 2)")
 
 // ListModels returns the names of .onnx models in the registry's model directory.
 // Returns an empty slice (not an error) when the directory is absent or empty.

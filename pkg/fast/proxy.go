@@ -47,8 +47,8 @@ func Canonical6Features() []string {
 // (`--inputs '[...]'`). There is no wire format for a second named port: the
 // runner (cmd/vmafx-ort-runner, ADR-1134) binds that one array to the graph's
 // single input, and libvmaf's session rejects a two-input graph with an arity
-// error. pkg/ai.Registry.InferDirect — the CGO path via a real ONNX Runtime
-// binding — is an explicit Stage-2 stub returning ErrDirectInferNotImplemented.
+// error. There is no direct-CGO stub in pkg/ai: Q-132 settled on the
+// subprocess runner as the single ONNX integration.
 //
 // Concatenating the two ports into a single 20-D vector is NOT a workaround:
 // vmaftune/proxy.py documents that exact mistake ("the first linear layer of
@@ -61,9 +61,9 @@ func Canonical6Features() []string {
 //   - a vmafx-ort-runner protocol that accepts named input tensors, plus a
 //     matching pkg/ai.Registry.InferNamed (the runner is in-tree, so this is
 //     a protocol extension rather than an external dependency); or
-//   - promoting pkg/ai.Registry.InferDirect onto a CGO ONNX Runtime binding
-//     (e.g. github.com/yalue/onnxruntime_go), which pkg/ai defers to Stage 2
-//     precisely because it couples the build to libonnxruntime; or
+//   - adding a CGO ONNX Runtime binding behind a new InferNamed method (e.g.
+//     github.com/yalue/onnxruntime_go); pkg/ai has no stub for this because
+//     it couples the build to libonnxruntime; or
 //   - a single-port re-export of fr_regressor_v2 that concatenates the two
 //     inputs *inside* the graph, shipped alongside the current model.
 var ErrProxyPortsUnsupported = errors.New(
