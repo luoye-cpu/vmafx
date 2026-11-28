@@ -838,6 +838,7 @@ SENTINEL_EXPECTED_FAILURES: dict[str, tuple[str, frozenset[str]]] = {
     ),
 }
 REST_SHARDS = 2
+MAX_REPORTED_FAILURE_NAMES = 10
 # The one shard that cannot stay under the suite's limit on a hosted runner: its script alone
 # took 396 s there. sentinel_damage() bounds the script itself at 600 s.
 DEFAULT_MODEL_SHARD_TIMEOUT_SECONDS = 900
@@ -973,6 +974,15 @@ def make_sentinel(root: Path) -> Path:
     return sentinel
 
 
+def unittest_failure_names(lines: list[str]) -> set[str]:
+    """Collect test names from unittest failure and error headers."""
+    return {
+        match.group(1)
+        for line in lines
+        if (match := re.match(r"^(?:FAIL|ERROR): (test\w*) \(", line))
+    }
+
+
 def commit_caller_baseline(repository: Path, user_name: str, message: str) -> None:
     """Initialise a caller fixture repository with background maintenance disabled."""
     repository.mkdir(exist_ok=True)
@@ -997,11 +1007,7 @@ def declared_failure_report(stderr: str, returncode: int, declared: frozenset[st
     if not ran:
         last = next((line.strip() for line in reversed(lines) if line.strip()), "")
         return f"exit {returncode} before unittest ran: {last[:200]}"
-    found = {
-        match.group(1)
-        for line in lines
-        if (match := re.match(r"^(?:FAIL|ERROR): (test\w*) \(", line))
-    }
+    found = unittest_failure_names(lines)
     if found != declared:
         return f"declared failures {sorted(declared)}, got {sorted(found)}"
     return ""
@@ -1294,7 +1300,15 @@ def sentinel_damage(script: str, directory: Path) -> list[str]:
     if result.returncode != 0 and script not in SENTINEL_EXPECTED_FAILURES:
         lines = str(result.stderr).splitlines()
         last = next((line.strip() for line in reversed(lines) if line.strip()), "")
-        damage.append(f"exit {result.returncode}: {last[:200]}")
+        names = sorted(unittest_failure_names(lines))
+        if names:
+            listed = ", ".join(names[:MAX_REPORTED_FAILURE_NAMES])
+            if len(names) > MAX_REPORTED_FAILURE_NAMES:
+                listed += ", ..."
+            last += f"; failing: {listed}"
+        else:
+            last = last[:200]
+        damage.append(f"exit {result.returncode}: {last}")
     if result.returncode == 0 and script in SENTINEL_EXPECTED_FAILURES:
         damage.append("declared expected-fail, but exit 0")
     return damage
@@ -1553,6 +1567,44 @@ class GitFixtureIsolation(unittest.TestCase):
             script = root / "test-failure.sh"
             script.write_text("exit 1\n")
             self.assertEqual(sentinel_damage(str(script), root), ["exit 1: "])
+
+    def planted_unittest_damage(self, methods: str) -> list[str]:
+        with tempfile.TemporaryDirectory(prefix="sentinel-unittest-") as directory:
+            root = Path(directory)
+            script = root / "test-planted.py"
+            script.write_text(
+                "import unittest\nclass Planted(unittest.TestCase):\n"
+                + methods
+                + "unittest.main()\n"
+            )
+            return sentinel_damage(str(script), root)
+
+    def test_sentinel_names_failing_test(self) -> None:
+        damage = self.planted_unittest_damage("    def test_planted_fail(self): self.fail()\n")
+        self.assertEqual(damage, ["exit 1: FAILED (failures=1); failing: test_planted_fail"])
+
+    def test_sentinel_accepts_passing_unittest(self) -> None:
+        damage = self.planted_unittest_damage("    def test_planted_pass(self): pass\n")
+        self.assertEqual(damage, [])
+
+    def test_sentinel_names_failure_and_error(self) -> None:
+        damage = self.planted_unittest_damage(
+            "    def test_alpha(self): self.fail()\n"
+            "    def test_zulu(self): raise RuntimeError()\n"
+        )
+        self.assertEqual(
+            damage, ["exit 1: FAILED (failures=1, errors=1); failing: test_alpha, test_zulu"]
+        )
+
+    def test_sentinel_names_first_ten_failures(self) -> None:
+        methods = "".join(f"    def test_{i:02d}(self): self.fail()\n" for i in range(11))
+        self.assertEqual(
+            self.planted_unittest_damage(methods),
+            [
+                "exit 1: FAILED (failures=11); failing: test_00, test_01, test_02, test_03, "
+                "test_04, test_05, test_06, test_07, test_08, test_09, ..."
+            ],
+        )
 
     def test_sentinel_accepts_successful_python(self) -> None:
         with tempfile.TemporaryDirectory(prefix="sentinel-python-success-") as directory:

@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from scripts.lib import git_env
 from scripts.lib.safe_subprocess import CommandTimedOut
 from scripts.lib.safe_subprocess import run as run_command
+from scripts.lib.scratch_program import path_absent, remove_tree
 
 STABLE_TAG = re.compile(r"n(\d+)\.(\d+)(?:\.(\d+))?\Z")
 PATCH_NAME = re.compile(r"\d{4}-[A-Za-z0-9_.-]+\.patch\Z")
@@ -349,7 +350,11 @@ class SourceCache:
             return False
 
     def reset(self) -> None:
-        shutil.rmtree(self.repo, ignore_errors=True)
+        try:
+            remove_tree(self.repo)
+        except FileNotFoundError as error:
+            if error.filename not in (self.repo, str(self.repo)) or not path_absent(self.repo):
+                raise
         self.repo.parent.mkdir(parents=True, exist_ok=True)
         self.replay.run_git(
             ["-C", str(self.repo.parent)], "init", "--quiet", "--bare", "source.git"
@@ -458,7 +463,11 @@ def mirrors(repo: Path, remote: str, tag: str) -> dict[Path, bytes]:
         original = read_repo_text_bytes(path).decode("utf-8")
         updated = original
         for key, value in {"FFMPEG_TAG": tag, "FFMPEG_REMOTE": remote}.items():
-            updated, count = re.subn(rf"(?m)^ARG {key}=\S+$", f"ARG {key}={value}", updated)
+
+            def literal_arg(_match: re.Match[str], line: str = f"ARG {key}={value}") -> str:
+                return line
+
+            updated, count = re.subn(rf"(?m)^ARG {key}=\S+$", literal_arg, updated)
             if count != 1:
                 raise ValueError(f"expected one {key} mirror in {name}, found {count}")
         changed[path] = updated.encode()
@@ -508,7 +517,7 @@ def readme_claim(repo: Path, receipt: Receipt) -> dict[Path, bytes]:
             f"> `{receipt['patched_tree']}`\n"
         )
     claim = claim_body.replace("\n", "\r\n") if ending == "\r\n" else claim_body
-    updated, count = README_CLAIM_PATTERN.subn(claim, original)
+    updated, count = README_CLAIM_PATTERN.subn(lambda _match: claim, original)
     if count != 1:
         raise ValueError(f"expected one replay claim in ffmpeg-patches/README.md, found {count}")
     return {path: updated.encode("utf-8")}
@@ -675,6 +684,17 @@ def _stage_file(path: Path, content: bytes, role: str) -> Path:
     return temporary
 
 
+def _rollback_files(written: list[Path], backups: dict[Path, Path]) -> list[str]:
+    """Restore replaced files in reverse order and collect failed restores."""
+    failures = []
+    for path in reversed(written):
+        try:
+            backups[path].replace(path)
+        except OSError:
+            failures.append(f"{path} <- {backups[path]}")
+    return failures
+
+
 def replace_files(updates: dict[Path, bytes], repo: Path) -> None:
     """Prepare every file first; record journal, perform renames, delete journal."""
     before = {path: path.read_bytes() for path in updates}
@@ -708,12 +728,7 @@ def replace_files(updates: dict[Path, bytes], repo: Path) -> None:
         # Roll back even when Ctrl-C interrupts a multi-file replacement.
         # Keep originals if recovery itself is interrupted a second time.
         preserve_backups = True
-        failures = []
-        for path in reversed(written):
-            try:
-                backups[path].replace(path)
-            except OSError:
-                failures.append(f"{path} <- {backups[path]}")
+        failures = _rollback_files(written, backups)
         if failures:
             raise RuntimeError(
                 "refresh rollback failed; original backups retained: " + "; ".join(failures)
@@ -784,8 +799,8 @@ def format_patch_updates(
 
 def pinned_config(text: str, tag: str, commit: str) -> str:
     """Move the tag and the commit it names together."""
-    text = re.sub(r"(?m)^FFMPEG_TAG=.*$", f'FFMPEG_TAG="{tag}"', text)
-    return re.sub(r"(?m)^FFMPEG_COMMIT=.*$", f'FFMPEG_COMMIT="{commit}"', text)
+    text = re.sub(r"(?m)^FFMPEG_TAG=.*$", lambda _match: f'FFMPEG_TAG="{tag}"', text)
+    return re.sub(r"(?m)^FFMPEG_COMMIT=.*$", lambda _match: f'FFMPEG_COMMIT="{commit}"', text)
 
 
 def apply_stack(
