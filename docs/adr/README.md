@@ -48,7 +48,30 @@ and follows the structure in [0000-template.md](0000-template.md):
   and never reused.
 - **Immutable once Accepted**: the body is frozen. To change a decision, write
   a new ADR with `Status: Supersedes ADR-NNNN` and flip the old one to
-  `Superseded by ADR-MMMM`.
+  `Superseded by ADR-MMMM`. The status line and References section may be
+  edited under these rules. A frozen status may change to Superseded or
+  Deprecated with a blockquote immediately below the metadata. Use
+  `> [!NOTE]` followed by `> Superseded by [ADR-NNNN](NNNN-title.md)`.
+  The linked successor must exist on the proposed branch. A Deprecated note
+  may also contain one final `> Deprecated: <one sentence>` line.
+  Keep the References heading. Append dated `## Status update YYYY-MM-DD`
+  or `### Status update YYYY-MM-DD` sections after the last reference.
+  When editing references and appending an update together, keep retained
+  entries first, in their original order. Link targets may be repaired
+  while preserving link text and titles. Whole-line markdownlint directives,
+  prose reflow, table spacing and blank lines may change outside code.
+  Code spans and fenced examples preserve literal spacing.
+  The check compares the base tip with the proposed merge and protects ADRs
+  frozen on either the base tip or the common ancestor. The pre-push hook
+  checks every pushed ref from Git's push protocol against `origin/master`.
+  For a manual check, pass `--base` and `--head` explicitly.
+  A commit trailer `ADR-Body-Edit: <reason>` of at least 20 characters
+  permits other edits or renames in the ADRs whose
+  base `ADR-NNNN` id the reason names, and only in those; a reason that names
+  no ADR id is refused.
+  Carry the trailer into the squash commit body so the reason remains in master
+  history.
+  `scripts/ci/check-adr-body-freeze.py` enforces this rule.
 - **One decision per ADR** — if you find yourself writing "and also…", split it.
 - **Tagging**: use the flat tag palette below so `grep -l 'Tags:.*cuda'
   docs/adr/*.md` works. New tags are fine when justified.
@@ -1572,3 +1595,7 @@ public authority; documentation never links into either local root.
 | [ADR-3556](3556-merge-queue-merge-group.md) | Trigger Required Checks Aggregator and feeding workflows on merge_group for the master merge queue, exempting Scorecard gates and keeping publish steps off merge_group | Accepted (Superseded-in-part by [ADR-3610](3610-queue-fork-admission-reviewed-head.md)) | ci, fork-local |
 | [ADR-3557](3557-aggregator-same-head-queue.md) | Queue same-head pull-request runs on merge-gate workflows | Accepted | ci, fork-local |
 | [ADR-3610](3610-queue-fork-admission-reviewed-head.md) | Admit fork pull requests to the merge queue at the reviewed head through `merge_train_guard.py admit-fork` and `queue-audit` | Accepted | ci, fork-local |
+| [ADR-3611](3611-measurement-non-success-states.md) | Report measurement cells and wrapper runs that were not compared as non-success | Accepted | perf, bench, testing |
+| [ADR-3625](3625-heavy-job-link-profile.md) | Heavy CI job link profiles | Accepted | ci, build |
+| [ADR-3624](3624-landed-release-bot-self-coauthor.md) | Strip the release bot's own co-author line on landed commits | Accepted | ci |
+| [ADR-3627](3627-render-check-in-the-merge-group.md) | Check the render in the merge group | Accepted | ci, docs, release |
