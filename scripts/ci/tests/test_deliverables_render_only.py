@@ -158,6 +158,13 @@ class RenderOnlyGateTest(unittest.TestCase):
 
     # --- planted negatives ----------------------------------------------
 
+    def test_render_only_pr_still_requires_toolchain_claim_evidence(self) -> None:
+        self.commit({"CHANGELOG.md": "- fixed a\n- fixed b\n"})
+        self.assert_refused(
+            self.gate(BODY + "\nNo nvcc on this host.\n"),
+            "check-toolchain-claims: line ",
+        )
+
     def test_rendered_file_next_to_another_file_is_refused(self) -> None:
         self.commit({"CHANGELOG.md": "- fixed a\n- fixed b\n", "scripts/x.py": "x = 1\n"})
         self.assert_refused(self.gate(), "ADR-2197 rendered file")
