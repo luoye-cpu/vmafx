@@ -2,8 +2,8 @@ name: README Badges
 
 # Render the README status badges in one style (docs/development/readme-badges.md).
 # scripts/ci/readme_badges.py reads the latest decisive push run of every badged
-# workflow on master plus the OpenSSF Scorecard, OpenSSF Best Practices and
-# Codacy public APIs; tools/badges/render.mjs draws the SVGs with the pinned
+# workflow on master plus the OpenSSF Scorecard and OpenSSF Best Practices
+# public APIs; tools/badges/render.mjs draws the SVGs with the pinned
 # shields.io renderer; the publish job commits them to the badges branch the
 # README links. A source that fails keeps its last value for six hours, then
 # reads "stale", and this run turns red so the failure is seen.
@@ -33,7 +33,7 @@ jobs:
     # .github/repository-security-policy.json holds both names; a test keeps
     # these in step with it.
     if: >-
-      github.repository == 'VMAFx/vmafx'
+      github.repository == 'vidiko/vmafx'
       && github.server_url == 'https://github.com'
       && github.ref == 'refs/heads/master'
     runs-on: ubuntu-26.04
@@ -54,7 +54,7 @@ jobs:
           python-version: "3.14.10"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
-          node-version: "26.12.1"
+          node-version: "26.13.1"
       - name: Install the pinned badge renderer
         working-directory: tools/badges
         run: npm ci --ignore-scripts --no-audit --no-fund

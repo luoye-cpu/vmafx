@@ -1,0 +1,1 @@
+- **The research radar collector retries HTTP fetches through tenacity 9.2.1.** `scripts/research/radar_collect.py` replaces its hand-written retry loop in `http_fetch` with `tenacity.Retrying` (Apache-2.0), keeping the same three attempts, 1 s / 4 s backoff, retried transport error classes, and `FetchError` reporting.

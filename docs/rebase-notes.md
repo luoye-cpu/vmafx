@@ -8,6 +8,52 @@ search:
 # Rebase notes
 
 <!-- rebase-notes:fragments:begin (rendered from docs/rebase-notes.d/; do not edit) -->
+## Scorecard gate trusts v5.7.0 (2026-11-25)
+
+- `scripts/ci/scorecard_gate.py`: `VERSION`, `TOOL_COMMIT` and
+  `ACTION_COMMIT` name Scorecard v5.7.0 and `ossf/scorecard-action` v2.6.0.
+  Fork-only, nothing upstream to merge.
+- **On sync or a later bump**: Renovate opens the `ossf/scorecard-action` bump
+  in its own reviewed pull request (`OpenSSF Scorecard action (gate identity)`
+  in `renovate.json`), which is where `VERSION`, `TOOL_COMMIT` and
+  `ACTION_COMMIT` move together with `scorecard.yml` and `security-scans.yml`;
+  `test_every_scan_uses_the_action_the_gate_reviewed` fails otherwise. Compare
+  `docs/checks/internal/checks.yaml` of both tool commits before keeping
+  `WEIGHTS`.
+
+## Check the render in the merge group (2026-11-23)
+
+- Keep full history for the Docs job on `push` and `merge_group`. The
+  merge-group step passes the event base SHA through `env` to
+  `scripts/ci/check_render_on_master.py --group-base`.
+- Check the last render commit on its own tree so fragment landings after
+  it can still owe a render. The opener repairs an inexact last render
+  immediately. See [ADR-3627](adr/3627-render-check-in-the-merge-group.md).
+- Tests: `scripts/ci/tests/test_check_render_on_master.py`.
+
+## Fatbin compression entry flags (2026-11-20)
+
+- `core/src/check_device_compression.py` reads fatbin entry flags and excludes
+  compressed payloads from raw-code scans. Preserve this check when updating
+  the CUDA build integration.
+
+## Affected test timeouts (2026-11-20)
+
+- `scripts/ci/run_affected_suites.py`: default per-test timeout 300 s and wall
+  cap multiplier `min(4, 1 + max(load1, load5) / CPUs)`; suite overrides win,
+  and suites without a per-test timeout retain the unscaled base cap.
+- `scripts/ci/tests/test_run_affected_suites.py`: timeout and load controls.
+- `docs/development/test-suites.md`: runner timeout behavior.
+- `changelog.d/fixed/affected-tests-load-scaled-cap.md`: release note.
+
+## ROCm image layer pull tokens (2026-11-20)
+
+`scripts/ci/install-rocm-from-image.sh` fetches a registry pull token before
+the manifest and again before each layer attempt. On sync, retain the token
+refresh inside the retry loop and its shared `fetch_token` implementation.
+`scripts/ci/tests/test_install_rocm_from_image.py` checks token exhaustion,
+token endpoint failure and retries with a fresh token.
+
 ## Windows SYCL pin (2026-11-19)
 
 Keep the Windows SYCL oneAPI 2026.2.0.661 installer pin and the AOT probe
