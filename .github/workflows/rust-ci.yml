@@ -147,7 +147,7 @@ jobs:
           sudo ldconfig
 
       - name: Set up the pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec  # stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca  # stable
         with:
           # Pinned by commit SHA, so the action cannot infer the toolchain from
           # its git ref — `toolchain` must be given explicitly or setup fails
@@ -296,7 +296,7 @@ jobs:
           persist-credentials: false
 
       - name: Run cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        uses: EmbarkStudios/cargo-deny-action@81891abc19297b21343b15ef67dc61e4aea74fda # v2.1.4
         with:
           command: check
           # Match the project root's deny.toml location.

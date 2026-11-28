@@ -49,7 +49,7 @@ read_queue_state() {
   if ! ans="$(gh api graphql \
     -f "query=query(\$o:String!,\$n:String!,\$p:Int!){repository(owner:\$o,name:\$n){pullRequest(number:\$p){id isInMergeQueue}}}" \
     -f "o=$owner" -f "n=$name" -F "p=$pr" \
-    --jq '.data.repository.pullRequest | [(.isInMergeQueue | tojson), .id] | @tsv')"; then
+    --jq '.data.repository.pullRequest | [(.isInMergeQueue | tojson), (if (.id | type) == "string" and .id != "" then .id else "" end)] | @tsv')"; then
     echo "open-render-pr.sh: merge-queue GraphQL query failed for pull request #$pr" >&2
     return 1
   fi
