@@ -991,9 +991,8 @@ jobs:
       - name: Configure libvmaf (CUDA)
         if: steps.leg.outputs.run == 'true' && matrix.backend == 'cuda'
         shell: cmd
-        env:
-          CFLAGS: /experimental:c11atomics
-          CXXFLAGS: /experimental:c11atomics
+        # /experimental:c11atomics comes from core/meson.build's MSVC project
+        # arguments (audit C2-13, #3072).
         run: |
           meson setup core core\build -Dwerror=true --buildtype release ^
             --prefix %CD%\install ^
@@ -1151,9 +1150,8 @@ jobs:
 
       - name: Configure libvmaf
         shell: cmd
-        env:
-          CFLAGS: /experimental:c11atomics
-          CXXFLAGS: /experimental:c11atomics
+        # /experimental:c11atomics comes from core/meson.build's MSVC project
+        # arguments (audit C2-13, #3072).
         run: |
           meson setup core core\build -Dwerror=true --buildtype release ^
             --prefix %CD%\install ^

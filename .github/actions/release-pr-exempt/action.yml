@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: EUPL-1.2
+# Copyright 2026 Lusoris
+name: Detect a machine-generated release PR
+description: >-
+  Set the consuming step's `exempt` output: true when the pull request is the
+  machine-generated release PR (ADR-1151, ADR-1388). release-please generates
+  that PR from a template: it carries neither an ADR-0108 checklist nor any
+  opt-out sentinel, and its version-marker diff is path-mapped to docs/ trees
+  a bot has no reason to touch. Now that these gates are required contexts, an
+  unexemptable red there would put the release PR back behind the admin bypass
+  ADR-1151 removes. The predicate needs a bot author, or a PAT author whose
+  diff is verified to touch release-please files only, so a human cannot
+  disarm the gate by branch name.
+outputs:
+  exempt:
+    description: >-
+      "true" when the pull request is the machine-generated release PR,
+      "false" otherwise. Always set: the script always exits 0.
+    value: ${{ steps.detect.outputs.exempt }}
+runs:
+  using: composite
+  steps:
+    - name: Run the shared release-PR predicate
+      id: detect
+      shell: bash
+      env:
+        HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: bash scripts/ci/release-pr-exempt.sh

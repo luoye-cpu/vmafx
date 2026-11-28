@@ -246,8 +246,12 @@ def meson_options(gpu: str) -> list[str]:
 
 def build_environment(gpu: str) -> dict[str, str]:
     """MSVC's cl, or icx-cl for the SYCL build (as the Windows MSVC+SYCL CI leg)."""
-    env = {**os.environ, "CFLAGS": "/experimental:c11atomics",
-           "CXXFLAGS": "/experimental:c11atomics"}  # fmt: skip
+    # No /experimental:c11atomics here: the cl.exe builds get it from
+    # core/meson.build's MSVC project arguments (audit C2-13, #3072), and the
+    # icx-cl SYCL build goes without it, matching the workflow SYCL leg's
+    # deliberate removal (rebase notes 2026-10-07); icx supports C11 atomics
+    # natively.
+    env = dict(os.environ)
     if gpu == "sycl":
         env.update({"CC": "icx-cl", "CXX": "icx-cl"})
     return env

@@ -102,6 +102,23 @@ if cc.get_argument_syntax() == 'msvc'
     add_project_arguments('/std:clatest', language: 'c')
     test_args += '/std:clatest'
 endif
+# MSVC's <stdatomic.h> refuses C11 atomics without /experimental:c11atomics
+# (docs/backends/sycl/windows.md), so libvmaf's stdatomic users need it on
+# every cl.exe build. Only cl.exe: icx-cl supports C11 atomics natively and
+# the SYCL leg deliberately stopped setting the flag (rebase note
+# "icx-cl: the CRT's deprecated calls", 2026-10-07), and clang-cl does not
+# need it either. It lives here, next to
+# the /std flag it pairs with and before the stdatomic.h probe below, instead
+# of the core/src/meson.build placement the audit row sketched: a project
+# argument only reaches compiler checks issued after it, and the probe must
+# see the flag now that the CFLAGS/CXXFLAGS environment the workflow steps
+# injected is gone (audit C2-13, #3072). Mirrored into test_args like
+# /std:clatest, so the probes are correct even on a Meson that keeps project
+# arguments out of them.
+if cc.get_id() == 'msvc'
+    add_project_arguments('/experimental:c11atomics', language: ['c', 'cpp'])
+    test_args += '/experimental:c11atomics'
+endif
 if host_machine.system() == 'linux'
     test_args += '-D_GNU_SOURCE'
     add_project_arguments('-D_GNU_SOURCE', language: ['c', 'cpp'])

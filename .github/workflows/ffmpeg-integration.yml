@@ -360,14 +360,12 @@ jobs:
 
       # Static, so the install holds vmaf.lib and vmafx.lib (ADR-2752); the
       # release buildtype compiles with /MD, the runtime the smoke script gives
-      # FFmpeg. `/experimental:c11atomics` as on every MSVC leg. No tests: the
-      # MSVC legs of libvmaf-build-matrix.yml build and run them; this leg
-      # needs the library and the vmaf CLI.
+      # FFmpeg. `/experimental:c11atomics` as on every MSVC leg, now supplied by
+      # core/meson.build's MSVC project arguments (audit C2-13, #3072). No
+      # tests: the MSVC legs of libvmaf-build-matrix.yml build and run them;
+      # this leg needs the library and the vmaf CLI.
       - name: Build libvmaf (static, MSVC)
         shell: cmd
-        env:
-          CFLAGS: /experimental:c11atomics
-          CXXFLAGS: /experimental:c11atomics
         run: |
           meson setup core core\build -Dwerror=true --buildtype release ^
             --prefix %CD%\install ^

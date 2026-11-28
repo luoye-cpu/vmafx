@@ -1,6 +1,7 @@
 ---
 paths:
   - scripts/ci/release-pr-exempt.sh
+  - .github/actions/release-pr-exempt/action.yml
   - scripts/ci/tests/test-release-pr-exempt.sh
 invariant: Exempt = `release-please--` head ref AND bot author; always exits 0; only four authoring gates consult it.
 area: release
@@ -28,3 +29,9 @@ area: release
 - New gate added to aggregator's `required` array must be checked against
   release PR's shape (`.release-please-manifest.json` + coordinated
   version-marker diff, and rendered-changelog body) before promoted.
+- The six gates in `rule-enforcement.yml` consume the script through the
+  composite action `.github/actions/release-pr-exempt` (step id `release_pr`,
+  output `exempt`) — audit C2-12, #3078. A new gate keeps the step shape
+  (`- name: Detect a machine-generated release PR` + `id: release_pr` +
+  `uses:`) rather than re-inlining the script call; `check_composite_actions.py`
+  lints the action, and the step-level `if:` rule above still applies.

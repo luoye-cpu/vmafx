@@ -277,3 +277,19 @@ first).
   and the branch-protection delta. The CUDA / SYCL backends
   themselves are unchanged; no `docs/backends/` edit needed beyond
   the ADR.
+
+### Status update 2026-11-28
+
+The C2 audit (#3072) superseded the `CFLAGS` / `CXXFLAGS` injection above:
+`/experimental:c11atomics` now lives in `core/meson.build` as a project
+argument for `cc.get_id() == 'msvc'`, mirrored into the `stdatomic.h`
+probe's `test_args` beside `/std:clatest`, and the four workflow steps and
+`build-windows-tester-bundle.py` no longer set the environment. The env-var
+rationale held while the flag was injected per step — the workflow-injected
+`CFLAGS` is what the `stdatomic.h` feature probe leaned on, and a project
+argument placed later (in `core/src/meson.build`) would reach the probe too
+late. The build-system placement keeps the probe correct without the
+environment and narrows the condition to cl.exe, which reproduces the exact
+flag surface the legs carried: icx-cl stopped setting the flag on
+2026-10-07 ("icx-cl: the CRT's deprecated calls") and clang-cl does not
+need it.

@@ -485,9 +485,8 @@ jobs:
       - name: Configure libvmaf (Windows)
         if: matrix.windows
         shell: cmd
-        env:
-          CFLAGS: /experimental:c11atomics
-          CXXFLAGS: /experimental:c11atomics
+        # /experimental:c11atomics comes from core/meson.build's MSVC project
+        # arguments (audit C2-13, #3072).
         run: |
           meson setup core core\build -Dwerror=true --buildtype release ^
             --prefix %CD%\install ^
