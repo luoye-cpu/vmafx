@@ -338,6 +338,28 @@ def _tokenise_shell_item(text: str) -> list[str]:
     return list(lexer)
 
 
+def coverage_shard_argv_problem(step: str, index: int) -> str | None:
+    """Report any deviation from the coverage shard runner's expected arguments."""
+    expected = [
+        "timeout",
+        "--kill-after=30s",
+        "30m",
+        "python3",
+        "scripts/ci/run_pytest_shard.py",
+        "--shard",
+        f"{index}/4",
+        "--",
+        "@scripts/ci/pytest-coverage-shard.args",
+    ]
+    try:
+        actual = _tokenise_shell_item(step_script(step))
+    except (AssertionError, ValueError) as exc:
+        return f"coverage shard {index}/4 command cannot be parsed: {exc}"
+    if actual != expected:
+        return f"coverage shard {index}/4 command has argv {actual!r}, expected {expected!r}"
+    return None
+
+
 def _shell_clauses_with_operators(tokens: list[str]) -> list[tuple[list[str], str]]:
     """Pair each non-empty command clause with the operator token that ends it ("" at the end)."""
     pairs: list[tuple[list[str], str]] = []
@@ -2268,6 +2290,7 @@ class FailClosedCIContract(unittest.TestCase):
         self.assertNotRegex(workflow, r"(?m)^    if: false\s*$")
         assertion = workflow_step(workflow, "Assert every Python coverage shard passed")
         self.assertIn('!= "success"', assertion)
+        # The workflow declares four coverage shards.
         for index in range(1, 5):
             with self.subTest(shard=index):
                 pytest_step = workflow_step(workflow, f"Run Python test suite, shard {index}/4")
@@ -2281,6 +2304,8 @@ class FailClosedCIContract(unittest.TestCase):
                     pytest_step, r"(?m)^          PYTHONPATH: \$\{\{ github\.workspace \}\}/python$"
                 )
                 self.assertNotRegex(pytest_step, r"PYTHO\dPATH")
+                problem = coverage_shard_argv_problem(pytest_step, index)
+                self.assertIsNone(problem, problem)
 
         gpu_coverage = workflow_job(workflow, "coverage-gpu")
         self.assertIn("name: Coverage GPU", gpu_coverage)
@@ -2288,6 +2313,58 @@ class FailClosedCIContract(unittest.TestCase):
         self.assertNotIn("continue-on-error", gpu_coverage)
         aggregator = (WORKFLOWS / "required-aggregator.yml").read_text(encoding="utf-8")
         self.assertIn("'Coverage GPU',", aggregator)
+
+    def test_coverage_shard_argv_accepts_workflow_steps(self) -> None:
+        workflow = (WORKFLOWS / "tests-and-quality-gates.yml").read_text(encoding="utf-8")
+        # The workflow declares four coverage shards.
+        for index in range(1, 5):
+            with self.subTest(shard=index):
+                step = workflow_step(workflow, f"Run Python test suite, shard {index}/4")
+                problem = coverage_shard_argv_problem(step, index)
+                self.assertIsNone(problem, problem)
+
+    def _assert_coverage_shard_argv_rejects(self, pytest_args: str) -> None:
+        workflow = (WORKFLOWS / "tests-and-quality-gates.yml").read_text(encoding="utf-8")
+        step = workflow_step(workflow, "Run Python test suite, shard 1/4")
+        run_line = f"          {step_script(step)}"
+        prefix, separator, _ = run_line.rpartition(" -- ")
+        self.assertTrue(separator, run_line)
+        mutated = step.replace(run_line, f"{prefix}{separator}{pytest_args}\n", 1)
+        self.assertIsNotNone(coverage_shard_argv_problem(mutated, 1), mutated)
+
+    def test_coverage_shard_argv_rejects_commented_argfile(self) -> None:
+        self._assert_coverage_shard_argv_rejects(
+            "python/test/ # -- @scripts/ci/pytest-coverage-shard.args"
+        )
+
+    def test_coverage_shard_argv_rejects_renamed_argfile(self) -> None:
+        self._assert_coverage_shard_argv_rejects("@scripts/ci/pytest-coverage-shard.args.bak")
+
+    def test_coverage_shard_argv_rejects_extra_option(self) -> None:
+        self._assert_coverage_shard_argv_rejects("@scripts/ci/pytest-coverage-shard.args -m main")
+
+    def test_coverage_shard_argv_rejects_quoted_inline_deselect(self) -> None:
+        self._assert_coverage_shard_argv_rejects(
+            '@scripts/ci/pytest-coverage-shard.args --"deselect" python/test/command_line_test.py'
+        )
+
+    def test_pytest_coverage_shard_argfile_lists_shared_runner_arguments(self) -> None:
+        """Assert coverage shards read pytest arguments from one argfile, not inline copies."""
+        argfile = ROOT / "scripts" / "ci" / "pytest-coverage-shard.args"
+        lines = argfile.read_text(encoding="utf-8").splitlines()
+        expected = [
+            "python/test/",
+            "-v",
+            "-m",
+            "not slow",
+            "--tb=short",
+            "--timeout=600",
+            "--timeout-method=thread",
+            "--ignore=python/test/resource",
+            "--deselect",
+            "python/test/command_line_test.py::CommandLineTest",
+        ]
+        self.assertEqual(lines, expected)
 
     def test_coverage_shard_assertion_names_why_a_shard_was_skipped(self) -> None:
         """Assert that the coverage workflow identifies why a skipped shard was skipped."""
