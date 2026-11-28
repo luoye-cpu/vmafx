@@ -38,6 +38,7 @@ STAGES = frozenset({"impl", "fix", "review", "audit", "research"})
 FIX_CLAUSES = (
     "mypy --no-site-packages --disable-error-code=import-not-found",
     "*.md change: markdownlint-cli2",
+    "changelog-fragment-no-lint-directive",
 )
 REVIEW_CLAUSES = (
     "Write nothing in the worktree",
@@ -318,13 +319,21 @@ class LaneBriefReplayTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_fix_missing_markdownlint_names_only_it(self) -> None:
-        result = self.required(FIX_BRIEF + FIX_CLAUSES[0] + "\n", self.repo_worktree())
+        brief = FIX_BRIEF + FIX_CLAUSES[0] + "\n" + FIX_CLAUSES[2] + "\n"
+        result = self.required(brief, self.repo_worktree())
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertEqual(result.stdout.strip(), FIX_CLAUSES[1])
 
+    def test_fix_missing_changelog_directive_hook_names_only_it(self) -> None:
+        brief = FIX_BRIEF + "\n".join(FIX_CLAUSES[:2]) + "\n"
+        result = self.required(brief, self.repo_worktree())
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), FIX_CLAUSES[2])
+
     def test_fix_brief_with_markdownlint_not_applicable_passes(self) -> None:
         note = "*.md change: markdownlint-cli2 not run, no linted Markdown file touched\n"
-        result = self.required(FIX_BRIEF + FIX_CLAUSES[0] + "\n" + note, self.repo_worktree())
+        brief = FIX_BRIEF + FIX_CLAUSES[0] + "\n" + note + FIX_CLAUSES[2] + "\n"
+        result = self.required(brief, self.repo_worktree())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_impl_brief_needs_no_stage_clauses(self) -> None:
@@ -387,12 +396,21 @@ class LaneBriefReplayTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_planted_fix_brief_passes_without_the_markdownlint_clause(self) -> None:
-        # Mutation: drop the markdownlint clause and the mypy-only fix brief launches
-        # again, so the refusal above comes from this file and not from the reader alone.
+        # The brief omits only the Markdownlint clause. Dropping it from the config
+        # lets the brief launch again, showing the reader needs this file to refuse it.
         data = load_config()
         data["required_by_stage"]["fix"].remove(FIX_CLAUSES[1])
         mutant = self.worktree(yaml.safe_dump(data, sort_keys=True))
-        result = self.required(FIX_BRIEF + FIX_CLAUSES[0] + "\n", mutant)
+        brief = FIX_BRIEF + FIX_CLAUSES[0] + "\n" + FIX_CLAUSES[2] + "\n"
+        result = self.required(brief, mutant)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_planted_fix_brief_passes_without_the_changelog_directive_clause(self) -> None:
+        # Mutation: drop the hook clause and a fix brief without it launches again.
+        data = load_config()
+        data["required_by_stage"]["fix"].remove(FIX_CLAUSES[2])
+        mutant = self.worktree(yaml.safe_dump(data, sort_keys=True))
+        result = self.required(FIX_BRIEF + "\n".join(FIX_CLAUSES[:2]) + "\n", mutant)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 

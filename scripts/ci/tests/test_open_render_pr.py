@@ -502,6 +502,22 @@ class OpenRenderPrTest(unittest.TestCase):
         self.set_merge_queue(answers=[None])
         self.assert_queue_read_stopped_render()
 
+    def test_case_h3_non_string_or_empty_queue_id_stops_render(self) -> None:
+        bad_ids: tuple[object, ...] = (12345, True, {"x": 1}, "")
+        for idx, bad_id in enumerate(bad_ids):
+            with self.subTest(id=bad_id):
+                self._fresh_case(f"bad-id-{idx}")
+                self.stage_own_open_pr_with_render_diff()
+                self.set_merge_queue(queued=False, id=bad_id)
+                self.assert_queue_read_stopped_render()
+
+    def test_case_h4_single_char_queue_id_renders_and_pushes(self) -> None:
+        self.stage_own_open_pr_with_render_diff(number=42)
+        self.set_merge_queue(queued=False, id="P")
+
+        res = self.run_script(render_due=True)
+        self.assert_existing_pr_rendered_and_pushed(res, number=42)
+
     def bare_head(self) -> str:
         return git("-C", str(self.bare_repo), "rev-parse", self.render_branch).strip()
 
