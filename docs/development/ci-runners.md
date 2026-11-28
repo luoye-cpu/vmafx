@@ -3,7 +3,7 @@
 The fork's CI runs on a hybrid pool: GitHub-hosted runners by default,
 with selected jobs opt-in to a self-hosted [actions-runner-controller
 (ARC)](https://github.com/actions/actions-runner-controller)
-[`arc-runners`](https://github.com/VMAFx/vmafx/settings/actions/runners)
+[`arc-runners`](https://github.com/vidiko/vmafx/settings/actions/runners)
 scale set in the maintainer's personal Kubernetes cluster.
 
 ## How a job picks its pool
@@ -46,8 +46,8 @@ will sit queued indefinitely (no auto-fallback — see
 2. Cancel any stuck PR's CI runs:
 
    ```bash
-   gh run list --repo VMAFx/vmafx --branch <pr-branch> --status queued \
-       --json databaseId -q '.[].databaseId' | xargs -I{} gh run cancel {} --repo VMAFx/vmafx
+   gh run list --repo vidiko/vmafx --branch <pr-branch> --status queued \
+       --json databaseId -q '.[].databaseId' | xargs -I{} gh run cancel {} --repo vidiko/vmafx
    ```
 
 3. Re-trigger CI on each affected PR (push an empty commit, or
@@ -150,6 +150,23 @@ can fail for a moment with `PermissionError` (WinError 5). A test that runs a
 program from a temporary directory removes it with
 `scripts/lib/scratch_program.py` (`remove_program()`), which retries only that
 file, a bounded number of times, before the directory is cleaned up.
+
+Git writes object files read-only, and Windows refuses to delete a read-only
+file. Tests use `remove_tree()` for a `.git` directory, a bare repository or its
+`objects` directory and `remove_file()` for a single Git object file.
+Use these helpers on files and trees the caller created and owns, with no
+concurrent writer. On Windows only, a refused unlink or rmdir gets one retry
+after a non-following chmod of a read-only directory or single-link regular
+file. Links, reparse points and hard-linked Git objects keep their refusal.
+
+`remove_tree()` finishes the walk and raises the first error with up to 32
+notes about later errors and a count of any omitted. If the walk reports no
+error, it checks that the root is gone. The FFmpeg cache can be initialized
+after removal or when its root was already missing. See `ReadOnlyTreeRemoval`
+in `scripts/lib/test_scratch_program.py` and `SourceCacheReset` in
+`scripts/ci/test_ffmpeg_patch_stack.py`.
+The scan in `scripts/lib/test_scratch_program.py` rejects
+bare `shutil.rmtree` calls with these path literals.
 
 CUDA is off in this lane. CUDA 13.3.1 shipped no `windows-arm64` packages and
 13.4.1 was the first release that does; the repository pin is now the CUDA

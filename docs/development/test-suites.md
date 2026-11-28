@@ -278,8 +278,20 @@ editable packages are re-pointed at the checkout on every run, so one cache
 serves every worktree, and a per-venv file lock serialises two runs that share
 it. A suite with `venv_of` runs in another suite's venv, as in CI (no suite uses it
 since the predictor trainer moved into `ai`, ADR-1886). The tests
-run with `pytest -p no:cacheprovider -rs` and the per-test timeout CI uses,
-under a 900 s cap per suite (`--time-cap`).
+run with `pytest -p no:cacheprovider -rs` and a 300 s per-test timeout
+(`--per-test-timeout`), unless the suite specifies its own. If its interpreter
+lacks pytest-timeout, the runner reports that tests run without this timeout.
+For suites with a per-test timeout, the 900 s base cap (`--time-cap`) is multiplied by
+`min(4, 1 + max(load1, load5) / CPUs)`; if load is unavailable, the multiplier is 1.
+Suites without a per-test timeout retain the unscaled base cap. When the child
+environment sets `PYTEST_DISABLE_PLUGIN_AUTOLOAD`, the runner passes
+`-p pytest_timeout` ahead of `--timeout` so the plugin still loads. Where
+`signal.SIGALRM` is missing (Windows), a suite whose timeout method is `signal`
+runs with `thread` instead, and the runner prints that substitution. With the
+`thread` method, pytest-timeout terminates pytest without writing JUnit results,
+and the runner names the exceeded per-test timeout before the missing-results
+lines. The `--time-cap`, `--per-test-timeout` and `--install-cap` values must be
+finite and above zero.
 
 Measured on a loaded 32-core workstation with a warm `uv` wheel cache: a venv
 builds in 1 to 7 s (the first build with an empty wheel cache downloads the
@@ -313,3 +325,78 @@ same files on every pull request and push:
 entry runs only tooling tests, and the job passes that list in `SKIP`. A hook
 that runs anything else as well (a check of the live tree, a test of another
 suite) keeps running in CI.
+
+## Exit-code-only test check (`scripts/ci/tests/`)
+
+A test that runs a checker and asserts only that it exited `0` also passes when
+the checker silently drops its input. The pre-push hook
+`check-exit-code-only-tests` runs `scripts/ci/check_exit_code_only_tests.py`
+over `scripts/ci/tests/test_*.py`:
+
+```bash
+python3 scripts/ci/check_exit_code_only_tests.py
+python3 scripts/ci/check_exit_code_only_tests.py --changed-against origin/master
+```
+
+- **What is refused**: a `def test_*` function or method (with `subTest` blocks
+  counted as part of the function) that obtains a process or checker result via
+  `subprocess.run`, a helper named `run*` or `_run*`, or a `main(...)` call,
+  and in which every assertion checks only that a return code is `0`
+  (`assertEqual(x.returncode, 0)`, `assert rc == 0`,
+  `assertEqual(main([...]), 0)`, `assert not proc.returncode`,
+  `assertFalse(proc.returncode)`, `assertFalse(rc)`), with no assertion on
+  output, a file, or any other value (`asserts only exit code 0`), or that runs
+  such a command and has no assertion at all, or only `proc.check_returncode()`
+  / `check=True` (`runs a command and asserts nothing`). A test that asserts a
+  non-zero exit code checks a refusal path and is not flagged.
+- **Assertion scope**: the checker recognises assertion syntax in the test body
+  (`assert`, `self.assert*`, and `pytest.raises`); assertions inside helpers such
+  as `check_output(out)` are not visible. Add an inline output assertion, for
+  example `assert out.stdout == "expected"`.
+- **Escape comment**: place `# exit-code-only: <reason>` at the end of the
+  `def` line or of its first decorator line, or on its own line directly above
+  either at the same indent, with `<reason>` at least 10 characters long. An
+  empty or shorter reason is reported as a finding.
+- **Modes and exit codes**: default mode reports all existing findings with an
+  informational count and the top 5 files, and exits `0`. `--changed-against
+  <ref>` resolves `git merge-base <ref> HEAD`, lists changed and untracked
+  files under `<pathspec>` (`scripts/ci/tests` in default discovery and when
+  every explicit path is a direct child of it, the normalised root-relative
+  explicit paths otherwise) via
+  `git diff --name-status -z -M --no-color --no-ext-diff <merge-base> -- <pathspec>`
+  and `git ls-files -z --others --exclude-standard -- <pathspec>`, keeps only
+  the requested files in an explicit run (so an unchanged rename into a
+  requested path is still detected as a rename), and checks
+  weak tests when a zero-context diff hunk touches their span (including
+  decorators), or a header line (through its terminating colon) or decorator
+  line of an enclosing function or class; a comment between a class header and
+  its first method is not a header line. A pure deletion touches its new-side
+  start and the next line. A comment
+  edit inside an old weak test therefore reports it. A test's span extends to
+  the line before the next statement in its enclosing body, or to the end of
+  its enclosing definition's extended span (file end at top level). Consequently,
+  editing a comment between tests reports an upper test that is already weak.
+  Added, type-changed, and
+  untracked files, and files renamed from a path that is not a direct
+  `test_*.py` child of `scripts/ci/tests/`, are checked in full; a pure rename
+  from one such test file to another has no hunks and reports nothing. A rename
+  is judged by its destination: a test file renamed to a support module such as
+  `helper.py` is not a test candidate and is ignored.
+  When `PRE_COMMIT_TO_REF` is set, it compares the merge base with that
+  outgoing commit and reads its files, ignoring working-tree and untracked files.
+  The check exits `1` on findings (`0` when clean). An
+  unreadable file, a file above 1 MiB, an explicit path outside the repository
+  root, a changed or untracked direct `test_*.py` child of `scripts/ci/tests/`
+  that is not one of the discovered test files, an unsupported diff status
+  letter, an exceeded file bound (`MAX_AST_NODES` nodes per file, or
+  `MAX_DECORATORS` decorators on any test function or enclosing definition), a
+  selected unescaped test function whose body exceeds `MAX_BODY_NODES` nodes,
+  an assertion-walk bound exceeded in a selected function that calls a runner
+  (escaped functions and functions without a runner call are never walked for
+  assertions; in changed mode, untouched functions and unchanged files are
+  checked against the file bounds only), a syntax error in a
+  current test file, a bad ref, or a
+  `git merge-base` / `git diff` / `git ls-files` failure exits `2`
+  with the cause on `stderr`, never `0`.
+- **Scope limit**: the check verifies that another assertion is present; it
+  does not judge whether an output assertion is strong.

@@ -1,0 +1,1 @@
+- **Preserve the first FFmpeg patch refresh error.** A temporary checkout cleanup failure is reported alongside the original replay error. Replay Git commands disable automatic maintenance and garbage collection to prevent cleanup races.
