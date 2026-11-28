@@ -16,7 +16,7 @@ and how reports reach the tree. The tester-facing steps are in
 
 | Piece | Where |
 | :--- | :--- |
-| Container image | [`docker/Dockerfile.tester`](https://github.com/VMAFx/vmafx/blob/master/docker/Dockerfile.tester), build inputs in `tools/rc1-tester/image/` |
+| Container image | [`docker/Dockerfile.tester`](https://github.com/vidiko/vmafx/blob/master/docker/Dockerfile.tester), build inputs in `tools/rc1-tester/image/` |
 | Intel GPU image | target `final-sycl` of the same Dockerfile; `image/sycl-tests.txt` (device tests), `sycl-rows.json` (state rows), `sycl-runtime.json` (the Intel runtime files it ships); its licence record is the `sycl-image` artifact of `licensing.json` |
 | AMD GPU image | target `final-hip` of the same Dockerfile; `image/hip-tests.txt` (device tests), `hip-rows.json` (state rows), `hip-runtime.json` (the ROCm runtime files it ships); `image/hip-targets.json` is written by the build from its offload targets; its licence record is the `hip-image` artifact of `licensing.json` |
 | NVIDIA GPU image | target `final-cuda` of the same Dockerfile; `image/cuda-tests.txt` (device tests), `cuda-rows.json` (state rows); `image/cuda-targets.json` is written by the build from its gencode list; its licence record is the `cuda-image` artifact of `licensing.json` |
@@ -46,8 +46,8 @@ Nothing publishes on merge except build-and-test runs of the image and of the Wi
    environment (master only); `release-publish` is for product releases and is not used. The workflow builds both architectures on native runners, runs the
    documented `docker run` line on each, validates the report, pushes by digest, merges
    one index, signs it keyless and attests it, and publishes
-   `ghcr.io/vmafx/vmafx:<tag>-tester`. The package `ghcr.io/vmafx/vmafx` is already public,
-   so nothing needs a click; check once with a logged-out `docker pull`.
+   `ghcr.io/vidiko/vmafx:<tag>-tester`. Verify that the package is public
+   by pulling the published tag without signing in.
 2. **macOS bundle**: dispatch `Publish macOS Tester Bundle` on `master` with `ref` (or
    `tag`) and `publish: true`; the file is `vmafx-tester-macos-arm64-<git describe>.tar.xz`. `publish: false` builds, runs the bundle's own report on the hosted
    runner and uploads a 14-day workflow artifact only. With `publish: true` the
@@ -69,7 +69,7 @@ Nothing publishes on merge except build-and-test runs of the image and of the Wi
    `final-hip` (job `build-gpu`, one matrix leg per kit, linux/amd64 only) and runs the
    documented command without a GPU (the report must say `gpu.status` `no_device` with
    the missing option, `--device /dev/dri`, `--gpus all` or `--device /dev/kfd`, every
-   CPU check passing); the dispatch publishes `ghcr.io/vmafx/vmafx:<describe>-tester-sycl`,
+   CPU check passing); the dispatch publishes `ghcr.io/vidiko/vmafx:<describe>-tester-sycl`,
    `-tester-cuda` and `-tester-hip` in job `publish-gpu`: signed, with provenance and an attested SPDX SBOM (syft), each with its
    source image `<describe>-tester-<kit>-source` (target `<kit>-source-export`). Like the
    CPU image, each build cannot finish without its licence check (stage
@@ -139,7 +139,7 @@ the kits for other hardware follow the same rules. What the two packages do:
   stage, which the `final` stage depends on through its receipt
   (`/opt/vmafx/licence-check.json`); in the bundle it runs right before `pack`.
 - **Source.** The container's copyleft parts have their source in
-  `ghcr.io/vmafx/vmafx:<tag>-tester-source`, the Dockerfile's `source-export` target, built
+  `ghcr.io/vidiko/vmafx:<tag>-tester-source`, the Dockerfile's `source-export` target, built
   and pushed per architecture by the publishing run and merged into one signed index:
   `licensing.py sources` lists the Debian source packages of every installed package at its
   version (with `Built-Using` and `Static-Built-Using`) and the recorded source RPMs of the
@@ -269,9 +269,15 @@ the C and C++ runtime, and everything they load lies in their own directory
   (`prepare_build.py intel-runtime` with `dests`; its compiler files must be in the
   installed `credist.txt`, whose Windows entries read `<installdir>/bin/<name>`, so the
   spec sets `credist_dir`). The spec lists candidates: the build drops every listed DLL
-  nothing imports and the SYCL runtime does not load by name (`LOADED_AT_RUN_TIME`:
-  the Unified Runtime loader and its Level Zero adapters), and records the dropped
-  names in `image/gpu-runtime.json`;
+  that no file in its own directory imports and the SYCL runtime does not load by name
+  (`LOADED_AT_RUN_TIME`: the
+  two Level Zero adapters the Unified Runtime loader inside `sycl9.dll` loads by name;
+  on 2026.2 that loader is linked statically (intel/llvm v7.2.0:
+  `unified-runtime/CMakeLists.txt:56`, `UR_STATIC_LOADER` default ON;
+  `sycl/cmake/modules/BuildUnifiedRuntime.cmake:98` on Windows)), and records
+  the dropped names in
+  `image/gpu-runtime.json`. After pruning, the build requires each run-time
+  DLL name to occur as a whole name in another Intel DLL that the bundle ships;
 - `ze_loader.dll`, built by the workflow from `LEVEL_ZERO_VERSION` (component
   `level-zero-loader`, MIT): libvmaf imports it, so without it no program starts, and
   the report's probe opens the same copy (`VMAFX_ZE_LOADER`).
@@ -283,10 +289,12 @@ script (the Level Zero loader imports `cfgmgr32.dll`, a System32 DLL, so it is l
 The scratch audit reads its ratchet list
 from `VMAF_SYCL_SCRATCH_RATCHET_FILE`, which the build writes into the audit's
 `image/gpu-tests.json` entry (`{root}/image/scratch_ratchet.txt`): the path compiled
-into the test names the runner's checkout. The oneAPI installer is pinned by URL, size
-and SHA-256 in `build-config.env` (`ONEAPI_WINDOWS_VERSION`, `INTEL_BASEKIT_WINDOWS_*`,
-which the workflow reads); only its DPC++/C++ component is installed, and its required
-packages bring the runtime, UMF and TCM.
+into the test names the runner's checkout. The Windows MSVC+SYCL CI leg and the
+Windows SYCL tester zip share the oneAPI 2026.2.0.661 installer pins from `build-config.env`.
+The zip workflow installs the DPC++/C++ component with Visual Studio 2026 integration
+disabled. Its dependencies bring the runtime, UMF and TCM. The workflow checks the
+installed `ocloc` against `ONEAPI_WINDOWS_AOT_EXPECT_REFUSED` and passes the accepted
+targets to Meson. [ADR-3568](../adr/3568-windows-sycl-tester-zip-oneapi-2026-2.md)
 
 ## What the hosted macOS runner cannot show
 
@@ -326,7 +334,7 @@ tracked files other than a commit trailer the person asked for.
 
 | Pin | Where | Rule |
 | :--- | :--- | :--- |
-| Base images | `build-config.env` (`RELEASE_BUILDER_BASE`, `RELEASE_PYTHON_BASE`), mirrored in `docker/Dockerfile.tester` | `scripts/ci/check-base-image-single-source.sh --write` |
+| Base images | `build-config.env` (`RELEASE_BUILDER_BASE`, `RELEASE_PYTHON_BASE`), mirrored in `docker/Dockerfile.tester` | `scripts/ci/check-base-image-single-source.sh --write`; when `RELEASE_PYTHON_BASE` moves to a newer CPython patch release, record its `Doc/license.rst` in `cpython_license_rst` and bump `python.version` on `artifacts.image` and `artifacts.production-server-image` in `tools/rc1-tester/image/licensing.json` (`Tester Image` runs on light-tier pull requests when `tester_image` selects `build-config.env` or `docker/Dockerfile.tester`, [ADR-3554](../adr/3554-tester-image-own-input-lane.md)) |
 | Python test stack | `python/requirements-test-lock.txt` | `make python-locks-write` |
 | Fixtures | `tools/rc1-tester/image/fixtures.sha256`, `VMAF_RESOURCE_COMMIT` | change both together; the build checks every SHA-256 |
 | macOS interpreter | `PBS_URL`, `PBS_SHA256`, `PBS_FULL_URL`, `PBS_FULL_SHA256` in `macos-tester-bundle.yml` | the `install_only_stripped` archive and the `pgo+lto-full` archive of the same release (its licence texts); take both hashes from the release's `SHA256SUMS` |
@@ -336,7 +344,7 @@ tracked files other than a commit trailer the person asked for.
 | Report validation | `requirements/locks/jsonschema.txt` | universal lock for Python 3.12 and later (`--universal --python-version 3.12`): the hosted runners differ (3.12 on `ubuntu-24.04`, 3.14 on `ubuntu-26.04`) and `referencing` needs `typing-extensions` below 3.13 |
 | Unit tests | `tools/rc1-tester/image/unit-tests.txt`, `unit-tests-macos.txt`, `unit-tests-windows.txt` (the Windows CUDA zip adds `cuda-tests.txt`, the SYCL zip `sycl-tests.txt`) | a name absent from a build is skipped; fewer than ten found fails the build |
 | Intel GPU runtime | `INTEL_NEO_VERSION`, `LEVEL_ZERO_VERSION`, `ONEAPI_*` in `build-config.env`; `tools/rc1-tester/image/sycl-runtime.json`; `fetched_texts` and the `intel-gpu-stack` component of `licensing.json` | a moved compute runtime or loader version fails the build until the licence text of the new version is recorded in `fetched_texts` (URL and SHA-256) and named by the component; a runtime file must stay in the compiler's `credist.txt` |
-| Windows SYCL zip | `ONEAPI_WINDOWS_VERSION` and `INTEL_BASEKIT_WINDOWS_URL`, `_SIZE`, `_SHA256` in `build-config.env` (the release of the `Windows MSVC+SYCL` lane, which spells the URL inline); `tools/rc1-tester/image/sycl-runtime-windows.json`; the `windows-sycl-zip` record of `licensing.json` | a new installer brings new versioned names (`sycl8.dll`, `umf`, `tcm`): measure its size and SHA-256 (`curl ... \| sha256sum`), read its `credist.txt`, and update the spec and the record's names and versions together; a moved `LEVEL_ZERO_VERSION` needs its licence text in `fetched_texts` |
+| Windows SYCL tester zip | Shared oneAPI 2026.2.0.661 pin with Windows MSVC+SYCL CI in `build-config.env` ([ADR-3568](../adr/3568-windows-sycl-tester-zip-oneapi-2026-2.md)); `sycl-runtime-windows.json` and the `windows-sycl-zip` record in `licensing.json` | For a new installer, measure the byte size and SHA-256 and verify the refused AOT set. Use the CI runtime diagnostics and the installer's `credist.txt` to update the DLL names and licence record together. For a new `LEVEL_ZERO_VERSION`, record its licence text in `fetched_texts`. |
 | Intel GPU state rows | `tools/rc1-tester/image/sycl-rows.json` | `tools/rc1-tester/tests/test_gpu_rows_contract.py` holds it to `docs/state.md`, the `gpu` suite and the gate |
 | CUDA toolkit | `CUDA_VERSION` and the `CUDA_APT_*` versions in `build-config.env` (NVIDIA's `debian13` repository, `scripts/ci/install-cuda-toolkit.sh`; the Windows CUDA zip's `install-cuda-toolkit.ps1`); `NV_CODEC_HEADERS_TAG` and `NV_CODEC_HEADERS_COMMIT` in `build-config.env`, repeated in `docker/Dockerfile.tester` (the Windows workflow reads the commit from there) and `docker/Dockerfile.production-gpu`, and fetched by `scripts/ci/fetch-nv-codec-headers.sh` in the hosted CUDA legs of `build.yml` and `libvmaf-build-matrix.yml`; `scripts/ci/tests/test_nv_codec_headers_single_source.py` holds every copy, the four CI steps and the `nv-codec-headers` source in `licensing.json` to the two values | a new CUDA version brings a new EULA: the Linux build and `CUDA_EULA_MARKERS` of `scripts/ci/build-windows-tester-bundle.py` check the EULA's "Last updated" date, so update both checks, the two `nvidia-cuda-device-code` components and ADR-1509's citation together after reading the new Attachment A |
 | NVIDIA GPU state rows | `tools/rc1-tester/image/cuda-rows.json` | the same contract test; every CUDA family has a row, and each row holds every gate feature |

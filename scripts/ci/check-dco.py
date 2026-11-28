@@ -6,13 +6,43 @@
 ADR-2462 covers pull request sign-offs; ADR-3389 covers landed squash commits.
 ADR-3531 covers identity and message attribution checks.
 ADR-3544 refuses bot-authored PR/pre-push commits unless the bot is the branch opener.
+ADR-3555 lifts only that PR-mode opener refusal for a signed release-bot commit on a
+``renovate[bot]`` PR when every changed path is a live ``dco-bot-opener`` exception.
+In ``--landed`` mode, ADR-3555 also strips a single exact ``vmafx-release-bot[bot]``
+``Co-authored-by:`` line on a ``renovate[bot]`` squash commit that changes a live
+``dco-landed-release-bot-coauthor`` exception path.
+ADR-3560 adds a second class for the signed Python lock refresh commit with the exact
+subject and author on a Renovate PR. Every changed path must have a live, path-exact
+``dco-python-lock-refresh`` exception. In ``--landed`` mode the squash must change at
+least one of the 30 live grant paths. Other paths must be manifest inputs, or the
+manifest itself if valid parent and squash copies read from local Git objects
+differ only in the top-level ``uv_version`` value. The new value must be an exact
+release. Missing or invalid objects, malformed or duplicate-key JSON, and any
+other manifest change keep the trailer.
+
+ADR-3624 strips a single exact release-bot ``Co-authored-by:`` line in ``--landed`` mode
+when the commit author is that same release bot. A second line and any bot or
+coding-tool co-author keep the refusal; a human co-author passes, as on any commit.
+Another author keeps the refusal unless a Renovate exemption above applies.
+
+The forge must identify one PR with the squash SHA and a parseable ``merged_at``
+timestamp. Its complete commit list must have fewer than 250 entries and include
+a release-bot commit identified by normalized Git author name and email. Each
+release-bot commit needs a nonempty file list shorter than one page (100 entries),
+with valid filenames and only ``added``, ``removed``, ``modified``, ``renamed``,
+``copied``, ``changed``, or ``unchanged`` statuses. A rename requires the previous
+filename, and any supplied previous
+filename is also checked. Every reported path needs a live grant. Missing forge
+configuration, missing, ambiguous, malformed or incomplete forge evidence, and
+``TierError``, ``OSError``, ``ValueError``, ``RecursionError``, ``KeyError``,
+``TypeError``, or ``OverflowError`` from the forge read keep the trailer.
 
 Every non-merge commit in ``BASE..HEAD`` must end with a ``Signed-off-by: Name
 <email>`` trailer (what ``git commit -s`` writes), and the e-mail address of
 the trailer must be the commit's author or committer address.  A sign-off in
 the middle of the message, or one for somebody else, does not count.
 
-On master (``--landed``), all exemptions are disabled.  Every commit must have
+On master (``--landed``), every commit must have
 a sign-off matching the commit author or the designated landing identity
 (``--landing-identity``).  Committer address is not accepted because GitHub is
 committer on every squash. Commit author/committer identities must not name a
@@ -36,8 +66,8 @@ Usage::
 
     python3 scripts/ci/check-dco.py --base <sha> --head <sha> \\
         [--author <login> --author-type <User|Bot>] [--release-pr] \\
-        [--created-at <ISO 8601>] [--cutoff-file <path>] \
-        [--pr-body-file <path> | --pr-body-from-event]
+        [--created-at <ISO 8601>] [--cutoff-file <path>] \\
+        [--exceptions-root <path>] [--pr-body-file <path> | --pr-body-from-event]
 
     python3 scripts/ci/check-dco.py --landed --landing-identity "Name <email>" \\
         --base <sha> --head <sha>
@@ -70,13 +100,15 @@ import re
 import shutil
 import sys
 import unicodedata
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from scripts.ci import check_python_dependency_locks, ci_tier, lint_exceptions
 from scripts.lib.safe_subprocess import (
     CommandOutputLimitExceeded,
     CommandTimedOut,
@@ -85,6 +117,7 @@ from scripts.lib.safe_subprocess import (
 
 GIT = shutil.which("git") or "/usr/bin/git"
 GIT_TIMEOUT_S = 120
+DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CUTOFF_FILE = Path(__file__).resolve().parent / "dco-cutoff.txt"
 MAX_COMMITS = 5000
 
@@ -99,10 +132,29 @@ MAX_PR_BODY_LINES = 544 * 4
 MAX_PR_EVENT_BYTES = MAX_PR_BODY_BYTES * 6 + 1_048_576
 # One commit per read; subject can repeat the message, plus bounded identity metadata.
 MAX_COMMIT_LOG_BYTES = MAX_COMMIT_MESSAGE_BYTES * 2 + 65_536
+# Changed path list for a single commit (NUL-delimited repository-relative paths).
+MAX_COMMIT_PATHS_BYTES = 65_536
 
 # GitHub logins (as the API reports them) whose commits are exempt.  Keep the
 # list in docs/development/dco.md in step with this one.
 BOT_LOGINS = ("renovate[bot]", "dependabot[bot]", "github-actions[bot]")
+# Conditional PR-mode bot-opener and landed co-author exemptions (ADR-3555);
+# keep docs/development/dco.md in step.
+RENOVATE_BOT_LOGIN = "renovate[bot]"
+RENOVATE_BOT_EMAIL = "29139614+renovate[bot]@users.noreply.github.com"
+RELEASE_BOT_NAME = "vmafx-release-bot[bot]"
+RELEASE_BOT_EMAIL = "340976456+vmafx-release-bot[bot]@users.noreply.github.com"
+RELEASE_BOT_COAUTHOR = f"Co-authored-by: {RELEASE_BOT_NAME} <{RELEASE_BOT_EMAIL}>"
+BOT_OPENER_EXCEPTION_RULE = "dco-bot-opener"
+LANDED_COAUTHOR_EXCEPTION_RULE = "dco-landed-release-bot-coauthor"
+# ADR-3560: each Python lock output has its own path-exact exception.
+PYTHON_LOCK_EXCEPTION_RULE = "dco-python-lock-refresh"
+PYTHON_LOCK_SUBJECT = "chore(deps): refresh Python dependency locks"
+# GitHub caps the List commits on a pull request endpoint at 250 commits.
+PULL_COMMIT_LIMIT = 250
+FORGE_FILE_STATUSES = frozenset(
+    {"added", "removed", "modified", "renamed", "copied", "changed", "unchanged"}
+)
 
 # All 13 tokens equal praetor tools/planning/commit_msg_check.py BANNED_COAUTHORS;
 # both Python tuples use substring matching. Engine internal/forge/commit_message.go
@@ -159,7 +211,10 @@ class Commit:
 
 
 def run_git(
-    args: list[str], stdin: str | None = None, max_output_bytes: int = MAX_COMMIT_LOG_BYTES
+    args: list[str],
+    stdin: str | None = None,
+    max_output_bytes: int = MAX_COMMIT_LOG_BYTES,
+    bound_name: str = "MAX_COMMIT_LOG_BYTES",
 ) -> str:
     """Run bounded Git; failure never becomes an empty successful answer."""
     try:
@@ -174,9 +229,13 @@ def run_git(
             max_output_bytes=max_output_bytes,
         )
     except CommandOutputLimitExceeded as exc:
+        detail = (
+            f"; MAX_COMMIT_MESSAGE_BYTES is {MAX_COMMIT_MESSAGE_BYTES}"
+            if bound_name == "MAX_COMMIT_LOG_BYTES"
+            else ""
+        )
         raise InputBoundError(
-            f"git output exceeds MAX_COMMIT_LOG_BYTES ({max_output_bytes}); "
-            f"MAX_COMMIT_MESSAGE_BYTES is {MAX_COMMIT_MESSAGE_BYTES}"
+            f"git output exceeds {bound_name} ({max_output_bytes}){detail}"
         ) from exc
     except (OSError, CommandTimedOut) as exc:
         raise UsageError(f"git {' '.join(args)}: {exc}") from exc
@@ -272,8 +331,69 @@ def is_exempt_bot_commit(commit: Commit, author: str, author_type: str) -> bool:
     return commit.author_email.lower().endswith(bot_noreply_suffix(author))
 
 
+def commit_changed_paths(sha: str) -> list[str]:
+    """Return the NUL-delimited repository-relative paths changed by one commit."""
+    out = run_git(
+        [
+            "diff-tree",
+            "-z",
+            "--root",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            "--no-renames",
+            "--end-of-options",
+            sha,
+        ],
+        max_output_bytes=MAX_COMMIT_PATHS_BYTES,
+        bound_name="MAX_COMMIT_PATHS_BYTES",
+    )
+    if not out:
+        return []
+    paths = out.split(FIELD_SEP)
+    if paths.pop() != "":
+        raise UsageError("unparseable NUL-terminated git diff-tree record")
+    return paths
+
+
+def is_exempt_opener_commit(
+    sha: str,
+    name: str,
+    email: str,
+    author: str,
+    author_type: str,
+    *,
+    pre_push: bool = False,
+    root: Path = DEFAULT_ROOT,
+    subject: str = "",
+) -> bool:
+    """True when a Renovate PR commit is the release-bot refresh of excepted paths only.
+
+    Two classes: every path a live ``dco-bot-opener`` exception (no subject check), or the
+    exact ``PYTHON_LOCK_SUBJECT`` with every path covered by a live exception.
+    """
+    if pre_push or author != RENOVATE_BOT_LOGIN or author_type != "Bot":
+        return False
+    if (name, email) != NORMALIZED_RELEASE_BOT:
+        return False
+    paths = commit_changed_paths(sha)
+    if not paths:
+        return False
+    if not lint_exceptions.still_read(BOT_OPENER_EXCEPTION_RULE, paths, root):
+        return True
+    return subject == PYTHON_LOCK_SUBJECT and not lint_exceptions.still_read(
+        PYTHON_LOCK_EXCEPTION_RULE, paths, root
+    )
+
+
 def pr_attribution_reason(
-    commit: Commit, author: str, author_type: str, opener: tuple[str, str] | None = None
+    commit: Commit,
+    author: str,
+    author_type: str,
+    opener: tuple[str, str] | None = None,
+    *,
+    pre_push: bool = False,
+    root: Path = DEFAULT_ROOT,
 ) -> str | None:
     """Refuse bot authors outside their own branches, then apply shared attribution rules."""
     name = normalized_identity(commit.author_name)
@@ -283,7 +403,20 @@ def pr_attribution_reason(
         owns_branch = (name, email) == tuple(normalized_identity(part) for part in opener)
     else:
         owns_branch = author_type == "Bot" and email.endswith(bot_noreply_suffix(author))
-    if bot_author and not owns_branch:
+    if (
+        bot_author
+        and not owns_branch
+        and not is_exempt_opener_commit(
+            commit.sha,
+            name,
+            email,
+            author,
+            author_type,
+            pre_push=pre_push,
+            root=root,
+            subject=commit.subject,
+        )
+    ):
         return (
             f"bot author {commit.author_name} <{commit.author_email}> is not the branch opener; "
             "a squash landing would carry it as a Co-authored-by trailer that the landed gate "
@@ -294,10 +427,18 @@ def pr_attribution_reason(
 
 
 def judge(
-    commit: Commit, author: str, author_type: str, opener: tuple[str, str] | None = None
+    commit: Commit,
+    author: str,
+    author_type: str,
+    opener: tuple[str, str] | None = None,
+    *,
+    pre_push: bool = False,
+    root: Path = DEFAULT_ROOT,
 ) -> str | None:
     """Return None when the commit passes, else the reason it does not."""
-    reason = pr_attribution_reason(commit, author, author_type, opener)
+    reason = pr_attribution_reason(
+        commit, author, author_type, opener, pre_push=pre_push, root=root
+    )
     if reason:
         return reason
     if is_exempt_bot_commit(commit, author, author_type):
@@ -374,8 +515,14 @@ def drop_format_characters(text: str) -> str:
 
 
 def normalized_identity(text: str) -> str:
-    """Share NFKC, format removal, and case normalization across identity checks."""
-    return drop_format_characters(normalize_attribution_text(text)).lower()
+    """Share NFKC, format removal, whitespace and case normalization across identities."""
+    return drop_format_characters(normalize_attribution_text(text)).strip().lower()
+
+
+NORMALIZED_RELEASE_BOT = (
+    normalized_identity(RELEASE_BOT_NAME),
+    normalized_identity(RELEASE_BOT_EMAIL),
+)
 
 
 def is_bot_identity(name: str, email: str) -> bool:
@@ -426,9 +573,214 @@ def commit_attribution_reason(commit: Commit) -> str | None:
     return None
 
 
-def judge_landed(commit: Commit, landing_email: str) -> str | None:
+def landed_forge_fetch(env: Mapping[str, str]) -> ci_tier.Fetcher:
+    """Build a repository-scoped getter whose configuration is checked on use."""
+
+    def fetch(path: str) -> object:
+        repo = env.get("GITHUB_REPOSITORY", "")
+        if not repo:
+            raise ci_tier.TierError("missing GITHUB_REPOSITORY")
+        token = env.get("GH_TOKEN", "")
+        if not token:
+            raise ci_tier.TierError("missing GH_TOKEN")
+        api_url = env.get("GITHUB_API_URL", "https://api.github.com").rstrip("/")
+        return ci_tier.api_request("GET", f"{api_url}/repos/{repo}{path}", token)
+
+    return fetch
+
+
+def merged_pull_number(fetch: ci_tier.Fetcher, sha: str) -> int:
+    """Read the single associated PR and verify that it merged as this squash."""
+    pulls = ci_tier._paged(fetch, f"/commits/{sha}/pulls")
+    if len(pulls) != 1:
+        raise ci_tier.TierError(f"expected one associated pull request, found {len(pulls)}")
+    pull = pulls[0]
+    if not isinstance(pull, dict):
+        raise ci_tier.TierError("malformed associated pull request")
+    number = pull.get("number")
+    if type(number) is not int or number <= 0:
+        raise ci_tier.TierError("invalid associated pull request number")
+    merged_at = pull.get("merged_at")
+    if not isinstance(merged_at, str) or not merged_at or pull.get("merge_commit_sha") != sha:
+        raise ci_tier.TierError(f"pull request {number} did not merge as this squash")
+    parse_time(merged_at, f"pull request {number} merged_at")
+    return number
+
+
+def forge_commit_author(row: object) -> tuple[str, str, str]:
+    """Return a PR commit's SHA, Git author name and Git author email."""
+    if not isinstance(row, dict):
+        raise ci_tier.TierError("malformed pull request commit")
+    sha, commit = row.get("sha"), row.get("commit")
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise ci_tier.TierError("invalid pull request commit SHA")
+    author = commit.get("author") if isinstance(commit, dict) else None
+    if not isinstance(author, dict):
+        raise ci_tier.TierError(f"commit {sha[:10]} has no Git author")
+    name, email = author.get("name"), author.get("email")
+    if not isinstance(name, str) or not isinstance(email, str):
+        raise ci_tier.TierError(f"commit {sha[:10]} has an invalid Git author")
+    return sha, name, email
+
+
+def release_bot_commits(fetch: ci_tier.Fetcher, number: int) -> list[str]:
+    """Find release-bot commits in a complete PR commit list using Git author identities."""
+    rows = ci_tier._paged(fetch, f"/pulls/{number}/commits")
+    if not rows or len(rows) >= PULL_COMMIT_LIMIT:
+        raise ci_tier.TierError(f"pull request {number} has an empty or possibly truncated list")
+    shas = []
+    for row in rows:
+        sha, name, email = forge_commit_author(row)
+        if (normalized_identity(name), normalized_identity(email)) == NORMALIZED_RELEASE_BOT:
+            shas.append(sha)
+    if not shas:
+        raise ci_tier.TierError(f"pull request {number} has no release-bot commit")
+    return shas
+
+
+def forge_file_paths(file: object, sha: str) -> list[str]:
+    """Read a changed file, including the old path of a rename as PR mode does."""
+    if not isinstance(file, dict):
+        raise ci_tier.TierError(f"commit {sha[:10]} has a malformed file entry")
+    path = file.get("filename")
+    if not isinstance(path, str) or not path:
+        raise ci_tier.TierError(f"commit {sha[:10]} has an invalid filename")
+    status = file.get("status")
+    if not isinstance(status, str) or status not in FORGE_FILE_STATUSES:
+        raise ci_tier.TierError(f"commit {sha[:10]} has an invalid file status")
+    if status != "renamed" and "previous_filename" not in file:
+        return [path]
+    previous = file.get("previous_filename")
+    if not isinstance(previous, str) or not previous:
+        raise ci_tier.TierError(f"commit {sha[:10]} has an invalid previous filename")
+    return [path, previous]
+
+
+def forge_commit_paths(fetch: ci_tier.Fetcher, sha: str) -> list[str]:
+    """Read a release-bot commit's files, refusing a potentially truncated page."""
+    response = fetch(f"/commits/{sha}?per_page={ci_tier.PAGE_SIZE}")
+    files = response.get("files") if isinstance(response, dict) else None
+    if not isinstance(files, list) or not 0 < len(files) < ci_tier.PAGE_SIZE:
+        raise ci_tier.TierError(
+            f"commit {sha[:10]} has a missing, empty or possibly truncated file list"
+        )
+    return [path for file in files for path in forge_file_paths(file, sha)]
+
+
+def manifest_uv_version_only(sha: str) -> bool:
+    """Prove the parent-to-squash manifest diff changes only the exact uv release."""
+    manifest = check_python_dependency_locks.MANIFEST_PATH.as_posix()
+    before, after = (
+        check_python_dependency_locks.parse_manifest(
+            run_git(["--no-lazy-fetch", "cat-file", "--", "blob", f"{rev}:{manifest}"]),
+            parse_float=Decimal,
+        )
+        for rev in (f"{sha}^", sha)
+    )
+    old_version, new_version = before.pop("uv_version"), after.pop("uv_version")
+    if old_version == new_version or before != after:
+        return False
+    # Equality checks Decimal values exactly. Serialization also distinguishes true from 1.
+    return json.dumps(before, sort_keys=True, default=str) == json.dumps(
+        after, sort_keys=True, default=str
+    )
+
+
+def python_lock_landed_exemption(
+    sha: str, paths: list[str], root: Path, fetch: ci_tier.Fetcher | None
+) -> bool:
+    """Check the squash paths and prove the release bot stayed within its grant."""
+    try:
+        ungranted = set(lint_exceptions.still_read(PYTHON_LOCK_EXCEPTION_RULE, paths, root))
+        if ungranted == set(paths):
+            return False
+        manifest = check_python_dependency_locks.MANIFEST_PATH.as_posix()
+        if manifest in ungranted:
+            if not manifest_uv_version_only(sha):
+                return False
+            ungranted.remove(manifest)
+        if ungranted and not ungranted.issubset(
+            check_python_dependency_locks.manifest_inputs(root)
+        ):
+            return False
+        if fetch is None:
+            fetch = landed_forge_fetch(os.environ)
+        number = merged_pull_number(fetch, sha)
+        for bot_sha in release_bot_commits(fetch, number):
+            bot_paths = forge_commit_paths(fetch, bot_sha)
+            if lint_exceptions.still_read(PYTHON_LOCK_EXCEPTION_RULE, bot_paths, root):
+                raise ci_tier.TierError(
+                    f"release-bot commit {bot_sha[:10]} touched an ungranted path"
+                )
+    except (
+        ci_tier.TierError,
+        check_python_dependency_locks.ContractError,
+        InputBoundError,
+        UsageError,
+        OSError,
+        ValueError,
+        RecursionError,
+        KeyError,
+        TypeError,
+        OverflowError,
+    ) as error:
+        print(f"dco: {sha[:10]} Python lock refresh exemption refused: {error}", file=sys.stderr)
+        return False
+    return True
+
+
+def _drop_single_line(message: str, line: str) -> str | None:
+    """Drop exactly one message line whose strip equals line, or return None."""
+    lines = message.splitlines(keepends=True)
+    kept = [item for item in lines if item.strip() != line]
+    if len(lines) - len(kept) != 1:
+        return None
+    return "".join(kept)
+
+
+def landed_exempt_message(
+    commit: Commit, root: Path = DEFAULT_ROOT, *, fetch: ci_tier.Fetcher | None = None
+) -> str:
+    """Strip one release-bot co-author line for release-bot authors or Renovate grants.
+
+    Covers any landed commit authored by the release bot (seen on render commit
+    800122efd8) and Renovate commits matching ADR-3555 or ADR-3560 grants.
+    """
+    if input_bound_reason(
+        commit.message, "COMMIT_MESSAGE", MAX_COMMIT_MESSAGE_BYTES, MAX_COMMIT_MESSAGE_LINES
+    ):
+        return commit.message
+    if (commit.author_name, commit.author_email.lower()) == (
+        RELEASE_BOT_NAME,
+        RELEASE_BOT_EMAIL,
+    ):
+        stripped = _drop_single_line(commit.message, RELEASE_BOT_COAUTHOR)
+        return commit.message if stripped is None else stripped
+    if (commit.author_name, commit.author_email.lower()) != (
+        RENOVATE_BOT_LOGIN,
+        RENOVATE_BOT_EMAIL,
+    ):
+        return commit.message
+    stripped = _drop_single_line(commit.message, RELEASE_BOT_COAUTHOR)
+    if stripped is None:
+        return commit.message
+    paths = commit_changed_paths(commit.sha)
+    unexcepted = lint_exceptions.still_read(LANDED_COAUTHOR_EXCEPTION_RULE, paths, root)
+    if len(unexcepted) < len(paths) or python_lock_landed_exemption(commit.sha, paths, root, fetch):
+        return stripped
+    return commit.message
+
+
+def judge_landed(
+    commit: Commit,
+    landing_email: str,
+    root: Path = DEFAULT_ROOT,
+    *,
+    fetch: ci_tier.Fetcher | None = None,
+) -> str | None:
     """Judge a commit on master: refuse bot co-authors, generated trailers, and bad sign-offs."""
-    reason = commit_attribution_reason(commit)
+    message = landed_exempt_message(commit, root, fetch=fetch)
+    reason = commit_attribution_reason(replace(commit, message=message))
     if reason:
         return reason
     emails = signoff_emails(commit.message)
@@ -561,7 +913,7 @@ def pr_body_attribution(body: str) -> list[tuple[int, str]]:
     return findings
 
 
-def check_landed(args: argparse.Namespace) -> int:
+def check_landed(args: argparse.Namespace, fetch: ci_tier.Fetcher | None = None) -> int:
     head, base = args.head, args.base
     run_git(["rev-parse", "--verify", f"{head}^{{commit}}"])
     is_zero_base = bool(re.fullmatch(r"0{40}", base))
@@ -573,9 +925,11 @@ def check_landed(args: argparse.Namespace) -> int:
     else:
         commits = list_commits(base, head)
     landing_email = extract_email(args.landing_identity)
+    if fetch is None:
+        fetch = landed_forge_fetch(os.environ)
     failures = []
     for commit in commits:
-        reason = judge_landed(commit, landing_email)
+        reason = judge_landed(commit, landing_email, fetch=fetch)
         if reason is not None:
             failures.append((commit, reason))
     if failures:
@@ -610,19 +964,31 @@ def branch_opener(commits: list[Commit], pre_push: bool) -> tuple[str, str] | No
 def check_pr(args: argparse.Namespace) -> int:
     """Enforce commit and body attribution on every PR, and commit sign-offs unless exempt."""
     commits = list_commits(args.base, args.head)
-    opener = branch_opener(commits, bool(args.merge_base))
+    pre_push = bool(args.merge_base)
+    opener = branch_opener(commits, pre_push)
+    root = Path(args.exceptions_root)
     exemption = pr_signoff_exemption(args)
     judge_commit: Callable[[Commit], str | None]
     if exemption is not None:
         print(exemption)
         judge_commit = functools.partial(
-            pr_attribution_reason, author=args.author, author_type=args.author_type, opener=opener
+            pr_attribution_reason,
+            author=args.author,
+            author_type=args.author_type,
+            opener=opener,
+            pre_push=pre_push,
+            root=root,
         )
         kind = "release pull request" if args.release_pr else "grandfathered"
         summary = f" free of attribution; sign-off exempt ({kind})"
     else:
         judge_commit = functools.partial(
-            judge, author=args.author, author_type=args.author_type, opener=opener
+            judge,
+            author=args.author,
+            author_type=args.author_type,
+            opener=opener,
+            pre_push=pre_push,
+            root=root,
         )
         summary = ", every one signed off or exempt"
     body_findings = pr_body_attribution(read_pr_body(args))
@@ -677,6 +1043,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--author-type", default=env("PR_AUTHOR_TYPE", ""))
     parser.add_argument("--created-at", default=env("PR_CREATED_AT", ""))
     parser.add_argument("--cutoff-file", default=str(DEFAULT_CUTOFF_FILE))
+    parser.add_argument("--exceptions-root", default=str(DEFAULT_ROOT))
     body = parser.add_mutually_exclusive_group()
     body.add_argument("--pr-body-file", "--pr-body", default="")
     body.add_argument("--pr-body-from-event", action="store_true")

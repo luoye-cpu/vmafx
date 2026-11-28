@@ -58,6 +58,7 @@
     ".clang-format",
     ".clang-tidy",
     ".codacy.yml",
+    ".coderabbit.yaml",
     ".codespellrc",
     ".cppcheck-suppressions.txt",
     ".dockerignore",
@@ -420,6 +421,7 @@
         "scripts/ci/install-rocm-from-image.sh",
         "build-config.env",
         "dev/scripts/fetch-intel-neo.py",
+        "dev/scripts/intel-neo-lock.json",
         "python/requirements-test-lock.txt",
         "REUSE.toml",
         "NOTICE",
@@ -460,6 +462,11 @@
         "tools/rc1-tester/image/sycl-rows.json",
         "tools/rc1-tester/image/prepare_build.py",
         "build-config.env",
+        "scripts/ci/load-build-config.sh",
+        "scripts/ci/ocloc_aot_targets.py",
+        "core/meson_options.txt",
+        "scripts/lib/safe_subprocess.py",
+        "core/src/sycl/check_aot_image.py",
         "core/src/sycl/scratch_ratchet.txt"
       ]
     },
@@ -473,7 +480,12 @@
         "core/*.h.in",
         "core/*meson.build",
         "core/meson_options.txt",
+        "core/src/sycl/check_aot_image.py",
         ".github/workflows/libvmaf-build-matrix.yml",
+        "build-config.env",
+        "scripts/ci/load-build-config.sh",
+        "scripts/ci/ocloc_aot_targets.py",
+        "scripts/lib/safe_subprocess.py",
         "scripts/ci/werror-args.sh",
         "scripts/ci/check_msvc_library_names.py",
         "scripts/ci/run_meson_test.py",
@@ -729,6 +741,23 @@
         "scripts/ci/upstream-*.sh",
         "scripts/ci/upstream_consumer_scores.py",
         ".github/workflows/ffmpeg-integration.yml"
+      ]
+    },
+    "ubuntu_dev_images": {
+      "own_paths_only": true,
+      "patterns": [
+        "docker/dev/ubuntu-26.04.Dockerfile",
+        "docker/dev/ubuntu-26.04-cuda.Dockerfile",
+        "docker/dev/ubuntu-26.04-sycl.Dockerfile",
+        "scripts/setup/ubuntu.sh",
+        "requirements/locks/build.txt",
+        "requirements/locks/dev-linters.txt",
+        "build-config.env",
+        ".dockerignore",
+        ".github/workflows/dev-container-build.yml",
+        "scripts/ci/install-cuda-toolkit.sh",
+        "scripts/ci/docker-hub-mirror.sh",
+        "scripts/ci/free-runner-disk.sh"
       ]
     }
   }

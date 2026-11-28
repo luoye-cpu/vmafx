@@ -12,6 +12,9 @@ on:
     # ADR-0331 — `ready_for_review` lets the per-job draft gate fire
     # CI when a draft PR is promoted to ready-for-review.
     types: [opened, synchronize, reopened, ready_for_review]
+  merge_group:
+    types: [checks_requested]
+    branches: [master]
   schedule:
     - cron: "0 6 * * 1"   # weekly Mon 06:00 UTC
   workflow_dispatch:
@@ -60,7 +63,7 @@ jobs:
       # pull limit failed this job, run 37989639868). Same digest as on
       # Docker Hub; scripts/ci/tests/test_docker_hub_mirror.py refuses a
       # job container, service or docker:// step on Docker Hub.
-      image: mirror.gcr.io/semgrep/semgrep:latest@sha256:529ee8a277ec8adc5b534d7c74eea0a47e9de21d62852b6ba7ac6ba9566845c3
+      image: mirror.gcr.io/semgrep/semgrep:latest@sha256:cc1b68266f267878b39739373ea9985b9a78e5d64497dd875c8de100b22695ed
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Run semgrep (local rules — gate on ERRORs)
@@ -395,7 +398,7 @@ jobs:
             --receipt "$RUNNER_TEMP/scorecard-source.json"
 
       - name: Scan PR files (partial scope; never published)
-        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e  # v2.5.0
+        uses: ossf/scorecard-action@23f22cd43608bae7a1f1fa2603d7314dee9538a5  # v2.6.0
         with:
           results_file: scorecard-local.json
           results_format: json

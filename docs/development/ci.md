@@ -119,10 +119,11 @@ python3 scripts/git-hooks/pre-push-mypy.py
 ```
 
 The gate checks added, copied, modified, renamed and type-changed tracked
-`*.py` paths under `ai/` and `scripts/`. It reports only findings absent from
-the selected merge base, but an analysis crash, a missing tool, base or file, or
-an unattributable nonzero status fails the job. `ai/src/` is checked separately
-with `--explicit-package-bases` so each module has one canonical identity.
+`*.py` paths under `ai/` and `scripts/`. It reports each finding that occurs
+more often than at the selected merge base, but an analysis crash, a missing
+tool, base or file, or an unattributable nonzero status fails the job.
+`ai/src/` is checked separately with `--explicit-package-bases` so each module
+has one canonical identity.
 
 Pull requests compare with `origin/master`. A master push compares with the
 event's previous commit, so hosted post-merge validation covers the pushed
@@ -384,7 +385,7 @@ the selectors declared in `.github/ci-impact.json`. There are 27 selectors:
 | `dev_container` | `c_core`, `python`, `ai`, `go`, `shell` plus `dev/` | Dev container build |
 | `doxygen` | `core/include/libvmaf/`, the public-API Doxyfile | Doxygen public API |
 | `helm` | `deploy/helm/` | Helm chart |
-| `tester_image` | `docker/Dockerfile.tester`, `tools/rc1-tester/`, the toolkit install scripts, `build-config.env`, the licence inputs; own paths only ([ADR-1700](../adr/1700-tester-selectors-own-paths-only.md)) | `Tester Image` ([ADR-1687](../adr/1687-required-release-dry-run-legs.md)) |
+| `tester_image` | `docker/Dockerfile.tester`, `tools/rc1-tester/`, the toolkit install scripts, `build-config.env`, the licence inputs; own paths only ([ADR-1700](../adr/1700-tester-selectors-own-paths-only.md)) | `Tester Image` on full-tier and light-tier pull requests ([ADR-1687](../adr/1687-required-release-dry-run-legs.md), [ADR-3554](../adr/3554-tester-image-own-input-lane.md)) |
 | `windows_tester_zip` | The Windows zip build scripts, its lock file and the Windows inputs under `tools/rc1-tester/image/`; own paths only ([ADR-1700](../adr/1700-tester-selectors-own-paths-only.md)) | `Windows Tester Zip` ([ADR-1687](../adr/1687-required-release-dry-run-legs.md)) |
 | `windows_tester_zip_sycl` | Everything `windows_tester_zip` owns, plus `sycl-rows.json`, `prepare_build.py`, `build-config.env` and the SYCL scratch ratchet list; own paths only ([ADR-1700](../adr/1700-tester-selectors-own-paths-only.md)) | The x64 SYCL zip of `Windows Tester Zip` ([ADR-2198](../adr/2198-windows-sycl-leg-and-cut-check.md)) |
 | `windows_msvc_sycl` | C, C++ and header files under `core/` (`*.c`, `*.h`, `*.cpp`, `*.inc`, `*.h.in`), the Meson files under `core/`, `libvmaf-build-matrix.yml`, `werror-args.sh`, `check_msvc_library_names.py`, `run_meson_test.py` and the build lock file; own paths only ([ADR-1700](../adr/1700-tester-selectors-own-paths-only.md)) | `Windows MSVC+SYCL` on a light-tier pull request ([ADR-3279](../adr/3279-msvc-sycl-leg-on-light-tier.md)) |
@@ -451,12 +452,41 @@ does not start rebase waves outside its schedule
 
 - Every workflow with a `pull_request`, `pull_request_target` or `merge_group`
   trigger carries a workflow-level `concurrency` block whose group is the same
-  for every push of one pull request and whose `cancel-in-progress` is true off
-  master (the block under "Master push runs" below). A workflow that cannot
+  for every push of one pull request and whose `cancel-in-progress` is true on
+  a new push (for `required-aggregator.yml` and `rule-enforcement.yml`, only a
+  `synchronize` event cancels; other workflows keep `cancel-in-progress` true
+  off master, as shown under "Master push runs" below). A workflow that cannot
   carry one is listed in `UNSUPERSEDED` of
   `scripts/ci/tests/test_master_concurrency_contract.py` with its reason; today
   `docs.yml` (per-job groups, the Pages deploy is never cancelled) and
   `pr-label-lanes.yml` (its called workflows keep their own groups).
+- In `required-aggregator.yml` and `rule-enforcement.yml`, same-head
+  `pull_request` events (`edited`, `reopened`, `ready_for_review`) keep
+  `cancel-in-progress` false
+  ([ADR-3557](../adr/3557-aggregator-same-head-queue.md)): a review bot edits
+  the pull-request body seconds after each push, GitHub counts a cancelled
+  check run in an earlier check suite on the head commit as blocking the merge
+  even when a newer suite succeeds, and a pending same-head twin waits behind
+  the running run (further pending aggregator edits collapse to the newest
+  without creating check runs). `rule-enforcement.yml` gives each `edited` run
+  its own group keyed on `github.run_id`, so no later edit (same second or not)
+  replaces or cancels it; `run-name` keeps the `pull_request.updated_at` stamp
+  for aggregator correlation, and same-second edits sharing that stamp fail
+  closed when an aggregator run lists both `Rules` runs
+  ([ADR-3551](../adr/3551-aggregator-edited-window.md)); the
+  [required-checks aggregator section](#required-checks-aggregator) details the
+  residual bounds. Every other `rule-enforcement.yml` event shares one `-head`
+  group per pull request: a later run there replaces a pending one, which
+  creates no check runs. Enforced by `same_head_findings`,
+  `pending_replacement_findings` and `skip_findings` in
+  `scripts/ci/tests/test_master_concurrency_contract.py`. GitHub orders the
+  runs of a group by the time each starts waiting, not by the time its event
+  was dispatched (GitHub's concurrency documentation), so a delayed run of an
+  older head, or a re-run of an older `reopened` or `ready_for_review` run,
+  can replace the pending run of the current head and leave that head without
+  a `Rules` result until the next event or push. When the current head shows
+  no `Rules` result, re-run the cancelled `Rules` run of that head; never
+  re-run a `Rules` run of an older head.
 - `renovate.json` sets `updateNotScheduled: false`: Renovate opens and rebases
   its branches only in its Monday schedule, at most two pull requests and three
   branches at once. Ticking a pull request's rebase box on the dependency
@@ -486,10 +516,15 @@ commit ever gets a complete verdict ([ADR-1673](../adr/1673-master-runs-not-canc
 - The merge train keeps one sentinel master commit's runs alive and cancels the
   other superseded master runs itself through the API. GitHub's per-ref
   cancellation is not involved on master.
-- The Required Checks Aggregator follows the same rule. Re-running the
-  aggregator of an old master head no longer cancels the newest one. On a PR ref
-  the old warning stands: re-running an older head's aggregator cancels the
-  current head's.
+- The Required Checks Aggregator follows the same SHA group rule on master, and
+  on a PR ref cancels only on `synchronize`
+  ([ADR-3557](../adr/3557-aggregator-same-head-queue.md)). Re-running the
+  aggregator of an old master head no longer cancels the newest one. On a PR
+  ref, re-running an older head's `synchronize` run still cancels the current
+  head's run, while re-running an `edited` twin waits as pending. Every head of
+  a pull request shares that ref group, so re-run a cancelled aggregator only
+  when no aggregator run of the same pull request, on any head, is running or
+  pending.
 - Blocks that must serialise keep their group and are listed with a reason in
   `scripts/ci/tests/test_master_concurrency_contract.py`: `dev-container-publish.yml`
   (registry publish), `release-please.yml` (one release PR per push),
@@ -498,6 +533,72 @@ commit ever gets a complete verdict ([ADR-1673](../adr/1673-master-runs-not-canc
 - A new workflow that triggers on a push to `master` takes the SHA form or is
   added to that list with a reason. Run the check with
   `python3 -B -m unittest scripts/ci/tests/test_master_concurrency_contract.py`.
+
+## Merge queue
+
+Every required-check workflow owed on `merge_group` listens for `merge_group`
+(`types: [checks_requested]`, `branches: [master]`). The queue itself is
+switched on by the master ruleset `merge_queue` rule
+([ADR-3556](../adr/3556-merge-queue-merge-group.md)). Once that rule is on,
+each queue entry runs these workflows on a synthetic
+`refs/heads/gh-readonly-queue/master/...` ref. Before it is on, nothing changes
+for pull requests.
+
+Same-repository pull requests follow
+[ADR-3556](../adr/3556-merge-queue-merge-group.md): adding to the queue
+requires repository write access, maintainers pin the head with
+`gh pr merge <number> --match-head-commit <sha>` or `expectedHeadOid` on
+`enqueuePullRequest`, and `Train.guard` plus all train actions refuse
+cross-repository pull requests (`test_guard_refuses_cross_repository_prs` in
+`scripts/dev/tests/test_merge_train_guard.py`). Under
+[ADR-3610](../adr/3610-queue-fork-admission-reviewed-head.md), a fork pull
+request enters the queue only after
+`merge_train_guard.py admit-fork <number> --reviewed-head <sha>` returns `0`,
+and only pinned to that exact head without `--auto`
+(`test_admit_fork_refuses_unreviewed_head`,
+`test_admit_fork_positive_receipt_never_merges_or_locks`); afterwards,
+`merge_train_guard.py queue-audit` re-checks every queued fork entry against
+its live head and maintainer approval (`test_audit_queue_and_cli`; see
+[Local merge-train control](merge-train.md#fork-pull-requests)). Semgrep and
+CodeQL jobs retain `security-events: write`
+on `merge_group` under this rule. Semgrep scans the checkout in its pinned
+image without executing code from the change, so the same admission rule
+covers it. The merge group head includes queued diffs that can rewrite
+workflow conditions, permissions, guards and scripts, so in-file permission
+scoping is not the enforcement point. The provenance guard before hardware
+probes and hosted ARC routing provide a second barrier against an enqueue
+mistake. Workflow-token access to `mergeQueue` remains unproven until the first
+live merge group; lookup failures fail closed.
+
+- The workflow contract refuses jobs on `merge_group` that read a secret other
+  than `GITHUB_TOKEN` or run self-hosted without an exclusion or the provenance
+  guard in `.github/actions/runner-probe/action.yml`.
+- Every `merge_group` run executes tier `full` (`scripts/ci/ci_tier.py`) and
+  the full impact plan (`scripts/ci/plan-ci-impact.py` emits
+  `event-not-routed:merge_group`).
+- `Required Checks Aggregator` exempts `pullRequestOnly` contexts plus both
+  OpenSSF Scorecard gates on `merge_group`: `Scorecard PR Gate` requires a
+  pull-request payload and already ran on the pull request, while `Scorecard
+  Master Gate` (`mergeGroupExempt`) publishes default-branch Scorecard results
+  and runs on the `master` push after the merge lands.
+- Publish, deploy, registry-push, release-signing, repository-write, and Pages
+  steps keep their existing triggers and never run on `merge_group`.
+- Jobs a pull request skips for runner cost (the three tester GPU image builds
+  in `docker-publish-tester.yml` `build-gpu`) skip a merge group too and run on
+  the `master` push after the merge only when that push selects `tester_image`
+  (`own_paths_only` in `.github/ci-impact.json`). The workflow `validate` job
+  requires `impact.outputs.selected`, and `build-gpu` requires `validate`. When
+  the changed paths of the push are known, a merge limited to other paths, such
+  as `core/`, builds no tester GPU image; when the planner cannot read them, the
+  selector stays set and the images are built.
+  `scripts/ci/tests/test_merge_group_workflow_contract.py` refuses a guard that
+  skips `pull_request` without also skipping `merge_group`. It also refuses a
+  `docker-publish-tester.yml` where `build-gpu` drops `validate` from `needs`
+  or `validate` drops `needs.impact.outputs.selected` from `if`.
+- Check the aggregator `merge_group` cases and workflow trigger contract
+  locally with
+  `python3 -m pytest -q scripts/ci/tests/test_aggregator_event_scope.py` and
+  `python3 -m pytest -q scripts/ci/tests/test_merge_group_workflow_contract.py`.
 
 ## Required-checks aggregator
 
@@ -509,8 +610,59 @@ check missing from it can be red while the merge button stays green
 
 It runs on every PR and master push. Draft PRs fail immediately; ready PRs poll
 for the named sibling check runs to reach a terminal state and accept
-`success`, `skipped` or `neutral` per check. Results predating the current run
-are excluded, so skipped draft-era checks cannot mask ready validation.
+`success`, `skipped` or `neutral` per check. GitHub Actions check runs older
+than a 2-minute margin before the window anchor are excluded, so skipped
+draft-era checks cannot mask ready validation
+([ADR-3551](../adr/3551-aggregator-edited-window.md)): on `pull_request`
+`edited` events, where a title or body edit re-runs only the
+`rule-enforcement.yml` gates and leaves earlier build and test runs untouched,
+the anchor is the latest `ready_for_review` timeline event (or
+`pull_request.created_at` when never a draft); on every other event, the anchor
+is the aggregator run's own `created_at`. On `edited` events, workflows listed
+in `editedRerunWorkflows` (`.github/workflows/rule-enforcement.yml`) must also
+report from a current-edit run whose `display_title` starts with
+`"[<pull_request.updated_at>] "` (set via top-level `run-name:`): other `Rules`
+check suites on the same head SHA are excluded, and the aggregator fails closed
+when `pull_request.updated_at` is missing or when the `Rules` workflow does not
+start for the edit within the 2-minute registration grace. If two edits land in
+the same second and an aggregator run lists multiple `Rules` runs sharing the
+edit-stamp prefix (in any status), it fails closed at once and asks for another
+pull-request edit or a commit push. To catch a second same-second `Rules` run
+before passing on an earlier green one, an `edited` aggregator run keeps
+polling until a workflow-runs listing started after the 2-minute registration
+grace, though a duplicate registering after the grace is not seen by that
+aggregator run (its own `Rules` checks still report on the head commit).
+The later edit's aggregator run shares the aggregator concurrency group. If its
+pending run survives, it starts its own 2-minute grace after the earlier run
+leaves the group and fails closed when it lists both `Rules` runs. If the later
+run registers after that grace, or a third edit replaces the pending second
+look, the content guard in `.github/actions/edit-supersede-guard/action.yml` and
+`scripts/ci/edit_supersede_guard.py` fails an earlier `Rules` job when its event
+title, body or base differs from the live pull request. The earlier failed job
+then fails the aggregator instead of allowing a stale pass. The guard waits
+until five seconds after the event stamp, capped at 30 seconds, and reads the
+pull request once. A later edit made shortly before that read can be missed
+even when the API lags by less than five seconds, and an edit made after the
+read is not seen by that run; the `Rules` run of that later edit judges the
+current text. `test_late_registering_same_second_edit_fails_on_superseded_rules_run`
+in `scripts/ci/tests/test_aggregator_edited_window.py` covers delayed
+registration, and `test_superseded_fails` in
+`scripts/ci/tests/test_edit_supersede_guard.py` covers the guard decision.
+`test_known_gap_third_edit_replaces_pending_second_look` in
+`scripts/ci/tests/test_master_concurrency_contract.py` still pins the
+three-event concurrency path: a third edit can replace the pending second look.
+`serial_second_look_findings` in
+`scripts/ci/tests/test_master_concurrency_contract.py` pins the shared group and
+non-cancelling `edited` policy that allow a surviving pending second look.
+Because `actions/runner` converts any YAML
+string containing `${{` into one expression capped at 21,000 UTF-16 code units
+after `.NET` `Char.IsWhiteSpace` expression trimming,
+`scripts/ci/check-workflow-size.py` also checks every workflow scalar against
+that runner expression bound (`scripts/ci/tests/test_check_workflow_size.py`)
+alongside the 64 KiB file limit.
+`scripts/ci/tests/test_aggregator_edited_window.py` runs the embedded script
+across the edited-event window, stale-suite exclusion, boundary, draft-era
+exclusion and fail-closed API paths.
 
 On a master push the aggregator reads only the push's own check runs: a check
 run whose check suite belongs to a pull-request workflow run on the same commit
@@ -539,12 +691,16 @@ absent or skipped, never failed: the names the run's CI tier does not owe, the
 operator switch is off. `scripts/ci/tests/test_aggregator_absent_fails.py`
 runs the embedded script against both rules.
 
-The aggregator's GitHub API calls (`getWorkflowRun`, `listAllCheckRuns`,
-`pullRequestSuites`) retry HTTP 5xx answers for 15 minutes. If the API still
-answers 5xx, the job fails with `Transient GitHub API failure:`, the call and
-the status, and judges no check: rerun the job, because the code did not fail.
-Any other API error ends the job at once.
-`scripts/ci/tests/test_ci_aggregator_tier.py` runs both paths against a stub.
+The aggregator's GitHub API calls retry HTTP 5xx answers for 15 minutes; an
+exhausted retry fails as `Transient GitHub API failure:` and judges no check.
+Rate-limit responses wait for `retry-after`, the reset time, or exponential
+backoff, with at most six waits per call and 90 minutes across the script. An
+exhausted limit fails as `GitHub API rate limit:` and asks for a rerun without
+judging checks. Other API errors end the job immediately. Polling starts at 30
+seconds, doubles when the judged checks are unchanged up to 240 seconds, and
+resets to 30 seconds on change. `scripts/ci/tests/test_ci_aggregator_tier.py`
+exercises 5xx handling; `scripts/ci/tests/test_aggregator_rate_limit.py` covers
+rate limits and polling.
 
 ### Release legs
 
@@ -580,11 +736,26 @@ Python, AI, MCP and Go sources the image copies, `supply-chain.yml` and
 `build-native-release-artifacts.sh`. Add the label `ci: full` when a pull
 request changes one of those and needs the image built before it lands.
 
-These are full-tier contexts, with one declared exception
-([ADR-2198](../adr/2198-windows-sycl-leg-and-cut-check.md)): `Windows Tester
-Zip` is an **own-input lane** (`own_input_lanes` of `.github/ci-tier.json`), so
-a pull request from this repository also runs it, but its planner builds only
-what the diff touches. Selector `windows_tester_zip` builds the x64 zip;
+`Tester Image` of `docker-publish-tester.yml` is the fourth own-input lane
+([ADR-3554](../adr/3554-tester-image-own-input-lane.md)). On a light-tier pull
+request (Renovate digest updates included) its `impact` planner and
+`Tester Image` gate run on `needs.tier.outputs.light == 'true'`, reading the
+`own_paths_only` selector `tester_image` (`docker/Dockerfile.tester`,
+`tools/rc1-tester/`, `build-config.env`, the toolkit install scripts, the
+licence inputs and the workflow). When selected, the amd64 tester image builds
+(including `licence-texts`, `notices` and `licence-check`) and runs its report
+before merging; otherwise the gate reports `success` with a skip notice. The
+Required Checks Aggregator also waits while any non-skipped
+`delayedStrictDependencies` work job of an own-input lane runs on the light
+tier, so a fast light-tier run cannot pass before a selected `Tester Image`
+build registers its gate check.
+
+These three release-leg contexts live in `full_only`, with two declared
+own-input-lane exceptions (`own_input_lanes` of `.github/ci-tier.json`):
+`Windows Tester Zip` ([ADR-2198](../adr/2198-windows-sycl-leg-and-cut-check.md))
+and `Tester Image` ([ADR-3554](../adr/3554-tester-image-own-input-lane.md)), so
+a pull request from this repository also runs both, while each planner builds
+only what the diff touches. Selector `windows_tester_zip` builds the x64 zip;
 selector `windows_tester_zip_sycl` (everything the x64 zip reads, plus
 `sycl-rows.json`, `prepare_build.py`, `build-config.env` and the SYCL scratch
 ratchet list) adds the x64 SYCL zip. The arm64 and CUDA zips, `Tester Image`'s
@@ -613,7 +784,10 @@ unrelated documentation changes report success after an explicit impact notice.
 A failing `gosec` scan blocks merging even though it prevents later Go tests
 from running. The scan is `make lint-go`, the target `make lint` runs, so run
 it before pushing a Go change; its flags and the reason for each sit next to
-the target in the `Makefile`. The job also starts on ready-for-review events,
+the target in the `Makefile`. It runs gosec twice: on hand-written code with
+every rule, then with generated files included and the `.gosec.json`
+configuration, so a finding in generated code also fails locally and is fixed
+in its generator. The job also starts on ready-for-review events,
 so draft-era results cannot replace the current validation run.
 
 Before installing native build dependencies, the job runs `go fix -diff ./...`
@@ -1213,6 +1387,7 @@ need to fail fast. The ROCm layer download in
 `scripts/ci/install-rocm-from-image.sh` retries the whole curl, decompressor and
 tar pipeline up to `LAYER_ATTEMPTS` times; inner curl retries would append to the
 pipe, so this streaming fetch is exempt from both inner retries and file output.
+Each layer attempt obtains a fresh registry pull token before downloading.
 
 Older curl stages use a bounded shell loop around the fetch plus an exact
 `ALLOWLIST` exemption instead of `--retry-all-errors`. In `dev/Containerfile`,
@@ -1250,7 +1425,7 @@ The cache covers all eight apt-installing jobs in the workflow:
 | `compat-abi-parity` | Compat ABI Parity | `.github/apt/compat-abi-parity.txt` | 10 min | 45 min |
 | `sanitizers` | Sanitizers (${{ matrix.sanitizer }}) | `.github/apt/sanitizers.txt` | 10 min | 30 min |
 | `dnn` | Tiny AI | `.github/apt/tiny-ai.txt` | 20 min | 55 min |
-| `tooling-tests` | Tooling Tests | `.github/apt/tooling-tests.txt` | 10 min | 35 min |
+| `tooling-tests` | Tooling Tests | `.github/apt/tooling-tests.txt` | 10 min | 63 min |
 | `vmaf-tune-tests` | Python Package Tests (vmaf-tune) | `.github/apt/vmaf-tune-tests.txt` | 20 min | 35 min |
 | `mcp-smoke` | MCP Smoke | `.github/apt/mcp-smoke.txt` | 20 min | 55 min |
 | `coverage` | Coverage Gate | `.github/apt/coverage.txt` | 35 min | 120 min |
