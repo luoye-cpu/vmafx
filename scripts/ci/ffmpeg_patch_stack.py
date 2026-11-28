@@ -25,12 +25,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from scripts.lib.safe_subprocess import CommandTimedOut
 from scripts.lib.safe_subprocess import run as run_command
+from scripts.lib.scratch_program import path_absent, remove_tree
 
 STABLE_TAG = re.compile(r"n(\d+)\.(\d+)(?:\.(\d+))?\Z")
 PATCH_NAME = re.compile(r"\d{4}-[A-Za-z0-9_.-]+\.patch\Z")
 COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 CACHE_LOCK_SECONDS = 600
 CACHE_FETCH_SECONDS = 180
+REPLAY_MAINTENANCE = (
+    "gc.auto=0",
+    "gc.autoDetach=false",
+    "maintenance.auto=false",
+    "maintenance.autoDetach=false",
+)
 MIRRORS = ("Dockerfile", "Dockerfile.ffmpeg", "dev/Containerfile", "docker/Dockerfile.node")
 # The shared FFmpeg fix series every build applies before ffmpeg-patches/
 # (ADR-3143): three pins in build-config.env, one script that fetches,
@@ -193,6 +200,9 @@ class Replay:
             "-c",
             "user.email=patch-refresh@localhost",
         ]
+        # Detached Git maintenance can race checkout cleanup and cause ENOTEMPTY.
+        for setting in REPLAY_MAINTENANCE:
+            self.prefix.extend(("-c", setting))
 
     def git(self, *args: str) -> str:
         return self.run_git(["-C", str(self.checkout)], *args)
@@ -240,6 +250,10 @@ class Replay:
         bash = shutil.which("bash")
         if bash is None:
             raise RuntimeError("bash is required to apply the shared FFmpeg fix series")
+        # The shell helper launches its own Git, outside the command prefix.
+        for setting in REPLAY_MAINTENANCE:
+            key, value = setting.split("=", 1)
+            self.git("config", "--local", "--replace-all", key, value)
         result = run_command(
             [bash, str(SHARED_SERIES_SCRIPT), "apply", "--method", "am", str(self.checkout)],
             allowed_executables=(bash,),
@@ -335,7 +349,11 @@ class SourceCache:
             return False
 
     def reset(self) -> None:
-        shutil.rmtree(self.repo, ignore_errors=True)
+        try:
+            remove_tree(self.repo)
+        except FileNotFoundError as error:
+            if error.filename not in (self.repo, str(self.repo)) or not path_absent(self.repo):
+                raise
         self.repo.parent.mkdir(parents=True, exist_ok=True)
         self.replay.run_git(
             ["-C", str(self.repo.parent)], "init", "--quiet", "--bare", "source.git"
@@ -444,7 +462,11 @@ def mirrors(repo: Path, remote: str, tag: str) -> dict[Path, bytes]:
         original = read_repo_text_bytes(path).decode("utf-8")
         updated = original
         for key, value in {"FFMPEG_TAG": tag, "FFMPEG_REMOTE": remote}.items():
-            updated, count = re.subn(rf"(?m)^ARG {key}=\S+$", f"ARG {key}={value}", updated)
+
+            def literal_arg(_match: re.Match[str], line: str = f"ARG {key}={value}") -> str:
+                return line
+
+            updated, count = re.subn(rf"(?m)^ARG {key}=\S+$", literal_arg, updated)
             if count != 1:
                 raise ValueError(f"expected one {key} mirror in {name}, found {count}")
         changed[path] = updated.encode()
@@ -494,7 +516,7 @@ def readme_claim(repo: Path, receipt: Receipt) -> dict[Path, bytes]:
             f"> `{receipt['patched_tree']}`\n"
         )
     claim = claim_body.replace("\n", "\r\n") if ending == "\r\n" else claim_body
-    updated, count = README_CLAIM_PATTERN.subn(claim, original)
+    updated, count = README_CLAIM_PATTERN.subn(lambda _match: claim, original)
     if count != 1:
         raise ValueError(f"expected one replay claim in ffmpeg-patches/README.md, found {count}")
     return {path: updated.encode("utf-8")}
@@ -661,6 +683,17 @@ def _stage_file(path: Path, content: bytes, role: str) -> Path:
     return temporary
 
 
+def _rollback_files(written: list[Path], backups: dict[Path, Path]) -> list[str]:
+    """Restore replaced files in reverse order and collect failed restores."""
+    failures = []
+    for path in reversed(written):
+        try:
+            backups[path].replace(path)
+        except OSError:
+            failures.append(f"{path} <- {backups[path]}")
+    return failures
+
+
 def replace_files(updates: dict[Path, bytes], repo: Path) -> None:
     """Prepare every file first; record journal, perform renames, delete journal."""
     before = {path: path.read_bytes() for path in updates}
@@ -694,12 +727,7 @@ def replace_files(updates: dict[Path, bytes], repo: Path) -> None:
         # Roll back even when Ctrl-C interrupts a multi-file replacement.
         # Keep originals if recovery itself is interrupted a second time.
         preserve_backups = True
-        failures = []
-        for path in reversed(written):
-            try:
-                backups[path].replace(path)
-            except OSError:
-                failures.append(f"{path} <- {backups[path]}")
+        failures = _rollback_files(written, backups)
         if failures:
             raise RuntimeError(
                 "refresh rollback failed; original backups retained: " + "; ".join(failures)
@@ -732,6 +760,7 @@ class Receipt(TypedDict, total=False):
     changed: list[str]
     status: str
     error: str
+    cleanup_error: str
 
 
 def select_target_tag(replay: Replay, remote: str, current_tag: str, latest: bool) -> str:
@@ -769,8 +798,8 @@ def format_patch_updates(
 
 def pinned_config(text: str, tag: str, commit: str) -> str:
     """Move the tag and the commit it names together."""
-    text = re.sub(r"(?m)^FFMPEG_TAG=.*$", f'FFMPEG_TAG="{tag}"', text)
-    return re.sub(r"(?m)^FFMPEG_COMMIT=.*$", f'FFMPEG_COMMIT="{commit}"', text)
+    text = re.sub(r"(?m)^FFMPEG_TAG=.*$", lambda _match: f'FFMPEG_TAG="{tag}"', text)
+    return re.sub(r"(?m)^FFMPEG_COMMIT=.*$", lambda _match: f'FFMPEG_COMMIT="{commit}"', text)
 
 
 def apply_stack(
@@ -841,6 +870,37 @@ def configured_series(repo: Path, receipt: Receipt) -> tuple[str, str, str, list
     return remote, current_tag, pinned, names
 
 
+@contextmanager
+def replay_checkout(receipt: Receipt) -> Iterator[Path]:
+    """Clean the checkout while preserving any replay exception already in flight."""
+    temporary = tempfile.TemporaryDirectory(prefix="vmafx-ffmpeg-")
+    try:
+        yield Path(temporary.name)
+    except BaseException as error:
+        try:
+            temporary.cleanup()
+        except Exception as cleanup_error:
+            receipt["cleanup_error"] = str(cleanup_error)
+            error.add_note(f"Checkout cleanup failed: {cleanup_error}")
+        raise
+    else:
+        temporary.cleanup()
+
+
+def write_receipt(output: Path, receipt: Receipt) -> None:
+    """Write the machine-readable result alongside the replay log."""
+    (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+
+
+def record_failure(output: Path, receipt: Receipt, error: BaseException) -> None:
+    """Record the primary error even if writing its receipt also fails."""
+    receipt.update({"status": "failed", "error": str(error)})
+    try:
+        write_receipt(output, receipt)
+    except OSError as receipt_error:
+        error.add_note(f"Could not write failure receipt: {receipt_error}")
+
+
 def maintain(
     repo: Path,
     output: Path,
@@ -849,14 +909,15 @@ def maintain(
     cache_dir: Path | None = None,
     keep_tree: Path | None = None,
 ) -> Receipt:
+    """Replay the stack, apply requested updates and retain diagnostics."""
     receipt: Receipt = {}
     output.mkdir(parents=True, exist_ok=True)
     (output / "replay.log").write_text("")
     try:
         with maintain_lock(repo, refresh):
             remote, current_tag, pinned, names = configured_series(repo, receipt)
-            with tempfile.TemporaryDirectory(prefix="vmafx-ffmpeg-") as temporary:
-                replay = Replay(Path(temporary), output)
+            with replay_checkout(receipt) as checkout:
+                replay = Replay(checkout, output)
                 replay.git("init", "--quiet")
                 target_tag = select_target_tag(replay, remote, current_tag, latest)
                 cache = SourceCache(replay, cache_dir or cache_root(), remote)
@@ -888,20 +949,22 @@ def maintain(
                     raise ValueError(unpinned_release(shared, target_tag, current_tag, output))
                 updates.update(mirrors(repo, remote, target_tag))
                 config = repo / "build-config.env"
-                updates[config] = pinned_config(
-                    read_repo_text_bytes(config).decode("utf-8"), target_tag, target
-                ).encode("utf-8")
+                config_text = read_repo_text_bytes(config).decode("utf-8")
+                updates[config] = pinned_config(config_text, target_tag, target).encode("utf-8")
                 updates.update(readme_claim(repo, receipt))
-                settle_updates(repo, updates, refresh, receipt)
-    except (KeyError, ValueError, RuntimeError, OSError, CommandTimedOut) as error:
-        receipt.update({"status": "failed", "error": str(error)})
+                if not refresh:
+                    settle_updates(repo, updates, False, receipt)
+            if refresh:
+                settle_updates(repo, updates, True, receipt)
+    except BaseException as error:
+        record_failure(output, receipt, error)
         raise
-    finally:
-        (output / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    write_receipt(output, receipt)
     return receipt
 
 
-def main() -> int:
+def parse_args() -> argparse.Namespace:
+    """Parse the command line and validate the refresh mode."""
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
@@ -935,8 +998,14 @@ def main() -> int:
     args = parser.parse_args()
     if args.latest and not args.refresh:
         parser.error("--latest requires --refresh")
+    return args
+
+
+def main() -> int:
+    """Run the requested check or refresh and report its outcome."""
+    args = parse_args()
     repo = Path(__file__).resolve().parents[2]
-    output = args.output_dir or Path(tempfile.mkdtemp(prefix="vmafx-ffmpeg-report-"))
+    output: Path = args.output_dir or Path(tempfile.mkdtemp(prefix="vmafx-ffmpeg-report-"))
     try:
         result = maintain(
             repo,
@@ -946,8 +1015,19 @@ def main() -> int:
             args.cache_dir,
             args.keep_tree.resolve() if args.keep_tree else None,
         )
+        if args.output_dir is None:
+            try:
+                shutil.rmtree(output)
+            except OSError as error:
+                record_failure(output, result, error)
+                raise
     except (KeyError, ValueError, RuntimeError, OSError, CommandTimedOut) as error:
-        print(f"FFmpeg patch stack FAILED: {error}\nDiagnostics: {output}")
+        messages = [
+            f"FFmpeg patch stack FAILED: {error}",
+            *getattr(error, "__notes__", ()),
+            f"Diagnostics: {output}",
+        ]
+        print("\n".join(messages))
         return 1
     print(
         f"FFmpeg {result['tag']} ({result['upstream_commit']}): {result['patch_count']} patches "
@@ -958,8 +1038,6 @@ def main() -> int:
     )
     if args.output_dir:
         print(f"Diagnostics: {output}")
-    else:
-        shutil.rmtree(output)
     return 0
 
 
