@@ -187,13 +187,8 @@ def _count_nodes(root: yaml.Node | None) -> int | None:
     return len(seen)
 
 
-def _literal_runs(root: yaml.Node | None) -> set[yaml.ScalarNode] | None:
-    """Collect literal run values under jobs.<id>.steps[*].run or runs.steps[*].run."""
-    count = _count_nodes(root)
-    if count is None:
-        return None
-    if not isinstance(root, yaml.MappingNode):
-        return set()
+def _step_lists(root: yaml.MappingNode) -> list[yaml.SequenceNode]:
+    """Return the step sequences of both root shapes (jobs.<id> and runs)."""
     step_lists: list[yaml.SequenceNode] = []
     jobs = _direct_value(root, "jobs")
     if isinstance(jobs, yaml.MappingNode):
@@ -208,15 +203,37 @@ def _literal_runs(root: yaml.Node | None) -> set[yaml.ScalarNode] | None:
         steps = _direct_value(runs_block, "steps")
         if isinstance(steps, yaml.SequenceNode):
             step_lists.append(steps)
-    runs: set[yaml.ScalarNode] = set()
-    for steps in step_lists:
-        for step in steps.value:
-            if not isinstance(step, yaml.MappingNode):
-                continue
-            run = _direct_value(step, "run")
-            if isinstance(run, yaml.ScalarNode) and run.style == "|":
-                runs.add(run)
-    return runs
+    return step_lists
+
+
+def _literal_run_scalars(steps: yaml.SequenceNode) -> Iterator[yaml.ScalarNode]:
+    """Yield literal-style run scalars whose value sits in this mapping."""
+    for step in steps.value:
+        if not isinstance(step, yaml.MappingNode):
+            continue
+        for key, run in step.value:
+            if (
+                isinstance(key, yaml.ScalarNode)
+                and key.value == "run"
+                # Both ends written in this mapping: an alias key's marks
+                # point at the anchor, and an alias value's marks point at
+                # the anchored node, so each check fails on its side.
+                and key.start_mark.index >= step.start_mark.index
+                and key.end_mark.index <= run.start_mark.index
+                and isinstance(run, yaml.ScalarNode)
+                and run.style == "|"
+            ):
+                yield run
+
+
+def _literal_runs(root: yaml.Node | None) -> set[yaml.ScalarNode] | None:
+    """Collect literal run values under jobs.<id>.steps[*].run or runs.steps[*].run."""
+    count = _count_nodes(root)
+    if count is None:
+        return None
+    if not isinstance(root, yaml.MappingNode):
+        return set()
+    return {run for steps in _step_lists(root) for run in _literal_run_scalars(steps)}
 
 
 def _eligible_lines(block: yaml.ScalarNode, source: list[str]) -> Iterator[int]:
@@ -303,9 +320,10 @@ def _is_yaml_candidate(relative: Path) -> bool:
 def _github_yaml_files(
     github: Path,
     scandir: object = os.scandir,
-) -> set[Path] | None:
-    """Walk .github bounded by entry count, returning every workflow or action file."""
+) -> tuple[set[Path], list[str]] | None:
+    """Walk .github bounded by entry count, returning files and symlink findings."""
     files: set[Path] = set()
+    findings: list[str] = []
     directories = [github]
     entries = 0
     while directories:
@@ -320,26 +338,37 @@ def _github_yaml_files(
                 if entries > MAX_GITHUB_ENTRIES:
                     return None
                 path = Path(entry.path)
+                if getattr(entry, "is_symlink", None) and entry.is_symlink():
+                    # The old glob walk followed symlinks, which brings back
+                    # cycles and paths outside .github; refuse them instead
+                    # (issue #3674 review).
+                    findings.append(f"{path}: symlink under .github is not supported")
+                    continue
                 if entry.is_dir(follow_symlinks=False):
                     directories.append(path)
                 elif entry.is_file(follow_symlinks=False) and _is_yaml_candidate(
                     path.relative_to(github)
                 ):
                     files.add(path)
+        except OSError as error:
+            findings.append(f"{directory}: cannot scan directory: {error.strerror}")
         finally:
             scan.close()
-    return files
+    return files, findings
 
 
 def check_yaml_files(repo_root: Path) -> list[str]:
     """Glob local files too: an untracked workflow or action must also fail closed."""
     github = repo_root / ".github"
-    files = _github_yaml_files(github)
-    if files is None:
+    walked = _github_yaml_files(github)
+    if walked is None:
         return [f"exceeds {MAX_GITHUB_ENTRIES} .github entries"]
+    files, findings = walked
     if len(files) > MAX_YAML_FILES:
         return [f"exceeds {MAX_YAML_FILES} YAML files"]
-    return [finding for path in sorted(files) for finding in check_workflow(path, repo_root)]
+    return findings + [
+        finding for path in sorted(files) for finding in check_workflow(path, repo_root)
+    ]
 
 
 class AptInstallRecommendsTest(unittest.TestCase):
@@ -680,6 +709,76 @@ class AptInstallRecommendsTest(unittest.TestCase):
                 self.assertEqual(
                     self.check(f"run: |\n  {line}\n"), [f"fixture.yml:2: {UNSUPPORTED_FORM}"]
                 )
+
+    def test_unsupported_forms_in_step_form(self) -> None:
+        # Regression rows restored in full step form after the walk rewrite
+        # (issue #3674 review): a `name: next` continuation after the literal
+        # block, and a U+2028 inside the literal value.
+        pre = "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+        cases = (
+            (
+                8,
+                pre
+                + f"      - run: |\n          {self.call}\n        name: next\n          {self.refresh}\n",
+            ),
+            (
+                7,
+                pre + f"      - run: |\n          echo\u2028          {self.call}\n",
+            ),
+        )
+        for lineno, text in cases:
+            with self.subTest(lineno=lineno):
+                findings = check_workflow_text(text, self.root, SOURCE_NAME)
+                self.assertIn(f"{SOURCE_NAME}:{lineno}: {UNSUPPORTED_FORM}", findings)
+
+    def test_u2028_line_separator_makes_the_next_line_a_continuation(self) -> None:
+        # A U+2028 ends a Python source line but not a Bash one: the checker's
+        # `_eligible_lines` strips it so the following call line stays part of
+        # the same eligible logical line (issue #3674 review).  Dropping the
+        # strip desynchronises the two line numberings and the call line loses
+        # its eligibility, which changes the finding.
+        pre = "jobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n"
+        text = pre + f"      - run: |\n          echo\u2028\n          {self.call}\n"
+        self.assertEqual(
+            check_workflow_text(text, self.root, SOURCE_NAME),
+            [f"{SOURCE_NAME}:8: {self.list_rel} names libcudart12 without --no-install-recommends"],
+        )
+
+    def test_alias_run_value_is_refused(self) -> None:
+        # An alias value's marks point at the anchor, so key.end_mark.index
+        # alone accepted it; the value-position check refuses it (issue #3674
+        # review).
+        text = (
+            "jobs:\n"
+            "  test:\n"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - name: &script |\n"
+            f"          {self.configure}\n"
+            "        run: *script\n"
+        )
+        self.assertEqual(
+            check_workflow_text(text, self.root, SOURCE_NAME),
+            [f"{SOURCE_NAME}:6: {UNSUPPORTED_FORM}"],
+        )
+
+    def test_symlinks_under_github_are_refused(self) -> None:
+        # The scandir walk skips symlinks where the old glob walk followed
+        # them; a planted linked workflow and action must each be reported
+        # instead of passing unchecked (issue #3674 review).
+        if not hasattr(os, "symlink"):
+            self.skipTest("os.symlink unavailable")
+        target = self.root / "real.yml"
+        target.write_text(f"- run: |\n    {self.call}\n", encoding="utf-8")
+        workflow = self.root / ".github/workflows/linked.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.symlink_to(target)
+        action = self.root / ".github/actions/linked/action.yml"
+        action.parent.mkdir(parents=True)
+        action.symlink_to(target)
+        findings = check_yaml_files(self.root)
+        self.assertIn(f"{workflow}: symlink under .github is not supported", findings)
+        self.assertIn(f"{action}: symlink under .github is not supported", findings)
 
     def test_invalid_utf8_in_workflow(self) -> None:
         path = self.root / ".github/workflows/bad.yml"
