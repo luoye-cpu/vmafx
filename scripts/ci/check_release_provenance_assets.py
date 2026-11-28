@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 """Check that release workflows upload build-provenance assets (*.intoto.jsonl).
 
-OpenSSF Scorecard (v5.6.0) Signed-Releases check evaluates whether releases carry
+OpenSSF Scorecard (v5.7.0) Signed-Releases check evaluates whether releases carry
 cryptographic signatures (score 8) and build-provenance attestations (score 10).
 A release scores 10 when at least one release asset matches '*.intoto.jsonl'.
 
