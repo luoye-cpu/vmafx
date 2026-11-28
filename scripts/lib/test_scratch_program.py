@@ -15,6 +15,7 @@ import contextlib
 import errno
 import os
 import shutil
+import signal
 import stat
 import sys
 import tempfile
@@ -778,33 +779,69 @@ class GitDirectoryRemovalScan(unittest.TestCase):
         "POSIX FIFO and O_NOFOLLOW only",
     )
     def test_tracked_symlink_to_fifo_is_refused(self) -> None:
-        """A tracked Python symlink to a FIFO fails before open can block."""
+        """Negative: a tracked symlink to a FIFO fails at the lstat walk."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             os.mkfifo(root / "pipe")
             (root / "tracked.py").symlink_to(root / "pipe")
-            with self.assertRaisesRegex(
-                ValueError, "traverses a symlink|refusing to open source|not a regular file"
-            ):
+            with self.assertRaisesRegex(ValueError, "source path traverses a symlink$"):
                 read_tracked_source(root, "tracked.py")
+
+    @unittest.skipUnless(
+        hasattr(os, "mkfifo") and hasattr(signal, "setitimer"),
+        "POSIX FIFO and interval timer only",
+    )
+    def test_tracked_fifo_is_refused_without_blocking(self) -> None:
+        """Negative: a tracked FIFO is refused at fstat; open never waits for a writer."""
+
+        def timed_out(signum: int, frame: object) -> None:
+            raise TimeoutError("open blocked on the FIFO")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            os.mkfifo(root / "tracked.py")
+            previous = signal.signal(signal.SIGALRM, timed_out)
+            signal.setitimer(signal.ITIMER_REAL, 2.0)
+            try:
+                with self.assertRaisesRegex(ValueError, "source is not a regular file$"):
+                    read_tracked_source(root, "tracked.py")
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous)
 
     @unittest.skipUnless(
         hasattr(os, "symlink") and os.name != "nt",
         "planted directory symlinks need POSIX",
     )
     def test_tracked_source_rejects_a_symlinked_parent_directory(self) -> None:
-        """A link in a parent component cannot redirect the tracked source."""
+        """Negative: a link in a parent component cannot redirect the tracked source."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             outside = root / "outside"
             outside.mkdir()
             (outside / "tracked.py").write_bytes(b"pass\n")
             (root / "pkg").symlink_to(outside, target_is_directory=True)
-            with self.assertRaisesRegex(ValueError, "traverses a symlink"):
+            with self.assertRaisesRegex(ValueError, "source path traverses a symlink$"):
                 read_tracked_source(root, "pkg/tracked.py")
 
+    def test_tracked_source_refuses_paths_outside_the_tree(self) -> None:
+        """Negative: escaping, missing and file-as-directory paths are refused by name."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "f.py").write_bytes(b"pass\n")
+            cases = {
+                "": "source path escapes the repository$",
+                "/etc/passwd": "source path escapes the repository$",
+                "../x.py": "source path escapes the repository$",
+                "missing.py": "cannot inspect source",
+                "f.py/x.py": "source path component is not a directory$",
+            }
+            for name, message in cases.items():
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, message):
+                    read_tracked_source(root, name)
+
     def test_tracked_source_reads_an_ordinary_nested_path(self) -> None:
-        """Ordinary directories below the root remain readable."""
+        """Positive: ordinary directories below the root remain readable."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "pkg").mkdir()
