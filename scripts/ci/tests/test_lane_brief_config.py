@@ -35,7 +35,10 @@ from scripts.lib.safe_subprocess import run as run_command  # noqa: E402
 CONFIG = REPO / ".config" / "lane-brief.yaml"
 ALLOWED_KEYS = frozenset({"required", "required_by_stage", "credential_stub_tests"})
 STAGES = frozenset({"impl", "fix", "review", "audit", "research"})
-FIX_CLAUSES = ("mypy --no-site-packages --disable-error-code=import-not-found",)
+FIX_CLAUSES = (
+    "mypy --no-site-packages --disable-error-code=import-not-found",
+    "*.md change: markdownlint-cli2",
+)
 REVIEW_CLAUSES = (
     "Write nothing in the worktree",
     "return: final message only",
@@ -150,7 +153,7 @@ class LaneBriefConfigShapeTest(unittest.TestCase):
     def test_repo_config_fits_reader_contract(self) -> None:
         self.assertEqual(shape_errors(load_config()), [])
 
-    def test_fix_stage_holds_mypy_clause(self) -> None:
+    def test_fix_stage_holds_all_clauses(self) -> None:
         fix = load_config()["required_by_stage"]["fix"]
         for clause in FIX_CLAUSES:
             self.assertIn(clause, fix)
@@ -307,10 +310,21 @@ class LaneBriefReplayTest(unittest.TestCase):
     def test_fix_brief_without_mypy_is_refused(self) -> None:
         result = self.required(FIX_BRIEF, self.repo_worktree())
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertEqual(result.stdout.strip(), FIX_CLAUSES[0])
+        self.assertEqual(result.stdout.splitlines(), list(FIX_CLAUSES))
 
     def test_fix_brief_with_mypy_passes(self) -> None:
+        brief = FIX_BRIEF + "\n".join(FIX_CLAUSES) + "\n"
+        result = self.required(brief, self.repo_worktree())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_fix_missing_markdownlint_names_only_it(self) -> None:
         result = self.required(FIX_BRIEF + FIX_CLAUSES[0] + "\n", self.repo_worktree())
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.strip(), FIX_CLAUSES[1])
+
+    def test_fix_brief_with_markdownlint_not_applicable_passes(self) -> None:
+        note = "*.md change: markdownlint-cli2 not run, no linted Markdown file touched\n"
+        result = self.required(FIX_BRIEF + FIX_CLAUSES[0] + "\n" + note, self.repo_worktree())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_impl_brief_needs_no_stage_clauses(self) -> None:
@@ -370,6 +384,15 @@ class LaneBriefReplayTest(unittest.TestCase):
         del data["required_by_stage"]["review"]
         mutant = self.worktree(yaml.safe_dump(data, sort_keys=True))
         result = self.required(UNSAFE_REVIEW_BRIEF, mutant)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_planted_fix_brief_passes_without_the_markdownlint_clause(self) -> None:
+        # Mutation: drop the markdownlint clause and the mypy-only fix brief launches
+        # again, so the refusal above comes from this file and not from the reader alone.
+        data = load_config()
+        data["required_by_stage"]["fix"].remove(FIX_CLAUSES[1])
+        mutant = self.worktree(yaml.safe_dump(data, sort_keys=True))
+        result = self.required(FIX_BRIEF + FIX_CLAUSES[0] + "\n", mutant)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
