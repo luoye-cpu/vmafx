@@ -101,7 +101,7 @@ displayed upstream aggregate. How individual results are counted:
 | `CII-Best-Practices` | Passing badge, earned 2026-09-26 ([record](best-practices-assessment.md)) | Scores 5 out of 10; silver scores 7 and gold 10. |
 
 The public [Scorecard
-dashboard](https://scorecard.dev/viewer/?uri=github.com/VMAFx/vmafx)
+dashboard](https://scorecard.dev/viewer/?uri=github.com/vidiko/vmafx)
 and badge show the latest published result, which may describe an older commit.
 They are useful navigation and historical evidence, never the gate's source of
 truth. Code-scanning SARIF is available in GitHub's Security tab. An earned Best
@@ -160,9 +160,9 @@ allowed by the pinned upstream publisher. Keep arbitrary validation scripts in
 the separate gate jobs. The PR workflow has read-only permissions, never uses
 `pull_request_target`, and never publishes its local result.
 
-The action source is SHA-pinned (v2.5.0, `fa7117db`); its upstream metadata
-launches the tagged image `ghcr.io/ossf/scorecard-action:v2.5.0`. Verifying the
-reported Scorecard 5.6.0/61e84743 identity does not make that image
+The action source is SHA-pinned (v2.6.0, `23f22cd4`); its upstream metadata
+launches the tagged image `ghcr.io/ossf/scorecard-action:v2.6.0`. Verifying the
+reported Scorecard 5.7.0/d7552fb3 identity does not make that image
 digest-pinned.
 
 To move to a new Scorecard release, change `VERSION`, `TOOL_COMMIT` and
@@ -170,13 +170,15 @@ To move to a new Scorecard release, change `VERSION`, `TOOL_COMMIT` and
 `uses: ossf/scorecard-action@` lines of `scorecard.yml` and
 `security-scans.yml` in one pull request: a report from the previous tool is
 refused, and `scripts/ci/tests/test_scorecard_workflow.py` fails when an
-action pin differs from `ACTION_COMMIT`. Compare
+action pin differs from `ACTION_COMMIT`. Renovate opens the action bump as its
+own reviewed pull request (the `OpenSSF Scorecard action (gate identity)` rule
+in `renovate.json`), guarded by
+`test_scorecard_action_travels_alone_and_reviewed` in
+`scripts/ci/tests/test_renovate_file_patterns.py`. Compare
 `docs/checks/internal/checks.yaml` at both tool commits before keeping
-`WEIGHTS`, and list the release's check changes in the pull request. Repository rulesets can be read by the
-default
-token; classic branch-protection visibility errors must not be mistaken for
-proof
-that the actual settings are strong.
+`WEIGHTS`, and list the release's check changes in the pull request. Repository
+rulesets can be read by the default token; classic branch-protection visibility
+errors must not be mistaken for proof that the actual settings are strong.
 
 ## Dependency pinning and hash locking
 
@@ -223,7 +225,7 @@ action in the release workflows.
   correction](../research/0053-ossf-scorecard-investigation.md#2026-09-08-correction-and-measured-gate-design)
   — dated evidence, limitations and superseded claims.
 - [Exact action publishing
-  restrictions](https://github.com/ossf/scorecard-action/blob/fa7117db83c52d787ae5a89f350999701505d78e/README.md#workflow-restrictions).
-- [Scorecard 5.6.0
-  checks](https://github.com/ossf/scorecard/blob/61e84743356275f6ffca23b1b2f2cb945e19eb96/docs/checks.md).
+  restrictions](https://github.com/ossf/scorecard-action/blob/23f22cd43608bae7a1f1fa2603d7314dee9538a5/README.md#workflow-restrictions).
+- [Scorecard 5.7.0
+  checks](https://github.com/ossf/scorecard/blob/d7552fb3cdc05e9f6426177d3328887304fce554/docs/checks.md).
 - [Release guide](release.md) — release artifacts and verification.
