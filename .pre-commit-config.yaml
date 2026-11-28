@@ -1012,6 +1012,13 @@ repos:
         pass_filenames: false
         files: '^scripts/ci/(check-adr-status-drift\.py|adr-status-exceptions\.json|tests/test_check_adr_status_drift\.py)$'
 
+      - id: test-check-adr-body-freeze
+        name: ADR body freeze rejects edits to accepted decisions
+        entry: python3 -B scripts/ci/tests/test_check_adr_body_freeze.py
+        language: system
+        pass_filenames: false
+        files: '^scripts/ci/(check-adr-body-freeze\.py|check-adr-status-drift\.py|tests/test_check_adr_body_freeze\.py)$'
+
       - id: check-research-digest-ids
         name: Research digest IDs and H1 headings retain unique authority
         entry: python3 -B scripts/ci/check-research-digest-ids.py
