@@ -486,6 +486,7 @@ nav:
       - gRPC score streaming: architecture/grpc-streaming.md
       - MCP direct libvmaf path (CGO): architecture/mcp-cgo-direct-migration.md
       - VmafPicture v2 migration: architecture/vmaf-picture-v2-migration.md
+      - Encode packages and torcul: architecture/torcul-capability-map.md
   - Development:
       - Engineering principles: principles.md
       - Build flags: development/build-flags.md
