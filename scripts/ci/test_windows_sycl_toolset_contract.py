@@ -10,14 +10,20 @@ import re
 import shlex
 import sys
 import unittest
+from collections.abc import Iterable, Iterator
 from copy import deepcopy
-from itertools import islice
+from itertools import chain, islice
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
+from unittest.mock import patch
 
 import yaml  # type: ignore[import-untyped]
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+from scripts.ci.tests.test_pr_time_verify_workflows import SHA_PIN  # noqa: E402
+
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "libvmaf-build-matrix.yml"
 TESTER_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "windows-tester-bundle.yml"
 BUILD_CONFIG_PATH = REPO_ROOT / "build-config.env"
@@ -31,7 +37,7 @@ TESTER_SYCL_IF = "matrix.gpu == 'sycl'"
 LOAD_CONFIG = 'scripts/ci/load-build-config.sh >> "$GITHUB_ENV"'
 SKIP_VS2026 = "-p=NEED_VS2026_INTEGRATION=0"
 MSVC_STEP_NAME = "Setup MSVC dev environment"
-EXPECTED_MSVC_ACTION = "TheMrMilchmann/setup-msvc-dev@368ef7d1ee4d1171b31d4a7f67f4d954f903f5a9"
+MSVC_ACTION = "TheMrMilchmann/setup-msvc-dev"
 EXPECTED_WINDOWS_BASEKIT_URL = (
     "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/"
     "728c4418-1b40-47a9-ad51-31530fb27c94/"
@@ -71,6 +77,9 @@ SETVARS = r'call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"'
 BANNED_STL_MISMATCH_MACRO = "_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH"
 MIN_ONEAPI_MAJOR = 2026
 
+MAX_WORKFLOW_FILES = 512
+MAX_WORKFLOW_LINES = 4096
+MAX_WORKFLOW_JOBS = 256
 MAX_MATRIX_ROWS = 16
 MAX_JOB_STEPS = 64
 MAX_SCRIPT_LINES = 128
@@ -177,17 +186,61 @@ def _validate_step_if_conditions(steps: list[dict[str, Any]]) -> None:
             raise AssertionError(f"step '{name}' must keep its steps.leg.outputs.run if: guard")
 
 
-def _validate_msvc_step(steps: list[dict[str, Any]]) -> None:
-    """Verify the setup-msvc-dev step remains SHA-pinned at v4.1.0 with arch: x64."""
-    msvc_steps = [s for s in steps[:MAX_JOB_STEPS] if s.get("name") == MSVC_STEP_NAME]
-    if len(msvc_steps) != 1:
-        raise AssertionError(f"expected exactly one '{MSVC_STEP_NAME}' step")
-    step = msvc_steps[0]
-    if step.get("uses") != EXPECTED_MSVC_ACTION:
-        raise AssertionError(f"'{MSVC_STEP_NAME}' must stay pinned to {EXPECTED_MSVC_ACTION}")
+def _msvc_pin(uses: str) -> str:
+    action, _, ref = uses.partition("@")
+    if action != MSVC_ACTION:
+        raise AssertionError(f"expected action {MSVC_ACTION}, found {action!r}")
+    if not SHA_PIN.fullmatch(uses):
+        raise AssertionError(f"{uses!r} must pin a full lowercase commit SHA")
+    return ref
+
+
+def _validate_msvc_step(steps: list[dict[str, Any]], installer: int, arch: str) -> None:
+    """Require one SHA-pinned MSVC setup with the job's architecture before oneAPI."""
+    index = _step_index(steps, MSVC_STEP_NAME)
+    step = steps[index]
+    _msvc_pin(str(step.get("uses", "")))
+    if index >= installer:
+        raise AssertionError("MSVC setup must precede oneAPI install")
     with_map = step.get("with")
-    if not isinstance(with_map, dict) or with_map.get("arch") != "x64":
-        raise AssertionError(f"'{MSVC_STEP_NAME}' must specify with.arch: x64")
+    if not isinstance(with_map, dict) or with_map.get("arch") != arch:
+        raise AssertionError(f"'{MSVC_STEP_NAME}' must specify with.arch: {arch}")
+
+
+def _bounded[T](items: Iterable[T], limit: int, description: str) -> list[T]:
+    batch = list(islice(items, limit + 1))
+    if len(batch) > limit:
+        raise AssertionError(f"{description} exceeds limit {limit}")
+    return batch
+
+
+def _workflow_msvc_pins(path: Path) -> Iterator[str]:
+    with path.open(encoding="utf-8") as stream:
+        lines = _bounded(stream, MAX_WORKFLOW_LINES, f"{path.name} lines")
+    jobs = yaml.safe_load("".join(lines))["jobs"]
+    for job_id, job in _bounded(jobs.items(), MAX_WORKFLOW_JOBS, f"{path.name} jobs"):
+        if "steps" not in job:  # Reusable workflow call.
+            continue
+        pins = [
+            _msvc_pin(uses)
+            for step in _job_steps(job)
+            if (uses := str(step.get("uses", ""))).partition("@")[0] == MSVC_ACTION
+            or str(step.get("name", "")).partition(" (")[0] == MSVC_STEP_NAME
+        ]
+        if len(pins) > 1:
+            raise AssertionError(f"{path.name}/{job_id} has multiple {MSVC_ACTION} steps")
+        yield from pins
+
+
+def _shared_msvc_pin(directory: Path) -> str:
+    refs: dict[str, str] = {}
+    workflows = chain(directory.glob("*.yml"), directory.glob("*.yaml"))
+    for path in sorted(_bounded(workflows, MAX_WORKFLOW_FILES, "workflow files")):
+        for ref in _workflow_msvc_pins(path):
+            refs.setdefault(ref, path.name)
+    if len(refs) != 1:
+        raise AssertionError(f"workflows must share one {MSVC_ACTION} SHA, found {refs}")
+    return next(iter(refs))
 
 
 def _validate_oneapi_step(steps: list[dict[str, Any]]) -> None:
@@ -260,7 +313,7 @@ def validate_windows_sycl_toolset_contract(workflow_text: str) -> None:
     _validate_no_inline_pin(workflow_text)
     steps = _job_steps(job)
     _validate_step_if_conditions(steps)
-    _validate_msvc_step(steps)
+    _validate_msvc_step(steps, _step_index(steps, ONEAPI_STEP_NAME), "x64")
     _validate_oneapi_step(steps)
     _validate_aot_probe(steps)
 
@@ -296,6 +349,7 @@ def _validate_aot_probe(steps: list[dict[str, Any]]) -> None:
 def _validate_tester_workflow(workflow_text: str) -> None:
     steps = _job_steps(_load_job(workflow_text, "build"))
     installer = _step_index(steps, TESTER_ONEAPI_STEP)
+    _validate_msvc_step(steps, installer, "${{ matrix.arch }}")
     _validate_no_inline_pin(workflow_text)
     _validate_config_loader(steps, installer, TESTER_SYCL_IF)
     run = str(steps[installer].get("run", ""))
@@ -488,6 +542,85 @@ class WindowsSyclToolsetContractTest(unittest.TestCase):
     def test_live_workflow_satisfies_windows_sycl_toolset_contract(self) -> None:
         workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
         validate_windows_sycl_toolset_contract(workflow_text)
+        _shared_msvc_pin(WORKFLOW_PATH.parent)
+
+    def test_msvc_action_rejects_invalid_pins_and_owner(self) -> None:
+        cases = (
+            (f"{MSVC_ACTION}@v4", "full lowercase commit SHA"),
+            (f"{MSVC_ACTION}@b014284", "full lowercase commit SHA"),
+            (f"{MSVC_ACTION}@{'A' * 40}", "full lowercase commit SHA"),
+            (f"other/setup-msvc-dev@{'a' * 40}", f"expected action {MSVC_ACTION}"),
+        )
+        for uses, message in cases:
+            step = {"name": MSVC_STEP_NAME, "uses": uses, "with": {"arch": "x64"}}
+            with self.subTest(uses=uses), self.assertRaisesRegex(AssertionError, message):
+                _validate_msvc_step([step], 1, "x64")
+
+    def test_msvc_setup_after_oneapi_rejected(self) -> None:
+        steps = _job_steps(_load_job(WORKFLOW_PATH.read_text(encoding="utf-8")))
+        steps.append(steps.pop(_step_index(steps, MSVC_STEP_NAME)))
+        with self.assertRaisesRegex(AssertionError, "MSVC setup must precede oneAPI"):
+            _validate_msvc_step(steps, _step_index(steps, ONEAPI_STEP_NAME), "x64")
+
+    def test_msvc_renovate_bump_must_cover_every_workflow(self) -> None:
+        updated = "b01428496a7be6ea8716337c299ffccc9fadc0c8"
+        workflow = (
+            f"jobs:\n  build:\n    steps:\n      - name: {MSVC_STEP_NAME} (x64)\n"
+            f"        uses: '{MSVC_ACTION}@{updated}'\n"
+        )
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            first, second = directory / "first.yml", directory / "second.yml"
+            first.write_text(workflow, encoding="utf-8")
+            second.write_text(workflow, encoding="utf-8")
+            self.assertEqual(_shared_msvc_pin(directory), updated)
+            second.write_text(workflow.replace(updated, "a" * 40), encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "workflows must share one"):
+                _shared_msvc_pin(directory)
+            wrong_owner = workflow.replace(MSVC_ACTION, "other/setup-msvc-dev")
+            second.write_text(wrong_owner, encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, f"expected action {MSVC_ACTION}"):
+                _shared_msvc_pin(directory)
+
+    def _mixed_msvc_workflows(self, first_pin: str, second_pin: str) -> Path:
+        directory = Path(self.enterContext(TemporaryDirectory()))
+        for name, pin in (("first.yml", first_pin), ("second.yaml", second_pin)):
+            (directory / name).write_text(
+                f"jobs:\n  build:\n    steps:\n      - uses: {MSVC_ACTION}@{pin}\n",
+                encoding="utf-8",
+            )
+        return directory
+
+    def test_mixed_workflows_share_msvc_pin(self) -> None:
+        pin = "a" * 40
+        self.assertEqual(_shared_msvc_pin(self._mixed_msvc_workflows(pin, pin)), pin)
+
+    def test_mixed_workflows_reject_different_msvc_pins(self) -> None:
+        directory = self._mixed_msvc_workflows("a" * 40, "b" * 40)
+        with self.assertRaisesRegex(AssertionError, "workflows must share one"):
+            _shared_msvc_pin(directory)
+
+    def test_mixed_workflows_exceed_combined_file_limit(self) -> None:
+        directory = self._mixed_msvc_workflows("a" * 40, "a" * 40)
+        with (
+            patch.object(sys.modules[__name__], "MAX_WORKFLOW_FILES", 1),
+            self.assertRaisesRegex(AssertionError, "workflow files exceeds limit 1"),
+        ):
+            _shared_msvc_pin(directory)
+
+    def test_duplicate_msvc_action_in_one_job_rejected(self) -> None:
+        step = f"      - uses: {MSVC_ACTION}@{'a' * 40}\n"
+        for name in ("build.yml", "build.yaml"):
+            with self.subTest(name=name), TemporaryDirectory() as tmp:
+                path = Path(tmp) / name
+                path.write_text("jobs:\n  build:\n    steps:\n" + step * 2, encoding="utf-8")
+                with self.assertRaisesRegex(AssertionError, f"multiple {MSVC_ACTION} steps"):
+                    _shared_msvc_pin(path.parent)
+
+    def test_workflow_scan_rejects_overflow(self) -> None:
+        self.assertEqual(_bounded(range(2), 2, "items"), [0, 1])
+        with self.assertRaisesRegex(AssertionError, "items exceeds limit 2"):
+            _bounded(range(3), 2, "items")
 
     def test_planted_refused_targets_rejected(self) -> None:
         text = BUILD_CONFIG_PATH.read_text(encoding="utf-8")
@@ -633,7 +766,6 @@ class WindowsSyclToolsetContractTest(unittest.TestCase):
                 _validate_tester_workflow(yaml.safe_dump(planted))
 
     def test_contract_registered_in_tooling_suite(self) -> None:
-        sys.path.insert(0, str(REPO_ROOT))
         from scripts.ci.suite_registry import load_registry, suite_files  # noqa: PLC0415
 
         rel_path = Path(__file__).resolve().relative_to(REPO_ROOT).as_posix()
