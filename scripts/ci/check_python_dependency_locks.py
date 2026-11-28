@@ -455,22 +455,21 @@ def parse_manifest(text: str, *, parse_float: Callable[[str], object] = float) -
 
 
 def read_bounded(path: Path, relative: str, *, max_bytes: int | None = None) -> bytes:
-    """Read a regular file only after its on-disk size passes the cap."""
+    """Read at most the cap from a regular file; refuse anything larger."""
     limit = MAX_READ_SIZE_BYTES if max_bytes is None else max_bytes
     try:
-        st = path.stat()
+        if not stat.S_ISREG(path.stat().st_mode):
+            raise BoundedReadError(f"{relative}: not a regular file")
+        with path.open("rb") as handle:
+            # One open, and at most one byte past the cap: a file that grows
+            # between a stat and a read, or a path swapped for another file,
+            # is still never loaded past the cap (issue #3688 review).
+            data = handle.read(limit + 1)
     except OSError as error:
         raise BoundedReadError(f"{relative}: {error}") from error
-    if not stat.S_ISREG(st.st_mode):
-        raise BoundedReadError(f"{relative}: not a regular file")
-    if st.st_size > limit:
-        raise BoundedReadError(
-            f"{relative}: file size {st.st_size} exceeds maximum read limit of {limit} bytes"
-        )
-    try:
-        return path.read_bytes()
-    except OSError as error:
-        raise BoundedReadError(f"{relative}: {error}") from error
+    if len(data) > limit:
+        raise BoundedReadError(f"{relative}: exceeds maximum read limit of {limit} bytes")
+    return data
 
 
 def read_bounded_text(path: Path, relative: str, *, max_bytes: int | None = None) -> str:
@@ -595,7 +594,11 @@ def fingerprint_content(relative: str, content: bytes) -> bytes:
         return content
     kept: list[str] = []
     table = ""
-    for line in content.decode("utf-8").splitlines(keepends=True):
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise BoundedReadError(f"{relative}: {error}") from error
+    for line in text.splitlines(keepends=True):
         stripped = line.strip()
         header = _TABLE_HEADER.match(stripped)
         if header:
@@ -1816,6 +1819,47 @@ def scan_uv_version_echo(relative: Path, content: Iterable[str] | str) -> list[s
     return problems
 
 
+def _scan_consumers(root: Path, manifest: dict[str, Any], all_tracked: list[Path]) -> list[str]:
+    """Scan every tracked consumer under the per-file and aggregate caps.
+
+    Each consumer is read first (so the aggregate counts bytes actually read,
+    under the per-file cap) and only then scanned; when the aggregate cap is
+    crossed, the finding names the file that crossed it and how many consumers
+    were left unscanned (issue #3688 review).
+    """
+    problems: list[str] = []
+    consumer_bytes = 0
+    consumers = list(tracked_consumer_paths(root, all_paths=all_tracked))
+    for index, relative in enumerate(consumers):
+        path = root / relative
+        try:
+            raw = read_bounded(path, str(relative))
+        except BoundedReadError as error:
+            problems.append(str(error))
+            continue
+        consumer_bytes += len(raw)
+        if consumer_bytes > MAX_AGGREGATE_CONSUMER_BYTES:
+            problems.append(
+                f"aggregate consumer size {consumer_bytes} exceeds limit of "
+                f"{MAX_AGGREGATE_CONSUMER_BYTES} bytes; the consumer that crossed "
+                f"it is {relative}; {len(consumers) - index - 1} consumers left unscanned"
+            )
+            break
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            problems.append(f"{relative}: {error}")
+            continue
+        consumer_targets = get_manifest_lock_targets_for_consumer(relative, manifest, root)
+        problems.extend(scan_install_commands(relative, text, consumer_targets, root=root))
+        if relative.parts[:2] == (".github", "workflows") and relative.suffix.lower() in {
+            ".yml",
+            ".yaml",
+        }:
+            problems.extend(scan_workflow_checkout_ordering(relative, text, root=root))
+    return problems
+
+
 def _scan_guides(root: Path, all_tracked: list[Path]) -> list[str]:
     """Scan tracked non-history Markdown guides for restated uv versions."""
     problems: list[str] = []
@@ -2019,34 +2063,7 @@ def check(root: Path) -> int:
 
         all_tracked = tracked_paths(root)
         problems.extend(_scan_guides(root, all_tracked))
-
-        consumer_bytes = 0
-        for relative in tracked_consumer_paths(root, all_paths=all_tracked):
-            path = root / relative
-            try:
-                st = path.stat()
-            except OSError as error:
-                problems.append(f"{relative}: {error}")
-                continue
-            consumer_bytes += st.st_size
-            if consumer_bytes > MAX_AGGREGATE_CONSUMER_BYTES:
-                problems.append(
-                    f"aggregate consumer size {consumer_bytes} exceeds limit of "
-                    f"{MAX_AGGREGATE_CONSUMER_BYTES} bytes"
-                )
-                break
-            try:
-                text = read_bounded_text(path, str(relative))
-            except BoundedReadError as error:
-                problems.append(str(error))
-                continue
-            consumer_targets = get_manifest_lock_targets_for_consumer(relative, manifest, root)
-            problems.extend(scan_install_commands(relative, text, consumer_targets, root=root))
-            if relative.parts[:2] == (".github", "workflows") and relative.suffix.lower() in {
-                ".yml",
-                ".yaml",
-            }:
-                problems.extend(scan_workflow_checkout_ordering(relative, text, root=root))
+        problems.extend(_scan_consumers(root, manifest, all_tracked))
     except (ContractError, subprocess.CalledProcessError) as error:
         problems = [str(error)]
 

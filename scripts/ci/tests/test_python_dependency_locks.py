@@ -9,6 +9,7 @@ import ast
 import importlib.util
 import io
 import json
+import os
 import re
 import stat
 import subprocess
@@ -2247,9 +2248,50 @@ class BoundedReadTests(unittest.TestCase):
         self.assertEqual(self.checker.read_bounded(path, "data.txt", max_bytes=10), b"x" * 10)
         self.write("data.txt", 11)
         with self.assertRaisesRegex(
-            self.checker.BoundedReadError, "file size 11 exceeds maximum read limit of 10"
+            self.checker.BoundedReadError, "data.txt: exceeds maximum read limit of 10 bytes"
         ):
             self.checker.read_bounded(path, "data.txt", max_bytes=10)
+
+    def test_reader_refuses_a_file_whose_stat_lies_about_its_size(self) -> None:
+        # Regression for the issue #3688 review: the cap must come from what is
+        # actually read, not from a stat result a swapped or grown file betrays.
+        path = self.write("data.txt", 100)
+        real_stat = Path.stat
+
+        def lying_stat(path_obj: Path, *args: Any, **kwargs: Any) -> Any:
+            if path_obj == path:
+                return os.stat_result(
+                    (stat.S_IFREG | 0o644, 0, 0, 1, 0, 0, 5, 0, 0, 0),
+                )
+            return real_stat(path_obj, *args, **kwargs)
+
+        with mock.patch.object(Path, "stat", lying_stat):
+            with self.assertRaisesRegex(
+                self.checker.BoundedReadError,
+                "data.txt: exceeds maximum read limit of 10 bytes",
+            ):
+                self.checker.read_bounded(path, "data.txt", max_bytes=10)
+
+    def test_reader_refuses_a_path_that_is_not_a_regular_file(self) -> None:
+        directory = self.root / "data.d"
+        directory.mkdir()
+        with self.assertRaisesRegex(self.checker.BoundedReadError, "data.d: not a regular file"):
+            self.checker.read_bounded(directory, "data.d")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "os.mkfifo is POSIX-only")
+    def test_reader_refuses_a_fifo(self) -> None:
+        fifo = self.root / "data.fifo"
+        os.mkfifo(fifo)
+        with self.assertRaisesRegex(self.checker.BoundedReadError, "data.fifo: not a regular file"):
+            self.checker.read_bounded(fifo, "data.fifo")
+
+    def test_text_reader_wraps_invalid_utf8_as_a_bounded_read_error(self) -> None:
+        path = self.root / "data.bin"
+        path.write_bytes(b"ok\n\xff\xfe\n")
+        with self.assertRaisesRegex(
+            self.checker.BoundedReadError, r"data\.bin: 'utf-8' codec can't decode"
+        ):
+            self.checker.read_bounded_text(path, "data.bin")
 
     def test_manifest_over_the_cap_is_not_read(self) -> None:
         manifest = self.root / "requirements/locks/manifest.json"
@@ -2257,8 +2299,10 @@ class BoundedReadTests(unittest.TestCase):
         manifest.write_text('{"uv_version": "0.12.18", "locks": []}', encoding="utf-8")
         with (
             mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 8),
-            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
-            self.assertRaisesRegex(self.checker.ContractError, "file size .* exceeds"),
+            self.assertRaisesRegex(
+                self.checker.ContractError,
+                r"manifest\.json: exceeds maximum read limit of 8 bytes",
+            ),
         ):
             self.checker.load_manifest(self.root)
 
@@ -2267,8 +2311,10 @@ class BoundedReadTests(unittest.TestCase):
         manifest = self.checker.load_manifest(self.root)
         with (
             mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 8),
-            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
-            self.assertRaisesRegex(self.checker.BoundedReadError, "tooling.in: file size"),
+            self.assertRaisesRegex(
+                self.checker.BoundedReadError,
+                "tooling.in: exceeds maximum read limit of 8 bytes",
+            ),
         ):
             self.checker.check_uv_input_pins(self.root, manifest)
 
@@ -2277,8 +2323,10 @@ class BoundedReadTests(unittest.TestCase):
         entry = {"output": "dummy.txt", "inputs": ["dummy.in"], "compile_args": ["dummy.in"]}
         with (
             mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 10),
-            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
-            self.assertRaisesRegex(self.checker.BoundedReadError, "dummy.in: file size 11"),
+            self.assertRaisesRegex(
+                self.checker.BoundedReadError,
+                "dummy.in: exceeds maximum read limit of 10 bytes",
+            ),
         ):
             self.checker.entry_digest(self.root, entry)
 
@@ -2286,14 +2334,17 @@ class BoundedReadTests(unittest.TestCase):
         self.write("dummy.in", 5)
         self.write("dummy.txt", 11)
         entry = {"output": "dummy.txt", "inputs": ["dummy.in"], "compile_args": ["dummy.in"]}
-        with (
-            mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 10),
-            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
-        ):
+        with mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 10):
             problems = self.checker.validate_lock(self.root, {"uv_version": "0.12.18"}, entry)
-        self.assertEqual(
-            problems, ["dummy.txt: file size 11 exceeds maximum read limit of 10 bytes"]
-        )
+        self.assertEqual(problems, ["dummy.txt: exceeds maximum read limit of 10 bytes"])
+
+    def test_validate_lock_reports_an_oversized_input_through_the_digest(self) -> None:
+        self.write("dummy.in", 11)
+        self.write("dummy.txt", 5)
+        entry = {"output": "dummy.txt", "inputs": ["dummy.in"], "compile_args": ["dummy.in"]}
+        with mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 10):
+            problems = self.checker.validate_lock(self.root, {"uv_version": "0.12.18"}, entry)
+        self.assertEqual(problems, ["dummy.in: exceeds maximum read limit of 10 bytes"])
 
     def test_alias_consumer_over_the_cap_is_reported_without_reading(self) -> None:
         self.write("scripts/setup.sh", 11)
@@ -2309,36 +2360,29 @@ class BoundedReadTests(unittest.TestCase):
                 }
             ],
         }
-        with (
-            mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 10),
-            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
-        ):
+        with mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 10):
             problems = self.checker._check_alias_liveness(self.root, [entry])
-        self.assertEqual(
-            problems, ["scripts/setup.sh: file size 11 exceeds maximum read limit of 10 bytes"]
-        )
+        self.assertEqual(problems, ["scripts/setup.sh: exceeds maximum read limit of 10 bytes"])
 
     def test_consumer_scan_reports_the_oversized_file_and_continues(self) -> None:
         manifest = self.root / "requirements/locks/manifest.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text('{"uv_version": "0.12.18", "locks": []}', encoding="utf-8")
         self.write("scripts/setup.sh", 101)
-        original_read_bytes = Path.read_bytes
-
-        def guarded_read_bytes(path_obj: Path, *args: Any, **kwargs: Any) -> bytes:
-            if path_obj.name == "setup.sh":
-                raise AssertionError("read oversized")
-            return original_read_bytes(path_obj, *args, **kwargs)
-
+        (self.root / "scripts/other.sh").write_text(
+            "pip install --break-system-packages somepkg\n", encoding="utf-8"
+        )
         with (
             mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 100),
-            mock.patch.object(Path, "read_bytes", guarded_read_bytes),
             redirect_stderr(stderr := io.StringIO()),
         ):
             self.assertEqual(self.checker.check(self.root), 1)
-        self.assertIn(
-            "setup.sh: file size 101 exceeds maximum read limit of 100", stderr.getvalue()
-        )
+        stderr_text = stderr.getvalue()
+        self.assertIn("setup.sh: exceeds maximum read limit of 100", stderr_text)
+        # The scan continues past the oversized file and still reports the
+        # second consumer's own finding.
+        self.assertIn("other.sh", stderr_text)
+        self.assertIn("--break-system-packages", stderr_text)
 
     def test_consumer_scan_stops_at_the_aggregate_cap(self) -> None:
         manifest = self.root / "requirements/locks/manifest.json"
@@ -2352,15 +2396,34 @@ class BoundedReadTests(unittest.TestCase):
             redirect_stderr(stderr := io.StringIO()),
         ):
             self.assertEqual(self.checker.check(self.root), 1)
-        self.assertIn("aggregate consumer size 60 exceeds limit of 50 bytes", stderr.getvalue())
+        stderr_text = stderr.getvalue()
+        self.assertIn("aggregate consumer size 60 exceeds limit of 50 bytes", stderr_text)
+        self.assertRegex(stderr_text, r"the consumer that crossed it is scripts[/\\]b\.sh")
+        self.assertIn("0 consumers left unscanned", stderr_text)
+
+    def test_consumer_scan_accepts_an_aggregate_exactly_at_the_cap(self) -> None:
+        manifest = self.root / "requirements/locks/manifest.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text('{"uv_version": "0.12.18", "locks": []}', encoding="utf-8")
+        self.write("scripts/a.sh", 25)
+        self.write("scripts/b.sh", 25)
+        with (
+            mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 100),
+            mock.patch.object(self.checker, "MAX_AGGREGATE_CONSUMER_BYTES", 50),
+            redirect_stderr(stderr := io.StringIO()),
+        ):
+            self.assertEqual(self.checker.check(self.root), 0)
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_stamp_lock_refuses_an_oversized_generated_lock(self) -> None:
         generated = self.write("generated.txt", 11)
         entry = {"output": "dummy.txt", "inputs": ["dummy.in"], "compile_args": ["dummy.in"]}
         with (
             mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 10),
-            mock.patch.object(Path, "read_bytes", side_effect=AssertionError("read oversized")),
-            self.assertRaisesRegex(self.checker.BoundedReadError, "generated.txt: file size 11"),
+            self.assertRaisesRegex(
+                self.checker.BoundedReadError,
+                "generated.txt: exceeds maximum read limit of 10 bytes",
+            ),
         ):
             self.checker.stamp_lock(self.root, {"uv_version": "0.12.18"}, entry, generated)
 
