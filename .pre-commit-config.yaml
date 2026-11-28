@@ -123,7 +123,7 @@ repos:
         exclude: '^\.config/hiss/testdata/HISS-02/python/positive/spaced-while-true\.py$'
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.17.3
+    rev: v0.17.6
     hooks:
       - id: ruff-check
         # Same scope rule as black above; list: .config/lint-exceptions.d/ruff.toml.
@@ -160,7 +160,7 @@ repos:
         exclude_types: [zsh]
 
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.24.0
+    rev: v0.24.2
     hooks:
       # ADR-0866 — wire markdownlint-cli2 into pre-commit. pass_filenames
       # is true (the default) so only staged *.md files are linted; the
@@ -703,7 +703,7 @@ repos:
           - python-discovery==1.9.2
           - pyyaml==6.0.3
           - virtualenv==21.15.2
-        files: '^(scripts/ci/test_(git_fixture_isolation|ffmpeg_patch_stack|ffmpeg_patch_smoke_safety)\.py|scripts/ci/test-classify-dependency-pr\.sh|scripts/ci/tests/(test_level_zero_single_source\.py|test-sync-pelorus-interop\.sh)|scripts/dev/(test-cleanup-agent-state\.sh|(test-)?resolve-state-md-conflict\.py)|scripts/lib/(clean|drop)-git-env\.sh|(.*/)?test[-_][^/]*\.(sh|py)|\.pre-commit-config\.yaml)$'
+        files: '^(scripts/ci/test_(git_fixture_isolation|ffmpeg_patch_stack|ffmpeg_patch_smoke_safety)\.py|scripts/ci/test-classify-dependency-pr\.sh|scripts/ci/tests/(test_level_zero_single_source\.py|test-sync-pelorus-interop\.sh)|scripts/dev/(test-cleanup-agent-state\.sh|(test-)?resolve-state-md-conflict\.py)|scripts/lib/(clean|drop)-git-env\.sh|(.*/)?test[-_][^/]*\.(sh|py)|\.pre-commit-config\.yaml|renovate\.json|requirements/locks/tooling-tests\.txt)$'
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
@@ -1019,6 +1019,13 @@ repos:
         pass_filenames: false
         files: '^scripts/ci/(check-adr-status-drift\.py|adr-status-exceptions\.json|tests/test_check_adr_status_drift\.py)$'
 
+      - id: test-check-adr-body-freeze
+        name: ADR body freeze rejects edits to accepted decisions
+        entry: python3 -B scripts/ci/tests/test_check_adr_body_freeze.py
+        language: system
+        pass_filenames: false
+        files: '^scripts/ci/(check-adr-body-freeze\.py|check-adr-status-drift\.py|tests/test_check_adr_body_freeze\.py)$'
+
       - id: check-research-digest-ids
         name: Research digest IDs and H1 headings retain unique authority
         entry: python3 -B scripts/ci/check-research-digest-ids.py
@@ -1107,6 +1114,14 @@ repos:
         pass_filenames: false
         require_serial: true
         verbose: true
+        stages: [pre-push]
+
+      - id: check-exit-code-only-tests
+        name: New or modified scripts/ci/tests functions assert more than exit code 0
+        entry: python3 -B scripts/ci/check_exit_code_only_tests.py --changed-against origin/master
+        language: system
+        always_run: true
+        pass_filenames: false
         stages: [pre-push]
 
       - id: mypy-local
@@ -1267,7 +1282,7 @@ repos:
         # every CI run.
         language: python
         # semgrep 1.183.0 dropped the Intel macOS wheel; that platform stays on 1.182.1 until a later release ships one again.
-        additional_dependencies: ['semgrep>=1.183.0,<2.0; sys_platform != "darwin" or platform_machine != "x86_64"', 'semgrep>=1.182.1,<1.183; sys_platform == "darwin" and platform_machine == "x86_64"']
+        additional_dependencies: ['semgrep>=1.186.0,<2.0; sys_platform != "darwin" or platform_machine != "x86_64"', 'semgrep>=1.186.0,<1.187; sys_platform == "darwin" and platform_machine == "x86_64"']
         require_serial: true
         types_or: [c, c++, cuda, python]
         # Paths this hook skips: (a) upstream vendored subprojects,
@@ -1305,7 +1320,7 @@ repos:
         # Same isolated semgrep environment and serial execution as above.
         entry: python3 -m unittest discover -s scripts/ci/tests -p test_semgrep_vendored_scope.py
         language: python
-        additional_dependencies: ['semgrep>=1.183.0,<2.0; sys_platform != "darwin" or platform_machine != "x86_64"', 'semgrep>=1.182.1,<1.183; sys_platform == "darwin" and platform_machine == "x86_64"']
+        additional_dependencies: ['semgrep>=1.186.0,<2.0; sys_platform != "darwin" or platform_machine != "x86_64"', 'semgrep>=1.186.0,<1.187; sys_platform == "darwin" and platform_machine == "x86_64"']
         require_serial: true
         files: '^(\.semgrep\.yml|\.semgrepignore|\.pre-commit-config\.yaml|scripts/ci/tests/test_semgrep_vendored_scope\.py|core/src/pdjson\.(c|h)|core/src/mcp/3rdparty/.*)$'
         pass_filenames: false
@@ -1318,7 +1333,7 @@ repos:
         # then scans the real tests (ADR-1502).
         entry: python3 -m unittest discover -s scripts/ci/tests -p test_semgrep_float_identity.py
         language: python
-        additional_dependencies: ['semgrep>=1.183.0,<2.0; sys_platform != "darwin" or platform_machine != "x86_64"', 'semgrep>=1.182.1,<1.183; sys_platform == "darwin" and platform_machine == "x86_64"', "pyyaml==6.0.3"]
+        additional_dependencies: ['semgrep>=1.186.0,<2.0; sys_platform != "darwin" or platform_machine != "x86_64"', 'semgrep>=1.186.0,<1.187; sys_platform == "darwin" and platform_machine == "x86_64"', "pyyaml==6.0.3"]
         require_serial: true
         files: '^(\.semgrep\.yml|\.pre-commit-config\.yaml|scripts/ci/(lint_exceptions|tests/test_semgrep_(float_identity|vendored_scope))\.py|\.config/lint-exceptions\.d/vmaf-test-float-identity-[a-z-]+\.toml|core/test/.+\.(c|h|cc|cpp|cxx|hh|hpp|hxx))$'
         pass_filenames: false
@@ -1496,7 +1511,7 @@ repos:
       - id: test-pr-body-input-selection
         name: PR-body gates classify stdin before reading it
         # `[ ! -t 0 ]` answers "is fd 0 a terminal", not "was a body
-        # piped". A closed fd 0 used to deadlock all four gates that
+        # piped". A closed fd 0 used to deadlock all five gates that
         # read a PR body; /dev/null used to be read as an empty body.
         # Bounded by `timeout`, so a re-regression reports a hang
         # instead of hanging this hook. Every gate that sources
@@ -1505,7 +1520,15 @@ repos:
         # listed.
         entry: bash scripts/ci/tests/test-pr-body-input-selection.sh
         language: system
-        files: '^(scripts/ci/(?:deliverables-check|validate-pr-body|pr-body-input|ffmpeg-patches-surface-check|state-md-touch-check)\.sh|scripts/ci/tests/test-pr-body-input-selection\.sh|\.pre-commit-config\.yaml)$'
+        files: '^(scripts/ci/(?:deliverables-check|validate-pr-body|pr-body-input|ffmpeg-patches-surface-check|state-md-touch-check|check-toolchain-claims)\.sh|scripts/dev/toolchain-probe-format\.sh|scripts/ci/tests/test-pr-body-input-selection\.sh|\.pre-commit-config\.yaml)$'
+        pass_filenames: false
+        stages: [pre-commit, pre-push]
+
+      - id: test-check-toolchain-claims
+        name: Test toolchain claim probe and PR-body gate
+        entry: bash scripts/ci/test-check-toolchain-claims.sh
+        language: system
+        files: '^(scripts/ci/(?:check-toolchain-claims|test-check-toolchain-claims|deliverables-check)\.sh|scripts/dev/toolchain-probe(?:-format)?\.sh|\.pre-commit-config\.yaml)$'
         pass_filenames: false
         stages: [pre-commit, pre-push]
 
