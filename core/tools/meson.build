@@ -82,6 +82,13 @@ vmaf = executable(
     cpp_args : vmaf_tool_cflags,
     link_args : vmaf_cli_link_args,
     link_with : vmaf_tool_link_target,
+    # Release hardening (docs/principles.md 2.2, issue 2748): PIE comes from
+    # this per-target kwarg rather than the release native file, because a
+    # `-pie` in c_link_args lands after meson's own `-shared` on every shared
+    # library link (GCC then links an executable) and a global `b_pie` breaks
+    # nvcc, which has no PIE support. Meson reads this kwarg before `b_pie`
+    # and adds -fPIE at compile and -pie at link for this executable only.
+    pie : true,
     install : true,
 )
 

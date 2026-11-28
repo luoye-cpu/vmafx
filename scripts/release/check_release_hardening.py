@@ -33,9 +33,18 @@ from __future__ import annotations
 import argparse
 import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO))
+
+from scripts.lib.safe_subprocess import (  # noqa: E402
+    CommandFailed,
+    CommandOutputLimitExceeded,
+    CommandTimedOut,
+)
+from scripts.lib.safe_subprocess import run as run_command  # noqa: E402
 
 STACK_PROTECTOR_RE = re.compile(r"^__(?:stack_chk_fail(?:_local)?|stack_chk_guard)(?:@\S+)?$")
 FORTIFY_RE = re.compile(r"^__\w+_chk(?:@\S+)?$")
@@ -47,12 +56,13 @@ _DYNSYM_NDX_COLUMN = 6
 
 def _readelf(readelf: str, binary: Path, flags: list[str]) -> str:
     """Run one readelf query or raise with its stderr."""
-    result = subprocess.run(  # noqa: S603 -- resolved readelf, argv only, no shell
+    result = run_command(
         [readelf, *flags, "--", str(binary)],
+        allowed_executables=(readelf,),
         capture_output=True,
         text=True,
         check=True,
-        timeout=60,
+        timeout_seconds=60,
     )
     return result.stdout
 
@@ -73,7 +83,11 @@ def _undefined_symbols(dynsyms: str) -> list[str]:
     for line in dynsyms.splitlines():
         columns = line.split()
         if len(columns) >= _DYNSYM_COLUMNS and columns[_DYNSYM_NDX_COLUMN] == "UND":
-            names.append(columns[-1])
+            # The name is always the eighth column; a versioned import carries
+            # a symbol version index after it ("__stack_chk_fail@GLIBC_2.4 (3)"),
+            # so the last column would be "(3)" (issue 2748 review; readelf
+            # 2.41 in the release builder, binutils 2.47).
+            names.append(columns[_DYNSYM_COLUMNS - 1])
     return names
 
 
@@ -138,7 +152,7 @@ def check_file(readelf: str, binary: Path) -> str | None:
         segments = _readelf(readelf, binary, ["-l", "-W"])
         dynamic = _readelf(readelf, binary, ["-d", "-W"])
         dynsyms = _readelf(readelf, binary, ["-W", "--dyn-syms"])
-    except (OSError, subprocess.SubprocessError) as error:
+    except (OSError, CommandFailed, CommandOutputLimitExceeded, CommandTimedOut) as error:
         return f"readelf failed: {error}"
 
     match = re.search(r"^\s*Type:\s+(\S+)", header, re.MULTILINE)
@@ -167,7 +181,7 @@ def main(argv: list[str]) -> int:
         return 1
     failed = False
     for binary in args.files:
-        problem = check_file(Path(readelf), binary)
+        problem = check_file(readelf, binary)
         if problem:
             print(f"ERROR: {binary}: {problem}", file=sys.stderr)
             failed = True

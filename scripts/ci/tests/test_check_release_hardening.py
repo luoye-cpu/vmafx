@@ -14,11 +14,15 @@ from __future__ import annotations
 
 import shutil
 import subprocess  # nosec B404 -- argv-list calls to the host compiler and readelf only
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
+from scripts.lib.safe_subprocess import CommandFailed, TextCommandResult
+from scripts.lib.safe_subprocess import run as run_command
 from scripts.release import check_release_hardening
 
 FIXTURE_SOURCE = """\
@@ -55,10 +59,12 @@ HARDEN_FLAGS = [
 ]
 
 
-def _fake_readelf(header: str, segments: str, dynamic: str, dynsyms: str):
-    """A subprocess.run stub answering each readelf query of check_file."""
+def _fake_readelf(
+    header: str, segments: str, dynamic: str, dynsyms: str
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    """A run_command stub answering each readelf query of check_file."""
 
-    def run(cmd, **_kwargs):
+    def run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         flags = cmd[1:-1]
         if "--dyn-syms" in flags:
             out = dynsyms
@@ -120,8 +126,12 @@ def _dynsyms(stack_protector: bool, fortify: bool) -> str:
         "     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND memcpy@GLIBC_2.2.5",
     ]
     if stack_protector:
+        # readelf 2.41 (the release builder) and 2.47 print the symbol version
+        # index after the name; the checker must read the name column, not the
+        # last one (issue 2748 review).
         rows.append(
-            "     2: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __stack_chk_fail@GLIBC_2.4"
+            "     2: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND "
+            "__stack_chk_fail@GLIBC_2.4 (3)"
         )
     if fortify:
         rows.append(
@@ -143,7 +153,7 @@ def _stub(
     fortify: bool = True,
     rpath: str | None = None,
     runpath: str | None = "$ORIGIN",
-):
+) -> Callable[..., subprocess.CompletedProcess[str]]:
     return _fake_readelf(
         _header(elf_type),
         _segments(relro),
@@ -152,9 +162,9 @@ def _stub(
     )
 
 
-def _check_with(stub, binary: Path) -> str | None:
-    with patch.object(check_release_hardening.subprocess, "run", stub):
-        return check_release_hardening.check_file(Path("readelf"), binary)
+def _check_with(stub: Callable[..., subprocess.CompletedProcess[str]], binary: Path) -> str | None:
+    with patch.object(check_release_hardening, "run_command", stub):
+        return check_release_hardening.check_file("readelf", binary)
 
 
 def test_accepts_a_hardened_cli(tmp_path: Path) -> None:
@@ -231,36 +241,39 @@ def test_rejects_a_non_elf_file(tmp_path: Path) -> None:
 
 
 def test_readelf_failure_is_fatal(tmp_path: Path) -> None:
-    def failing_run(cmd, **kwargs):
-        raise subprocess.CalledProcessError(1, cmd, stderr="bad ELF")
+    def failing_run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise CommandFailed(TextCommandResult(tuple(cmd), 1, "", "bad ELF"))
 
-    with patch.object(check_release_hardening.subprocess, "run", failing_run):
-        problem = check_release_hardening.check_file(Path("readelf"), tmp_path / "vmaf")
+    with patch.object(check_release_hardening, "run_command", failing_run):
+        problem = check_release_hardening.check_file("readelf", tmp_path / "vmaf")
     assert problem is not None and problem.startswith("readelf failed")
 
 
 def test_main_fails_when_readelf_is_absent(tmp_path: Path) -> None:
-    with patch.object(check_release_hardening.shutil, "which", return_value=None):
+    with patch.object(shutil, "which", return_value=None):
         assert check_release_hardening.main([str(tmp_path / "vmaf")]) == 1
 
 
-def test_main_passes_a_fully_hardened_file(tmp_path: Path) -> None:
+def test_main_passes_a_fully_hardened_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     binary = tmp_path / "vmaf"
-    with patch.object(check_release_hardening.shutil, "which", return_value="/usr/bin/readelf"):
+    with patch.object(shutil, "which", return_value="/usr/bin/readelf"):
         with patch.object(
-            check_release_hardening.subprocess,
-            "run",
+            check_release_hardening,
+            "run_command",
             _stub(elf_type="DYN", pie=True, runpath="$ORIGIN"),
         ):
             assert check_release_hardening.main([str(binary)]) == 0
+    assert f"OK: {binary}: PIE, full RELRO (BIND_NOW)" in capsys.readouterr().out
 
 
 def test_main_fails_a_file_lacking_the_properties(tmp_path: Path) -> None:
     binary = tmp_path / "vmaf"
-    with patch.object(check_release_hardening.shutil, "which", return_value="/usr/bin/readelf"):
+    with patch.object(shutil, "which", return_value="/usr/bin/readelf"):
         with patch.object(
-            check_release_hardening.subprocess,
-            "run",
+            check_release_hardening,
+            "run_command",
             _stub(
                 elf_type="DYN",
                 pie=False,
@@ -284,19 +297,23 @@ def _compile(tmp_path: Path, name: str, extra: list[str]) -> Path:
     source = tmp_path / "fixture.c"
     source.write_text(FIXTURE_SOURCE, encoding="utf-8")
     binary = tmp_path / name
-    subprocess.run(  # noqa: S603 -- resolved host compiler, argv list, fixture source
+    run_command(
         [cc, *extra, str(source), "-o", str(binary)],
+        allowed_executables=(cc,),
         check=True,
         capture_output=True,
-        timeout=120,
+        timeout_seconds=120,
     )
     return binary
 
 
-def test_compiled_hardened_fixture_is_accepted(tmp_path: Path) -> None:
+def test_compiled_hardened_fixture_is_accepted(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     _require_linux_tools()
     binary = _compile(tmp_path, "vmaf-hardened", [*HARDEN_FLAGS, "-DCLI_MAIN"])
     assert check_release_hardening.main([str(binary)]) == 0
+    assert f"OK: {binary}: PIE, full RELRO (BIND_NOW)" in capsys.readouterr().out
 
 
 def test_compiled_unhardened_executable_is_rejected(tmp_path: Path) -> None:
