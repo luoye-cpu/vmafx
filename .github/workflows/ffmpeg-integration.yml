@@ -332,7 +332,7 @@ jobs:
         run: python -m pip install --require-hashes -r requirements/locks/build.txt
 
       - name: Setup MSVC dev environment (x64)
-        uses: TheMrMilchmann/setup-msvc-dev@368ef7d1ee4d1171b31d4a7f67f4d954f903f5a9  # v4.1.0
+        uses: TheMrMilchmann/setup-msvc-dev@b01428496a7be6ea8716337c299ffccc9fadc0c8  # v4.1.1
         with:
           arch: x64
 
@@ -385,7 +385,7 @@ jobs:
       # the step above; FFmpeg's compat/windows/mslink finds MSVC's link.exe
       # beside cl.exe, ahead of the MSYS2 coreutils `link`. MSYS2's own git
       # takes the POSIX paths and /dev/null the smoke script passes.
-      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e  # v2.33.0
+      - uses: msys2/setup-msys2@3c51bf698df1e37b2261f53cb67797b97761185c  # v2.34.0
         with:
           msystem: UCRT64
           install: >-
