@@ -19,6 +19,8 @@ required_by_stage:
   # A fix without a mypy command reached the pre-push gate with type errors.
   fix:
     - "mypy --no-site-packages --disable-error-code=import-not-found"
+    # A fix to a Markdown file reached the commit with a markdownlint failure.
+    - "*.md change: markdownlint-cli2"
   # A review job that leaves any path in the worktree ends with rc 79 (lane
   # guard in agy-job.sh), so a review brief must forbid worktree output and
   # ask for the report in the final message.

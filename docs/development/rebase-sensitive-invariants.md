@@ -271,9 +271,10 @@ backend within it.
 - **CI action pins — Windows MSVC dev env**
   ([ADR-0635](../adr/0635-ci-warning-omnibus-2026-05-19.md)):
   `.github/workflows/libvmaf-build-matrix.yml` uses
-  `TheMrMilchmann/setup-msvc-dev@79dac248…` (v4.0.0, Node.js 24) for the
-  Windows GPU build legs. If upstream ADR-0121 is re-implemented or the
-  Windows legs are rebased, do **not** reintroduce `ilammy/msvc-dev-cmd`
+  `TheMrMilchmann/setup-msvc-dev` for the Windows GPU build legs.
+  Every workflow that uses this action must pin the same full lowercase commit
+  SHA. Update all uses together when bumping the action. If upstream ADR-0121 is
+  re-implemented or the Windows legs are rebased, do **not** reintroduce `ilammy/msvc-dev-cmd`
   (Node.js 20, deprecated 2026-06-02). The `TheMrMilchmann` action is a
   drop-in replacement with identical `vcvarsall.bat` semantics.
   Also: both Windows jobs are pinned to `windows-2025`; do not revert to

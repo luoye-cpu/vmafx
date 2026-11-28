@@ -8,6 +8,29 @@ search:
 # Rebase notes
 
 <!-- rebase-notes:fragments:begin (rendered from docs/rebase-notes.d/; do not edit) -->
+## Scorecard gate trusts v5.7.0 (2026-11-25)
+
+- `scripts/ci/scorecard_gate.py`: `VERSION`, `TOOL_COMMIT` and
+  `ACTION_COMMIT` name Scorecard v5.7.0 and `ossf/scorecard-action` v2.6.0.
+  Fork-only, nothing upstream to merge.
+- **On sync or a later bump**: Renovate opens the `ossf/scorecard-action` bump
+  in its own reviewed pull request (`OpenSSF Scorecard action (gate identity)`
+  in `renovate.json`), which is where `VERSION`, `TOOL_COMMIT` and
+  `ACTION_COMMIT` move together with `scorecard.yml` and `security-scans.yml`;
+  `test_every_scan_uses_the_action_the_gate_reviewed` fails otherwise. Compare
+  `docs/checks/internal/checks.yaml` of both tool commits before keeping
+  `WEIGHTS`.
+
+## Check the render in the merge group (2026-11-23)
+
+- Keep full history for the Docs job on `push` and `merge_group`. The
+  merge-group step passes the event base SHA through `env` to
+  `scripts/ci/check_render_on_master.py --group-base`.
+- Check the last render commit on its own tree so fragment landings after
+  it can still owe a render. The opener repairs an inexact last render
+  immediately. See [ADR-3627](adr/3627-render-check-in-the-merge-group.md).
+- Tests: `scripts/ci/tests/test_check_render_on_master.py`.
+
 ## Fatbin compression entry flags (2026-11-20)
 
 - `core/src/check_device_compression.py` reads fatbin entry flags and excludes
