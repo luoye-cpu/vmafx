@@ -904,8 +904,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          # ADR-2197 (design notes)
-          fetch-depth: ${{ github.event_name != 'push' && 1 || 0 }}
+          # ADR-2197, ADR-3627 (design notes)
+          fetch-depth: ${{ github.event_name != 'push' && github.event_name != 'merge_group' && 1 || 0 }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: "3.14.10"
@@ -918,6 +918,12 @@ jobs:
         # ADR-2197, ADR-3295 (design notes)
         if: github.event_name == 'push'
         run: python3 scripts/ci/check_render_on_master.py
+      - name: Check the rendered changelog, ADR index and rebase notes (merge group)
+        # ADR-3627 (design notes)
+        if: github.event_name == 'merge_group'
+        env:
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: python3 scripts/ci/check_render_on_master.py --group-base "$MERGE_GROUP_BASE_SHA"
       - name: Install MkDocs Material
         run: |
           pip install --require-hashes -r requirements/locks/package-build.txt

@@ -1,0 +1,1 @@
+- Narrow heavy-job `ninja` link steps to consumed targets when a matching Builds matrix row is active, keeping full compilation (ADR-3625).
