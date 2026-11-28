@@ -1,0 +1,1 @@
+- **CI:** Renovate skips Python pre-commit hook dependency pins mirrored from `requirements/locks/tooling-tests.txt`, so it no longer opens pre-commit hook updates that break the tooling lock tests.
