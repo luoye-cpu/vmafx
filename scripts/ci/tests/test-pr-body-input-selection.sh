@@ -5,27 +5,25 @@
 # scripts/ci/tests/test-pr-body-input-selection.sh — the ADR-0108 PR-body
 # gates must decide what fd 0 is before reading it.
 #
-# Four gates read a PR body, and every one of them once chose its input with
+# Five gates read a PR body, and every one of them once chose its input with
 # `[ ! -t 0 ]`, which answers "is fd 0 something other than a terminal" — not
 # "did anybody pipe me a PR body". Three shapes fall in the gap, and this file
-# pins all three for all four:
+# pins all three for all five:
 #
 #   scripts/ci/deliverables-check.sh          ADR-0108 six-deliverable gate
 #   scripts/ci/validate-pr-body.sh            its local mirror
 #   scripts/ci/ffmpeg-patches-surface-check.sh  ADR-0409 surface gate
 #   scripts/ci/state-md-touch-check.sh        ADR-0165 state.md gate
+#   scripts/ci/check-toolchain-claims.sh      ADR-0108 toolchain claims gate
 #
-# The last two were fixed a commit later than the first two, which is the
-# reason this file covers all four rather than the pair that happened to be
+# The last three were fixed after the first two, which is the
+# reason this file covers all five rather than the pair that happened to be
 # noticed first: the defect was in a copied idiom, so a test naming only the
-# scripts already fixed would have gone on passing while two gates still hung.
+# scripts already fixed would have gone on passing while gates still hung.
 #
-# The two pairs answer an absent body differently, and the expectations below
-# encode that on purpose. deliverables-check.sh and validate-pr-body.sh exist
-# only to parse a body, so no body is a usage error (exit 2). The surface and
-# state.md gates also have a diff to check, so no body means the opt-out is
-# unclaimable and they fall through to that diff — passing when it is clean,
-# failing when it is not. Neither pair may hang.
+# The deliverables, validator, and toolchain-claims gates require a body
+# source. The surface and state.md gates also have a diff to check. With
+# no body they decide on the diff alone. All five must return promptly.
 #
 # The shapes:
 #
@@ -56,10 +54,11 @@ deliverables="${repo_root}/scripts/ci/deliverables-check.sh"
 validator="${repo_root}/scripts/ci/validate-pr-body.sh"
 ffmpeg_surface="${repo_root}/scripts/ci/ffmpeg-patches-surface-check.sh"
 state_touch="${repo_root}/scripts/ci/state-md-touch-check.sh"
+toolchain_claims="${repo_root}/scripts/ci/check-toolchain-claims.sh"
 helper="${repo_root}/scripts/ci/pr-body-input.sh"
 
 for script in "${deliverables}" "${validator}" "${ffmpeg_surface}" \
-  "${state_touch}" "${helper}"; do
+  "${state_touch}" "${toolchain_claims}" "${helper}"; do
   if [ ! -r "${script}" ]; then
     echo "test-pr-body-input-selection: missing ${script}" >&2
     exit 1
@@ -190,6 +189,19 @@ expect_output "deliverables: the piped body reached the parser and passed" \
 run_case 0 "deliverables: a file redirected onto stdin still reaches the parser" \
   "${same_rev} bash '${deliverables}' <'${work}/body.md'"
 
+# Pad with interior blank lines so the last content line has exactly one
+# newline. Append ten further blank lines only in the overflowing fixture.
+awk '{print} END {for (i=NR+1; i<4090; i++) print ""; print "."}' "${work}/body.md" >"${work}/4090.md"
+run_case 1 "deliverables: trailing blanks exceed the wrapper limit" \
+  "{ cat '${work}/4090.md'; printf '%0.s\\n' {1..10}; } | ${same_rev} bash '${deliverables}'"
+expect_output "deliverables: wrapper preserves trailing blanks" \
+  'check-toolchain-claims: PR body exceeds 4096 lines'
+awk '{print} END {for (i=NR+1; i<4096; i++) print ""; print "."}' "${work}/body.md" >"${work}/4096.md"
+run_case 0 "deliverables: 4096 lines with final newline" \
+  "cat '${work}/4096.md' | ${same_rev} bash '${deliverables}'"
+expect_no_output "deliverables: wrapper accepts the exact line limit" \
+  'check-toolchain-claims: PR body exceeds 4096 lines'
+
 echo "--- scripts/ci/validate-pr-body.sh ---"
 
 run_case 2 "validator: closed fd 0 is a usage error, not a hang" \
@@ -295,6 +307,46 @@ run_case 0 "state-md: a real pipe still reaches the opt-out parser" \
   "printf 'no state delta: regression test\n' | ${state_env} bash '${state_touch}'"
 expect_output "state-md: the piped opt-out was honoured" \
   'PASS — opt-out'
+
+echo "--- scripts/ci/check-toolchain-claims.sh ---"
+
+run_case 2 "toolchain-claims: closed fd 0 is a usage error, not a hang" \
+  "bash '${toolchain_claims}' 0<&-"
+expect_output "toolchain-claims: the closed-fd message names fd 0" \
+  'stdin .fd 0. is closed'
+
+run_case 2 "toolchain-claims: </dev/null is a usage error" \
+  "bash '${toolchain_claims}' </dev/null"
+expect_output "toolchain-claims: the /dev/null message names the descriptor" \
+  'not a readable stream'
+
+run_case 2 "toolchain-claims: an open pipe carrying no bytes fails closed" \
+  "true | bash '${toolchain_claims}'"
+expect_output "toolchain-claims: the empty-pipe message names the producer" \
+  'carried no bytes'
+
+run_case 0 "toolchain-claims: a blank PR_BODY passes with no claims" \
+  "PR_BODY='' bash '${toolchain_claims}'"
+
+if python3 -c 'import pty' >/dev/null 2>&1; then
+  run_case 2 "toolchain-claims: tty stdin is a usage error" \
+    "python3 -c 'import pty, subprocess, sys; m, s = pty.openpty(); sys.exit(subprocess.run([\"bash\", \"${toolchain_claims}\"], stdin=s).returncode)'"
+  expect_output "toolchain-claims: the tty message names the terminal" \
+    'stdin is a terminal'
+fi
+
+run_case 0 "toolchain-claims: a real pipe still reaches the parser" \
+  "cat '${work}/body.md' | bash '${toolchain_claims}'"
+
+run_case 0 "toolchain-claims: \$PR_BODY still reaches the parser with fd 0 on /dev/null" \
+  "PR_BODY=\"\$(cat '${work}/body.md')\" bash '${toolchain_claims}' </dev/null"
+
+run_case 1 "toolchain-claims: piped claim survives input selection" \
+  "printf 'No nvcc here.\\n' | bash '${toolchain_claims}'"
+expect_output "toolchain-claims: piped claim needs evidence" 'missing-toolchain claim'
+run_case 1 "toolchain-claims: env claim survives input selection" \
+  "PR_BODY='No nvcc here.' bash '${toolchain_claims}' </dev/null"
+expect_output "toolchain-claims: env claim needs evidence" 'missing-toolchain claim'
 
 echo "--- scripts/ci/pr-body-input.sh (descriptor hygiene) ---"
 
