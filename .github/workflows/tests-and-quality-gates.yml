@@ -1024,7 +1024,7 @@ jobs:
         if: steps.impact.outputs.golden_harness == 'true'
         timeout-minutes: 35
         run: |
-          bash scripts/ci/apt-install-cached.sh install .github/apt/coverage.txt
+          bash scripts/ci/apt-install-cached.sh install .github/apt/coverage.txt --no-install-recommends
           # ADR-0692 (design notes)
           sudo pip3 install --break-system-packages --ignore-installed --quiet --require-hashes \
             -r requirements/locks/build.txt
