@@ -26,7 +26,7 @@ import sys
 import tempfile
 import tomllib
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -143,17 +143,22 @@ class ContractError(RuntimeError):
     """A lock or install surface violates the repository contract."""
 
 
+def _format_repo_path(path: PurePath) -> str:
+    """Format a repository-relative path with POSIX separators on every platform."""
+    return path.as_posix()
+
+
 def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise ContractError(f"{MANIFEST_PATH}: duplicate JSON key {key!r}")
+            raise ContractError(f"{_format_repo_path(MANIFEST_PATH)}: duplicate JSON key {key!r}")
         result[key] = value
     return result
 
 
 def _reject_json_constant(value: str) -> None:
-    raise ContractError(f"{MANIFEST_PATH}: invalid JSON constant {value}")
+    raise ContractError(f"{_format_repo_path(MANIFEST_PATH)}: invalid JSON constant {value}")
 
 
 INSECURE_COMPILE_FLAGS = {
@@ -425,6 +430,7 @@ def validate_manifest_entry(entry: dict[str, Any]) -> list[str]:
 
 def parse_manifest(text: str, *, parse_float: Callable[[str], object] = float) -> dict[str, Any]:
     """Parse and validate a lock manifest from the worktree or a Git object."""
+    manifest_path = _format_repo_path(MANIFEST_PATH)
     try:
         data = json.loads(
             text,
@@ -433,24 +439,24 @@ def parse_manifest(text: str, *, parse_float: Callable[[str], object] = float) -
             parse_float=parse_float,
         )
     except (ValueError, RecursionError, ArithmeticError) as error:
-        raise ContractError(f"{MANIFEST_PATH}: {error}") from error
+        raise ContractError(f"{manifest_path}: {error}") from error
     if not isinstance(data, dict) or not isinstance(data.get("locks"), list):
-        raise ContractError(f"{MANIFEST_PATH}: expected an object with a locks array")
+        raise ContractError(f"{manifest_path}: expected an object with a locks array")
     version = data.get("uv_version")
     if not isinstance(version, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){2}", version):
-        raise ContractError(f"{MANIFEST_PATH}: uv_version must be an exact release")
+        raise ContractError(f"{manifest_path}: uv_version must be an exact release")
     install_targets: set[str] = set()
     for raw_entry in data["locks"]:
         if not isinstance(raw_entry, dict):
-            raise ContractError(f"{MANIFEST_PATH}: lock entry is not an object")
+            raise ContractError(f"{manifest_path}: lock entry is not an object")
         entry_problems = validate_manifest_entry(raw_entry)
         if entry_problems:
-            raise ContractError(f"{MANIFEST_PATH}: {'; '.join(entry_problems)}")
+            raise ContractError(f"{manifest_path}: {'; '.join(entry_problems)}")
         aliases = [item["alias"] for item in (raw_entry.get("install_aliases") or [])]
         for target in [raw_entry["output"], *aliases]:
             normalized = _normalize_install_target(target)
             if normalized in install_targets:
-                raise ContractError(f"{MANIFEST_PATH}: install target {target!r} is repeated")
+                raise ContractError(f"{manifest_path}: install target {target!r} is repeated")
             install_targets.add(normalized)
     return data
 
@@ -459,7 +465,7 @@ def load_manifest(root: Path) -> dict[str, Any]:
     try:
         text = (root / MANIFEST_PATH).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
-        raise ContractError(f"{MANIFEST_PATH}: {error}") from error
+        raise ContractError(f"{_format_repo_path(MANIFEST_PATH)}: {error}") from error
     return parse_manifest(text)
 
 
@@ -1294,10 +1300,12 @@ def _check_install_surface_size(path: Path, text: str) -> None:
         len(text) > MAX_INSTALL_SURFACE_BYTES
         or len(text.encode("utf-8")) > MAX_INSTALL_SURFACE_BYTES
     ):
-        raise ContractError(f"{path}: install surface exceeds {MAX_INSTALL_SURFACE_BYTES} bytes")
+        raise ContractError(
+            f"{_format_repo_path(path)}: install surface exceeds {MAX_INSTALL_SURFACE_BYTES} bytes"
+        )
     if len(text.splitlines()) > MAX_INSTALL_SURFACE_LINES:
         raise ContractError(
-            f"{path}: install surface exceeds {MAX_INSTALL_SURFACE_LINES} physical lines"
+            f"{_format_repo_path(path)}: install surface exceeds {MAX_INSTALL_SURFACE_LINES} physical lines"
         )
 
 
@@ -1310,6 +1318,7 @@ def scan_install_commands(
     """Return unsafe executable pip-install commands in one supported surface."""
     _check_install_surface_size(path, text)
     search_root = _resolve_search_root(root)
+    display_path = _format_repo_path(path)
 
     if valid_lock_outputs is None:
         valid_lock_outputs = get_manifest_lock_targets_for_consumer(path, root=search_root)
@@ -1322,7 +1331,7 @@ def scan_install_commands(
             ):
                 continue
             findings.append(
-                f"{path}:{line}: nox session.install must use literal arguments and the "
+                f"{display_path}:{line}: nox session.install must use literal arguments and the "
                 "hash-locked or local-source install policy"
             )
         return findings
@@ -1339,7 +1348,7 @@ def scan_install_commands(
             if _is_secure_install(tokens, targets, root=search_root, consumer_path=path):
                 continue
             findings.append(
-                f"{path}:{line}: pip install must use --require-hashes with a lock file, "
+                f"{display_path}:{line}: pip install must use --require-hashes with a lock file, "
                 "or install a local wheel with --no-deps, "
                 "or install a local editable tree with both --no-deps and --no-build-isolation"
             )
@@ -1360,7 +1369,7 @@ def _system_install_findings(path: Path, line: int, tokens: list[str]) -> list[s
     if "--ignore-installed" in lowered or "--user" in lowered:
         return []
     return [
-        f"{path}:{line}: pip install with --break-system-packages must also pass "
+        f"{_format_repo_path(path)}:{line}: pip install with --break-system-packages must also pass "
         "--ignore-installed: pip cannot uninstall a package the distribution installed"
     ]
 
@@ -1734,7 +1743,9 @@ def _scan_job_checkout_ordering(path: Path, job_id: str, raw_steps: Any, root: P
             checked_out = True
         elif not checked_out:
             for reason in _step_consumes_repo_resources(step, root):
-                findings.append(f"{path}: job {job_id!r} {reason} before actions/checkout")
+                findings.append(
+                    f"{_format_repo_path(path)}: job {job_id!r} {reason} before actions/checkout"
+                )
     return findings
 
 
@@ -1820,17 +1831,19 @@ def scan_uv_version_echo(relative: Path, content: Iterable[str] | str) -> list[s
     if relative.suffix.lower() != ".md" or is_uv_version_history_path(relative):
         return []
     line_iter: Iterable[str] = content.splitlines() if isinstance(content, str) else content
+    display_path = _format_repo_path(relative)
+    manifest_path = _format_repo_path(MANIFEST_PATH)
     problems: list[str] = []
     for number, raw_line in enumerate(line_iter, start=1):
         line = raw_line.rstrip("\r\n")
         if len(line) > MAX_GUIDE_LINE_LENGTH:
             problems.append(
-                f"{relative}:{number}: line of {len(line)} characters exceeds the scan limit "
+                f"{display_path}:{number}: line of {len(line)} characters exceeds the scan limit "
                 f"of {MAX_GUIDE_LINE_LENGTH}; split it so the uv version scan can read it"
             )
         elif UV_VERSION_ECHO.search(line):
             problems.append(
-                f"{relative}:{number}: names a uv version; point at uv_version in {MANIFEST_PATH}"
+                f"{display_path}:{number}: names a uv version; point at uv_version in {manifest_path}"
             )
     return problems
 
@@ -1851,7 +1864,7 @@ def _scan_guides(root: Path, all_tracked: list[Path]) -> list[str]:
             total_bytes += size
             if size > MAX_GUIDE_SIZE_BYTES:
                 problems.append(
-                    f"{relative}: file size {size} exceeds maximum guide limit of {MAX_GUIDE_SIZE_BYTES} bytes"
+                    f"{_format_repo_path(relative)}: file size {size} exceeds maximum guide limit of {MAX_GUIDE_SIZE_BYTES} bytes"
                 )
                 continue
             if total_bytes > MAX_AGGREGATE_GUIDE_BYTES:
@@ -1864,7 +1877,7 @@ def _scan_guides(root: Path, all_tracked: list[Path]) -> list[str]:
         except FileNotFoundError:
             continue
         except OSError as error:
-            problems.append(f"{relative}: cannot read guide: {error}")
+            problems.append(f"{_format_repo_path(relative)}: cannot read guide: {error}")
     return problems
 
 
@@ -2052,7 +2065,9 @@ def check(root: Path) -> int:
 
         for lock_file in find_lock_files(root):
             if str(lock_file) not in outputs_paths:
-                problems.append(f"unregistered lock file {lock_file} not present in manifest")
+                problems.append(
+                    f"unregistered lock file {_format_repo_path(lock_file)} not present in manifest"
+                )
 
         all_tracked = tracked_paths(root)
         problems.extend(_scan_guides(root, all_tracked))
@@ -2063,12 +2078,12 @@ def check(root: Path) -> int:
                     raw = handle.read(MAX_INSTALL_SURFACE_BYTES + 1)
                 if len(raw) > MAX_INSTALL_SURFACE_BYTES:
                     problems.append(
-                        f"{relative}: install surface exceeds {MAX_INSTALL_SURFACE_BYTES} bytes"
+                        f"{_format_repo_path(relative)}: install surface exceeds {MAX_INSTALL_SURFACE_BYTES} bytes"
                     )
                     continue
                 text = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
             except (OSError, UnicodeDecodeError) as error:
-                problems.append(f"{relative}: {error}")
+                problems.append(f"{_format_repo_path(relative)}: {error}")
                 continue
             consumer_targets = get_manifest_lock_targets_for_consumer(relative, manifest, root)
             problems.extend(scan_install_commands(relative, text, consumer_targets, root=root))
