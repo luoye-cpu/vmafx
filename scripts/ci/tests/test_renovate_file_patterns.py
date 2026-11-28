@@ -348,6 +348,33 @@ class CoupledPinGroups(unittest.TestCase):
             )
         )
 
+    def test_scorecard_action_travels_alone_and_reviewed(self) -> None:
+        """Positive: minor, patch and digest updates of ossf/scorecard-action land in
+        their own non-automerged group. Negative: other GitHub Actions such as
+        actions/checkout stay in the minor + patch group. Boundary: major updates of
+        ossf/scorecard-action also land in the scorecard group after the major rule."""
+        scorecard_group = "OpenSSF Scorecard action (gate identity)"
+        for update_type in ("minor", "patch", "digest", "major"):
+            with self.subTest(update_type=update_type):
+                dep = {
+                    "matchManagers": "github-actions",
+                    "matchPackageNames": "ossf/scorecard-action",
+                    "matchDepNames": "ossf/scorecard-action",
+                    "matchUpdateTypes": update_type,
+                }
+                indices = matching_group_rules(self.config, dep)
+                self.assertGreaterEqual(len(indices), 2)
+                self.assertEqual(self.group(dep), scorecard_group)
+                winning_rule = self.config["packageRules"][indices[-1]]
+                self.assertIs(winning_rule.get("automerge"), False)
+        checkout = {
+            "matchManagers": "github-actions",
+            "matchPackageNames": "actions/checkout",
+            "matchDepNames": "actions/checkout",
+            "matchUpdateTypes": "patch",
+        }
+        self.assertEqual(self.group(checkout), "GitHub Actions (minor + patch)")
+
 
 def helm_subchart_findings(config: dict[str, Any], files: list[str]) -> list[str]:
     """Require postUpdateOptions: ['helmUpdateSubChartArchives'] in renovate.json
