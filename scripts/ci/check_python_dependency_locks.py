@@ -1842,7 +1842,8 @@ def _scan_consumers(root: Path, manifest: dict[str, Any], all_tracked: list[Path
             problems.append(
                 f"aggregate consumer size {consumer_bytes} exceeds limit of "
                 f"{MAX_AGGREGATE_CONSUMER_BYTES} bytes; the consumer that crossed "
-                f"it is {relative}; {len(consumers) - index - 1} consumers left unscanned"
+                f"it is {relative}; {len(consumers) - index} consumers, including "
+                f"this one, left unscanned"
             )
             break
         try:

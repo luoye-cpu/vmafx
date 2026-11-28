@@ -2272,6 +2272,27 @@ class BoundedReadTests(unittest.TestCase):
             ):
                 self.checker.read_bounded(path, "data.txt", max_bytes=10)
 
+    def test_reader_reads_exactly_one_byte_past_the_cap(self) -> None:
+        # Pins the bounded read itself (issue #3688 review): the handle is read
+        # once with limit + 1, and never to EOF.
+        path = self.write("data.txt", 10)
+        real_open = Path.open
+        read_sizes: list[int] = []
+
+        class Recording(io.BytesIO):
+            def read(self, size: int = -1) -> bytes:
+                read_sizes.append(size)
+                return super().read(size)
+
+        def recording_open(path_obj: Path, *args: Any, **kwargs: Any) -> Any:
+            if path_obj == path and args and "b" in str(args[0]):
+                return Recording(path_obj.read_bytes())
+            return real_open(path_obj, *args, **kwargs)
+
+        with mock.patch.object(Path, "open", recording_open):
+            self.assertEqual(self.checker.read_bounded(path, "data.txt", max_bytes=10), b"x" * 10)
+        self.assertEqual(read_sizes, [11])
+
     def test_reader_refuses_a_path_that_is_not_a_regular_file(self) -> None:
         directory = self.root / "data.d"
         directory.mkdir()
@@ -2346,6 +2367,22 @@ class BoundedReadTests(unittest.TestCase):
             problems = self.checker.validate_lock(self.root, {"uv_version": "0.12.18"}, entry)
         self.assertEqual(problems, ["dummy.in: exceeds maximum read limit of 10 bytes"])
 
+    def test_validate_lock_reports_an_undecodable_input_through_the_digest(self) -> None:
+        pyproject = self.root / "pkg/pyproject.toml"
+        pyproject.parent.mkdir(parents=True)
+        pyproject.write_bytes(b"\xff\xfe\n")
+        self.write("dummy.txt", 5)
+        entry = {
+            "output": "dummy.txt",
+            "inputs": ["pkg/pyproject.toml"],
+            "compile_args": ["pkg/pyproject.toml"],
+        }
+        problems = self.checker.validate_lock(self.root, {"uv_version": "0.12.18"}, entry)
+        self.assertEqual(len(problems), 1, problems)
+        self.assertRegex(
+            problems[0], r"^pkg[/\\]pyproject\.toml: 'utf-8' codec can't decode byte 0xff"
+        )
+
     def test_alias_consumer_over_the_cap_is_reported_without_reading(self) -> None:
         self.write("scripts/setup.sh", 11)
         entry = {
@@ -2369,7 +2406,9 @@ class BoundedReadTests(unittest.TestCase):
         manifest.parent.mkdir(parents=True)
         manifest.write_text('{"uv_version": "0.12.18", "locks": []}', encoding="utf-8")
         self.write("scripts/setup.sh", 101)
-        (self.root / "scripts/other.sh").write_text(
+        # Sorted after scripts/setup.sh: the finding must appear only if the
+        # scan really continues past the oversized file.
+        (self.root / "scripts/zz-other.sh").write_text(
             "pip install --break-system-packages somepkg\n", encoding="utf-8"
         )
         with (
@@ -2379,9 +2418,7 @@ class BoundedReadTests(unittest.TestCase):
             self.assertEqual(self.checker.check(self.root), 1)
         stderr_text = stderr.getvalue()
         self.assertIn("setup.sh: exceeds maximum read limit of 100", stderr_text)
-        # The scan continues past the oversized file and still reports the
-        # second consumer's own finding.
-        self.assertIn("other.sh", stderr_text)
+        self.assertIn("zz-other.sh", stderr_text)
         self.assertIn("--break-system-packages", stderr_text)
 
     def test_consumer_scan_stops_at_the_aggregate_cap(self) -> None:
@@ -2390,6 +2427,11 @@ class BoundedReadTests(unittest.TestCase):
         manifest.write_text('{"uv_version": "0.12.18", "locks": []}', encoding="utf-8")
         self.write("scripts/a.sh", 30)
         self.write("scripts/b.sh", 30)
+        # A third consumer after the crossing point, with a finding the scan
+        # would report: it must stay unreported because the scan stopped.
+        (self.root / "scripts/c.sh").write_text(
+            "pip install --break-system-packages somepkg\n", encoding="utf-8"
+        )
         with (
             mock.patch.object(self.checker, "MAX_READ_SIZE_BYTES", 100),
             mock.patch.object(self.checker, "MAX_AGGREGATE_CONSUMER_BYTES", 50),
@@ -2399,7 +2441,9 @@ class BoundedReadTests(unittest.TestCase):
         stderr_text = stderr.getvalue()
         self.assertIn("aggregate consumer size 60 exceeds limit of 50 bytes", stderr_text)
         self.assertRegex(stderr_text, r"the consumer that crossed it is scripts[/\\]b\.sh")
-        self.assertIn("0 consumers left unscanned", stderr_text)
+        self.assertIn("2 consumers, including this one, left unscanned", stderr_text)
+        self.assertNotIn("c.sh", stderr_text)
+        self.assertNotIn("--break-system-packages", stderr_text)
 
     def test_consumer_scan_accepts_an_aggregate_exactly_at_the_cap(self) -> None:
         manifest = self.root / "requirements/locks/manifest.json"
