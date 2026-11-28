@@ -1,8 +1,10 @@
-# Research-2889: re-enabling the two scaffold-audit skips without touching golden values
+# Research-2889: re-enabling the scaffold-audit skips without touching golden values
 
 - **Status**: Active
 - **Workstream**: ADR-0621 (scaffold audit P3-3), ADR-0024 / ADR-1828 (Netflix golden gate), ADR-0108
 - **Last updated**: 2026-11-28
+
+<!-- markdownlint-disable MD013 -->
 
 ## Question
 
@@ -21,10 +23,10 @@ ADR-1828) by fixing the tested code, and what actually drifts?
   `_bootstrap_correlations` / `_correlation_stat`.
 - pandas 3.1.1 `pandas/core/common.py::random_state` and `pandas/core/sample.py` (installed under
   `python/requirements.txt` floors: numpy ≥ 2.5.3, pandas ≥ 3.1.0).
-- CI ground truth: [run 45927899704](https://github.com/VMAFx/vmafx/actions/runs/45927899704)
+- CI ground truth: [run 45927899704](https://github.com/vidiko/vmafx/actions/runs/45927899704)
   (master `6f8d9451a`, 2026-11-27), job **Coverage Gate** (id 140273527574) shard logs.
 - Prior attempts: branch `test/issue-2889-reenable-python-tests` (compared XML by node — rejected here,
-  it changes the golden assertion) and open PR [#3547](https://github.com/VMAFx/vmafx/pull/3547)
+  it changes the golden assertion) and open PR [#3547](https://github.com/vidiko/vmafx/pull/3547)
   (round-9 collapse, validated only on the tester-image build; its fork CI runs never completed).
 - Local probes on this machine (Python 3.12.10, numpy 2.5.5, pandas 3.1.1, scipy 1.17.1): scripts
   measuring the per-resample correlations of the golden dataset under each candidate code path.
@@ -104,36 +106,67 @@ Consequences per build on master's code: noise-separated builds give spurious ±
 flips (nanmean plcc_first 0.6583 vs golden 0.8656); the CI's separated build gives the physically
 correct but non-golden 0.8805/0.9529; everything fails at the ConstantInputWarning first.
 
-### The fix, and why thousandth resolution
+### What landed, and why the library stays unrounded
 
-`_correlation_stat` now normalizes the prediction column at **three decimals** — the finest grid that
-absorbs the largest observed cross-build separation (2.18e-4) — and reports NaN when either column has
-fewer than two distinct values (groundtruth or predictions). Differences at the grid and above keep
-ranking, so the collapse only eats the noise class. `_bootstrap_correlations` hands an explicit legacy
+Two things landed in the tested code. `_bootstrap_correlations` hands an explicit legacy
 `np.random.RandomState(seed_resample)` to `df.sample(random_state=...)`: a freshly seeded instance
-draws the same stream as the seeded global singleton, so the recorded draw sequence is preserved while
-the code stops mutating (and depending on) process-global RNG state — the issue's "显式 legacy
-RandomState(seed)" directive, with the sequence pinned to the golden.
+draws the same stream as the seeded global singleton, so the recorded draw sequence is preserved
+while the code stops mutating (and depending on) process-global RNG state — the issue's "explicit
+legacy RandomState(seed)" directive, with the sequence pinned to the golden. And
+`_correlation_stat` reports NaN when either resampled column has fewer than two distinct values
+(groundtruth or predictions): the value the pre-warning pandas stack returned silently, where
+today's stack warns (and `pytest` config `filterwarnings=error` escalates scipy's
+ConstantInputWarning to an error).
 
-Measured against the golden, per prediction family (probe, 2026-11-28):
+**A third change — rounding predictions at three decimals — was implemented, measured, and then
+removed after review.** It reproduced the recorded ties on every measured build family (probe
+deltas below), but review measured that it changes the public statistic on 0..1 scorers:
+
+| input (0..1 predictor) | master | rounded head |
+| --- | --- | --- |
+| predictions distinct at 1e-4 | plcc 0.988538, srocc 1.000000 | plcc 1.000000, srocc 1.000000 |
+| all predictions inside one 0.001 cell | plcc 1.000000, srocc 1.000000 | plcc nan, srocc nan |
+
+The tie behaviour the golden test needs is a property of the recording build, not of the statistic,
+so it does not belong in the library. `test_compare_two_quality_runners_on_dataset` is therefore
+skipped again, with a skip reason that names the measured build-noise separation; `test_to_xml`
+stays re-enabled (its fix is confined to the XML formatter, which review accepted with an explicit
+full-precision option).
+
+Measured against the golden with the removed rounding in place, per prediction family (probe,
+2026-11-28) — the numbers that motivated the round(3) attempt, kept as the record of why a
+precision-restoring grid was tried at all:
 
 | predictions | plcc_first | plcc_second | srocc_first | srocc_second |
 | --- | --- | --- | --- | --- |
 | family A = Coverage Gate build (97.428042675471147 / 97.4278247185967) | +2.605e-07 | -6.838e-09 | exact | exact |
 | family B = release builds (1.1e-12 / 2.6e-13 separation) | +2.208e-07 | -6.838e-09 | exact | exact |
 
-All four deltas sit far inside the `places=4` tolerance (±5e-5). End-to-end: both target tests pass
-locally with the golden values untouched (2026-11-28), and the CI-side family is proven by the shard
-log plus the family-A simulation of this exact code path.
+### Reproduction commands
 
-The boundary margin: the golden pair maps into one 1e-3 cell ([97.4275, 97.4285)) with ≥ 3.2e-4 of
-margin from the cell edge, about 1.5× the observed build spread. A build that pushed the plateau pair
-across a cell edge would break the tie again; that risk is recorded in the rebase note and in the
-`_correlation_stat` comment.
+```bash
+# the two tests, on a checkout with a local release build wired through
+# VMAFEXEC_PATH (see compat/python-vmaf/externals.py):
+python3 -m pytest -p no:anyio -q \
+  python/test/result_test.py::ResultFormattingTest::test_to_xml \
+  python/test/routine_test.py::TestTrainOnDataset::test_compare_two_quality_runners_on_dataset
+# expected on this branch: test_to_xml PASSED, the dataset runner test SKIPPED
+# (reason names the 2.18e-4 flat-asset separation)
+
+# the golden-integrity check: only skips/comments may differ under python/test/
+git diff upstream/master -- python/test/result_test.py python/test/routine_test.py
+
+# the per-family probe: feed the recorded family-A/family-B prediction vectors
+# through _bootstrap_correlations and diff the four nanmeans against golden
+python3 -m pytest -p no:anyio -q scripts/ci/tests/test_golden_probe_fixture.py  # not in tree;
+# the probe was a local script (flat vector table -> _paired_prediction_frame ->
+# nanmeans vs golden); the family vectors and expected deltas are the two tables
+# above, and the skipped test's golden asserts are the reference values.
+```
 
 ### CI evidence trail
 
-- [Run 45927899704](https://github.com/VMAFx/vmafx/actions/runs/45927899704) (master `6f8d9451a`,
+- [Run 45927899704](https://github.com/vidiko/vmafx/actions/runs/45927899704) (master `6f8d9451a`,
   2026-11-27), job Coverage Gate (140273527574) — job success, shard logs show
   `test_test_on_dataset PASSED` and `test_compare_two_quality_runners_on_dataset SKIPPED`.
 - PR #3547's heads carry only bot check runs (CodeRabbit/Sourcery skipped, fork runs
@@ -158,15 +191,23 @@ across a cell edge would break the tie again; that risk is recorded in the rebas
   forbids score-moving changes, and the integer-model pins already record a 3.3e-8 separation.
 - **Mark the test slow / skip on CI.** Rejected: a disguised skip; the issue forbids empty skips.
 - **Boundary-free clustering instead of grid rounding** (single-linkage at 1e-3, cluster mean as tie
-  value). Equivalent outcomes on the golden data but more code for the same contract; grid rounding
-  keeps the normalization legible (`round(3)` in one line) and the margin analysis above bounds the
-  edge risk.
+  value). Equivalent outcomes on the golden data but more code for the same contract.
+- **Round at three decimals (implemented in this branch's first commit, removed after review).**
+  Reproduced the recorded ties on every measured build family — but review measured that rounding a
+  0..1-scaled prediction column inside a public statistic collapses genuinely distinct predictions
+  (1e-4-apart inputs report plcc 1.000000 instead of 0.988538) and turns a whole 0.001 cell into
+  NaN. The tie is the recording build's property, so it moved into the skip reason, not the library.
+- **Re-record the golden against a pinned build.** Would need an ADR-1828 exception (the fork's
+  golden rows are the authority); out of scope for a skip-re-enable fix and it re-bakes one build's
+  noise into the fork's recorded expectations.
 
 ## Open questions
 
-- Whether the Coverage Gate's debug build and future toolchain bumps keep the flat-asset plateau
-  inside one 1e-3 cell. The margin is ~1.5× the largest observed spread; a wider spread would need a
-  recorded golden re-measurement (an ADR-1828 exception, not a silent edit).
+- What a future re-enable of `test_compare_two_quality_runners_on_dataset` would take: the golden
+  expectations are only reachable on a scorer build that ties the flat pair, so either the fork
+  records a re-measurement against a pinned build (an ADR-1828 exception, not a silent edit) or the
+  upstream Netflix/vmaf repo re-records its own copy — the library will not quantize predictions to
+  fabricate the ties.
 - Whether Netflix ever re-enables its own copy of the bootstrap test; if it does with different
   values, the fork's golden row becomes a deliberate fork divergence to carry in the rebase note.
 
@@ -174,5 +215,6 @@ across a cell edge would break the tie again; that risk is recorded in the rebas
 
 - ADRs: [ADR-0621](../adr/0621-scaffold-audit-p3-cleanup.md), [ADR-0024](../adr/0024-netflix-golden-preserved.md),
   [ADR-1828](../adr/1828-port-netflix-golden-updates.md), [ADR-0108](../adr/0108-deep-dive-deliverables-rule.md)
-- PRs: #3547 (prior round, open), #3539 (test_to_xml attempt)
+- PRs: #3547 (prior round, closed as superseded by this work), #3539 (earlier test_to_xml attempt,
+  closed as superseded)
 - Issues: #2889

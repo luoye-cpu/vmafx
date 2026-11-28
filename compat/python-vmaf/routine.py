@@ -358,27 +358,22 @@ def _correlation_stat(
     xcol: str,
     ycol: str,
 ) -> dict:
-    """PLCC and SROCC of `ycol` against `xcol`, evaluated at thousandth resolution.
+    """PLCC and SROCC of `ycol` against `xcol`, unrounded.
 
-    The golden expectations in ``python/test/routine_test.py::
-    test_compare_two_quality_runners_on_dataset`` were recorded on a scorer
-    build that gave the dataset's two flat assets one identical prediction
-    (both sit on the same model plateau), so the recorded resampled
-    correlations treat that pair as tied. Across the fork's scorer builds the
-    raw separation of the pair is build noise, not signal: 2.18e-4 on the
-    Coverage Gate's debug build, 3.3e-8 on the release integer-model pins,
-    1.1e-12 on the release tester build, with the ordering itself flipping
-    between builds. The prediction column is therefore normalized at three
-    decimals -- the finest grid that absorbs every observed separation -- so
-    the recorded ties are reproduced on every build, while differences at the
-    grid and above keep ranking. A resampled column left with fewer than two
-    distinct values (groundtruth or predictions) has no defined correlation
-    and reports NaN: the value the pre-warning pandas stack returned silently,
-    where today's stack warns (and ``pytest`` config ``filterwarnings=error``
-    escalates scipy's ConstantInputWarning to an error).
+    A resampled column left with fewer than two distinct values (groundtruth
+    or predictions) has no defined correlation and reports NaN: the value the
+    pre-warning pandas stack returned silently, where today's stack warns
+    (and ``pytest`` config ``filterwarnings=error`` escalates scipy's
+    ConstantInputWarning to an error). No rounding is applied here on
+    purpose: the recorded golden expectations in ``python/test/routine_test.py``
+    were taken on a scorer build that tied the dataset's two flat assets, a
+    property of that recording build, not of the statistic (across builds the
+    raw separation is 1.1e-12 to 2.18e-4 with the ordering flipping -- see
+    ``docs/research/2889-reenable-golden-tests.md``), so the tie is the test
+    skip's reason, not something the library reproduces.
     """
     x = df[xcol]
-    y = df[ycol].round(3)
+    y = df[ycol]
     if x.nunique() < 2 or y.nunique() < 2:
         return {"plcc": np.nan, "srocc": np.nan}
     plcc = y.corr(x, method="pearson")

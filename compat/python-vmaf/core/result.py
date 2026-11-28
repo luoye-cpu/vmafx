@@ -13,18 +13,22 @@ __copyright__ = "Copyright 2016-2020, Netflix, Inc."
 __license__ = "BSD+Patent"
 
 
-def _format_score_attr(value):
+def _format_score_attr(value, *, full_precision=False):
     """Render one score for an XML attribute, Python-2 ``str(float)`` style.
 
-    The golden XML in ``python/test/result_test.py::test_to_xml`` was recorded
-    when ``str(float)`` printed 12 significant digits (``str(0.9358023333...)``
-    -> ``'0.935802333333'``); Python 3's shortest-repr ``str()`` prints the
-    same double as ``'0.9358023333333333'``.  Reproducing the 12-digit form
-    here keeps the serialized attribute values stable across interpreter
-    versions without touching any expectation.  Non-float values (frame
-    numbers, method names, ...) keep ``str()``.
+    The default renders floats with the 12 significant digits the golden XML
+    in ``python/test/result_test.py::test_to_xml`` was recorded with (Python 2
+    ``str(float)`` semantics: ``str(0.9358023333...)`` -> ``'0.935802333333'``;
+    Python 3's shortest-repr ``str()`` prints the same double as
+    ``'0.9358023333333333'``).  That keeps the serialized attribute values
+    stable across interpreter versions and byte-identical to the recorded
+    form, at the documented cost that XML attribute values are rounded to 12
+    significant digits (``to_dict``/``to_json`` stay full precision;
+    ``full_precision=True`` restores it here, mirroring the CLI's
+    ``--precision=max`` shape, ADR-0119).  Non-float values (frame numbers,
+    method names, ...) keep ``str()`` either way.
     """
-    if isinstance(value, (float, np.floating)):
+    if isinstance(value, (float, np.floating)) and not full_precision:
         s = "%.12g" % value
         if not any(c in s for c in ".eEnN"):
             # Python 2 keeps the integral-float decimal point: str(100.0) == '100.0'.
@@ -431,7 +435,7 @@ class Result(BasicResult):
 
         return list_score_key, zip(*list_scores), list_aggregate_score
 
-    def to_xml(self):
+    def to_xml(self, *, full_precision: bool = False):
         """Example:
         <?xml version="1.0" ?>
         <result executorId="SSIM_V1.0">
@@ -471,14 +475,17 @@ class Result(BasicResult):
             # vmaf-style keys, and ElementTree + minidom on Python >= 3.8
             # preserve insertion order, so the serialization is now identical
             # on every supported interpreter instead of version-dependent.
+            # Score floats default to the 12-significant-digit form the golden
+            # was recorded with; full_precision=True keeps str()'s shortest
+            # repr instead.
             for score_key, score in zip(list_score_key, list_score):
-                frame.set(score_key, _format_score_attr(score))
+                frame.set(score_key, _format_score_attr(score, full_precision=full_precision))
             frame.set("frameNum", str(i))
 
         aggregate = ElementTree.SubElement(top, "aggregate")
         # Same convention as <frame> above: score keys first, method last.
         for score_key, score in zip(list_score_key, list_aggregate_score):
-            aggregate.set(score_key, _format_score_attr(score))
+            aggregate.set(score_key, _format_score_attr(score, full_precision=full_precision))
         aggregate.set("method", self.score_aggregate_method.__name__)
 
         return prettify(top)
