@@ -35,6 +35,10 @@ REPO_ENV = (
 HUMAN = ("Ada Example", "ada@example.org")
 BOT_LOGIN = "renovate[bot]"
 BOT_IDENT = (BOT_LOGIN, "29139614+renovate[bot]@users.noreply.github.com")
+RELEASE_BOT_IDENT = (
+    "vmafx-release-bot[bot]",
+    "340976456+vmafx-release-bot[bot]@users.noreply.github.com",
+)
 LANDING_ID = "Lusoris <lusoris@proton.me>"
 
 LANDED_3042 = """chore(deps): Update Python (patch) (#3042)
