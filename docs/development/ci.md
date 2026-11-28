@@ -1425,7 +1425,7 @@ The cache covers all eight apt-installing jobs in the workflow:
 | `compat-abi-parity` | Compat ABI Parity | `.github/apt/compat-abi-parity.txt` | 10 min | 45 min |
 | `sanitizers` | Sanitizers (${{ matrix.sanitizer }}) | `.github/apt/sanitizers.txt` | 10 min | 30 min |
 | `dnn` | Tiny AI | `.github/apt/tiny-ai.txt` | 20 min | 55 min |
-| `tooling-tests` | Tooling Tests | `.github/apt/tooling-tests.txt` | 10 min | 35 min |
+| `tooling-tests` | Tooling Tests | `.github/apt/tooling-tests.txt` | 10 min | 63 min |
 | `vmaf-tune-tests` | Python Package Tests (vmaf-tune) | `.github/apt/vmaf-tune-tests.txt` | 20 min | 35 min |
 | `mcp-smoke` | MCP Smoke | `.github/apt/mcp-smoke.txt` | 20 min | 55 min |
 | `coverage` | Coverage Gate | `.github/apt/coverage.txt` | 35 min | 120 min |

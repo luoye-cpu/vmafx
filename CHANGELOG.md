@@ -125,6 +125,14 @@ Contributed by luoye-cpu.
   ([Two viewing distances share one `adm`](docs/metrics/adm.md#two-viewing-distances-share-one-adm)).
 
 
+- **Accepted ADR body freeze.** CI and the pre-push hook reject changes to
+  frozen decisions. They allow dated updates, reference edits, supersession
+  notes, link repairs and prose reflow. The pre-push hook checks every pushed
+  ref from Git's push protocol. For the `ADR-Body-Edit` waiver and its
+  required reason, see `docs/adr/_index_fragments/_header.md` under
+  **Conventions**.
+
+
 - **VMAFx core API: contexts, models, host frames and scores (RC4, ADR-1852,
   ADR-1906).** A program can now score videos through `vmafx/*.h` alone:
   contexts with their own log callback (`VmafxContextConfig.log_callback`),
@@ -548,6 +556,9 @@ Contributed by luoye-cpu.
 
 
 - **SVT Encore filter strings in the upstream consumer check (#2364).** `scripts/ci/upstream-ffmpeg-compat.sh --against-cli` runs the `libvmaf` filter graphs SVT Encore builds for its VMAF profile options (model, feature, threads, subsample, reference filters; Encore pinned at `8dd7c596`) on upstream FFmpeg with `libvmaf.so.3` and requires the vmaf CLI's JSON exactly; an unknown feature or model must be refused.
+
+
+- **Pre-push check for exit-code-only tests under `scripts/ci/tests/`.** The `check-exit-code-only-tests` pre-push hook runs `scripts/ci/check_exit_code_only_tests.py --changed-against origin/master` over `scripts/ci/tests/test_*.py` and refuses added or modified `def test_*` functions that run a process or checker and then assert nothing or compare only its return code with the literal `0` (`# exit-code-only: <reason>` with a reason of at least 10 characters excuses justified cases). During a push it checks the outgoing commit named by `PRE_COMMIT_TO_REF`, not the working tree. See [Test suites and the checks that run them](docs/development/test-suites.md#exit-code-only-test-check-scriptscitests).
 
 
 - **The patched FFmpeg is built with MSVC against `vmaf.lib` on every change
@@ -1102,6 +1113,9 @@ Contributed by luoye-cpu.
   ratchet on the Rust shims, `tad_rust.c` and their tests; it is the required
   check `Tidy Lane (rust)`, routed by its own paths, and part of the nightly
   sweep (#2880).
+
+
+- Missing toolchain claims need `scripts/dev/toolchain-probe.sh` output in PRs.
 
 
 - **Add `scripts/dev/upstream_pr_sweep.py`, one tracked tool that rebases, builds and tests the fork's open upstream pull requests.** It is dry-run by default, refuses heads the fork does not own and dirty worktrees, and pushes only with a lease to the contribution fork's own branches ([docs](docs/development/upstream-pr-sweep.md)). Every git it starts drops the repository-locating `GIT_*` variables and the caller's `git -c` overrides, and `scripts/git-hooks/framework-hooks.sh` now runs pre-commit without `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and the object-directory variables, so a hook-run fixture can no longer write into the caller's repository.
@@ -1788,6 +1802,10 @@ Contributed by luoye-cpu.
   directories itself.
 
 
+- **CI:** the Git fixture sentinel now names up to ten failing unittest tests
+  when a script exits nonzero without a declared failure.
+
+
 - **The route for Go saliency inference is decided.** [ADR-2377](docs/adr/2377-go-saliency-through-mobilesal-binding.md)
   records that `vmafx-tune` runs the saliency model through the core's MobileSal extractor and the
   generated Go binding, with no second ONNX Runtime integration. No code changes yet; RC5 implements
@@ -1843,6 +1861,13 @@ Contributed by luoye-cpu.
   The release also adds artifact deletion with layout garbage collection and
   AWS, GCP and Azure KMS signers, which VMAFx does not use yet. Nothing VMAFx
   runs today changes: none of the golusoris packages VMAFx imports changed.
+
+
+- **Docs:** hard rule 9 in `docs/development/agent-hard-rules.md` and the
+  fragment section of `docs/development/release.md` now name the two pull
+  requests that carry `CHANGELOG.md`: the render-only pull request of
+  ADR-3295, which adds no fragment and owes no other deliverable, and the
+  generated release pull request at the release cut.
 
 
 - **HDR pins hold 5 decimal places on x86-64 and 3 on aarch64 and macOS.** libvmaf scores identical converted pictures bit-exact on every platform; the zimg conversion to ICtCp rounds differently on aarch64 and macOS, by up to 3.5e-4 on the pooled score. See [HDR models](docs/models/v1.md#hdr-models).
@@ -2122,6 +2147,24 @@ Contributed by luoye-cpu.
   enum value and RPC is the same, and `buf breaking` with the wire and JSON
   rules guards it from now on. gRPC reflection reports the new file names
   (`vmafx/v1/vmafx.proto`, `vmafx/controller/v1/controller.proto`).
+
+
+- **`make pr-check` runs all three `rule-enforcement.yml` PR-body shell gates.**
+  `scripts/ci/pr-body-gates.sh` runs `deliverables-check.sh`,
+  `state-md-touch-check.sh` and `ffmpeg-patches-surface-check.sh` without early
+  stop so a PR body that passes `make pr-check` locally cannot fail the
+  `docs/state.md` or `ffmpeg-patches` surface gates in CI. `PR=<num>` fetches
+  the title, body and revisions in one `gh pr view` call; `BODY=<file>` accepts
+  `TITLE=<text>` and defaults to the `HEAD` commit subject when `TITLE` is
+  empty. `make pr-check PR=<num>` now checks the PR's own base and head
+  revisions, fetching missing commits from `origin` and failing if they cannot
+  be obtained. In PR mode, the FFmpeg surface gate's tree checks also read the
+  PR head tree rather than the local checkout, reading raw blobs so archive
+  attributes in the PR cannot hide or rewrite inputs; the FFmpeg surface gate
+  reads path lists NUL-delimited so patch and doc names with non-ASCII
+  characters are checked. `TITLE` and `BODY` are passed to the gates literally
+  without `make` or shell expansion, and `PR` must be a positive decimal
+  number.
 
 
 - **The pull-request type labeller runs on `pull_request`
@@ -2556,6 +2599,11 @@ Contributed by luoye-cpu.
 - **The hosted tidy lanes retry the dev container pull.** `scripts/ci/pull-dev-image.sh` gives the login and the pull of the digest-pinned image four bounded attempts before the lane fails with an error naming the image, so a single DNS timeout on `ghcr.io` no longer fails a nightly lane (#2792).
 
 
+- Raise the Tooling Tests job limit from 35 to 63 minutes. The documented rule
+  adds the step caps (20 minutes) to 1.25 times the longest healthy run of the
+  uncapped steps (34.3 minutes). Pytest still limits each test to 300 seconds.
+
+
 - **The Python lock documentation no longer repeats the uv version.** It points at `uv_version` in
   `requirements/locks/manifest.json`, so a uv update no longer needs a documentation edit.
 
@@ -2885,6 +2933,9 @@ Contributed by luoye-cpu.
   `800122efd8`), so master `Landed commit messages` stays green (ADR-3624).
 
 
+- **CI:** the Docs job rejects stale renders in the merge queue before they reach `master`. If the last render on `master` is inexact, the render workflow opens its repair pull request without waiting six hours (ADR-3627).
+
+
 - **Go security scan:** the node's eBPF binding no longer trips gosec G101 (hard-coded credentials): its bpf2go identifier is `rcloneTracker`, whose generated constant names hold no credential word, and `make lint-go` also scans generated Go files with `.gosec.json` (issue 3630).
 
 
@@ -3161,6 +3212,9 @@ Contributed by luoye-cpu.
   other binaries' ([ADR-2350](docs/adr/2350-cloud-native-platform.md)).
 
 
+- **CI:** the Coverage Gate installs its apt packages without recommended packages (`--no-install-recommends`), so a cache miss no longer downloads about 160 MB of NVIDIA driver packages and times out.
+
+
 - **The coverage jobs give gcov builds the sanitizer legs' test timeout multiplier, and a skipped coverage shard names its cause.** `Coverage Gate`, `Coverage (GPU)` and `make coverage` run the Meson suite with `--timeout-multiplier 3`, as the sanitizer legs do, after `test_integer_adm_simd` reached its 30 s under gcov on master. The step `Assert every Python coverage shard passed` names the earlier step whose failure skipped the shards, and the shard steps set `PYTHONPATH` again (they carried a misspelt key).
 
 
@@ -3279,6 +3333,12 @@ Contributed by luoye-cpu.
   after either path, and the output names the path that ran.
 
 
+- FFmpeg patch-stack refresh used to fail with `bad escape \U` when a Windows
+  remote path such as `C:\Users\runner\ffmpeg.git` was copied into a Docker
+  ARG. Refresh now writes replacement values literally in Docker ARGs, pinned
+  build configuration, and the README replay claim.
+
+
 - **`-qpfile` works on libx264, and the saliency tools no longer run a libx264
   encode without the ROI they asked for
   ([ADR-2167](docs/adr/2167-ffmpeg-x264-qpfile-quant-offsets.md)).** Patch
@@ -3298,6 +3358,15 @@ Contributed by luoye-cpu.
 
 
 - **FIFO helper child exit codes.** Wait up to three seconds for failed FIFO helpers to finish exiting before reporting their exit code, report an unavailable exit code explicitly when that wait expires, and never wait for a helper that already signaled readiness.
+
+
+- Tests: caller fixtures in `scripts/ci/test_git_fixture_isolation.py` now
+  disable git's automatic maintenance before their baseline commit and fail
+  closed when that commit starts background work. Previously, a baseline commit
+  in the `exercise` or linked-worktree hook caller repository could spawn a
+  detached `git maintenance run --auto` whose lock or repack raced the caller
+  snapshot. `commit_caller_baseline()` now sets `maintenance.auto=false` and
+  `gc.auto=0` before committing and traces that commit with `GIT_TRACE=1`.
 
 
 - Temporary Git test repositories ignore caller global and system configuration, preventing inherited commit-signing defaults from breaking fixtures. The existing static hook rejects Python filters that re-admit caller Git variables or omit configuration isolation ([ADR-3535](docs/adr/3535-fixture-git-config-isolation.md)).
@@ -3575,6 +3644,10 @@ Contributed by luoye-cpu.
   `(std::min)(a, b)`, and the `msvcism` stage of `scripts/dev/preflight.sh`
   now refuses a `min(` / `max(` call behind `<windows.h>` without `NOMINMAX`
   (`scripts/dev/find-windows-minmax.py`).
+
+
+- Windows CI now accepts Renovate updates to `TheMrMilchmann/setup-msvc-dev` when every workflow uses the same full lowercase commit SHA. Partial updates still fail the toolset contract.
+  The contract scans both `.yml` and `.yaml` files in `.github/workflows/`.
 
 
 - **A pull request that changes core C or C++ is compiled with MSVC before it lands ([ADR-3279](docs/adr/3279-msvc-sycl-leg-on-light-tier.md)).** A light-tier pull request ran no Windows compile of the core, so code that only MSVC or the Windows SDK headers refuse reached `master` (pull request #2724, fixed by #2740). `Windows MSVC+SYCL` now runs on a light-tier pull request whose diff touches C, C++, header or Meson files under `core/` (selector `windows_msvc_sycl`); `Windows MSVC+CUDA` and `Windows ARM64 MSVC` stay full-tier. The `ci: full` escalation no longer stops at a cancel that GitHub answers with 409: it re-runs every workflow it can, names each one it could not, and then fails.
@@ -3877,6 +3950,9 @@ Contributed by luoye-cpu.
   manager now groups them as `CI Node.js` (ADR-3312 pattern).
 
 
+- **CI:** Renovate skips Python pre-commit hook dependency pins mirrored from `requirements/locks/tooling-tests.txt`, so it no longer opens pre-commit hook updates that break the tooling lock tests.
+
+
 - **The report field `fps` is documented per platform.** `docs/usage/cli.md` said `fps` is always CPU time. It comes from the C library's `clock()`, which counts process CPU time on Linux and macOS but elapsed wall time with the Microsoft C runtime on Windows, so `fps` values from different platforms are not comparable; `wall_fps` is the field to compare. The hardware coverage page now says that a GPU row counts matching devices, not reports.
 
 
@@ -4105,6 +4181,18 @@ Contributed by luoye-cpu.
   their licence manifest named upstream zimg 3.0.6. Each image now carries the package's Debian
   copyright file and `SOURCE` record under `/usr/share/doc/libzimg2`, and the `zimg` entry of
   `tools/rc1-tester/image/licensing.json` reads them, as the `libgomp1` entry already does.
+
+
+- **Python tests can remove read-only scratch Git objects on Windows.**
+  On Windows only, cleanup retries a refused deletion once for read-only directories
+  and single-link regular files. The caller must own and have created the tree and
+  keep it free of concurrent writers. Links, reparse points and hard-linked objects
+  keep their refusal. After the walk, `remove_tree` raises the first unrecovered
+  error received by the `onexc` hook, preserving its filename and adding bounded
+  notes. If the walk reports no error but the root remains, `remove_tree` raises
+  `ENOTEMPTY` with the root as its filename.
+  Before deleting anything, cache removal refuses trees with more than 65,536
+  entries and roots that are symlinks or junctions.
 
 
 - CI: the `Tidy Changed` job now lints a changed C-only header (one that
@@ -4390,6 +4478,13 @@ Contributed by luoye-cpu.
   Reports from the previously reviewed v5.5.0 (`c395761d`) are refused, and a
   new test fails when a workflow's action pin and the gate's pin differ. The
   check weights and risk levels are unchanged between the two versions.
+
+
+- **The OpenSSF Scorecard gate now trusts Scorecard v5.7.0 (`d7552fb3`) run by
+  `ossf/scorecard-action` v2.6.0 (`23f22cd4`)**. Reports from the previously
+  reviewed v5.6.0 (`61e84743`) are refused, the check weights and risk levels
+  are unchanged between the two versions, and Renovate now opens the action bump
+  as its own reviewed pull request.
 
 
 - **Semgrep no longer comes from a Python lock.** `semgrep` pinned `mcp` 1.29.0 and
